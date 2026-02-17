@@ -1,6 +1,8 @@
 "use client";
 
-import { Filter, X } from "lucide-react";
+import { Filter, Loader2, RefreshCw, X } from "lucide-react";
+import { useState } from "react";
+import { runManualSync } from "@/app/actions/sync";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -132,8 +134,36 @@ function FilterFormContent({
   );
 }
 
+const showSyncButton =
+  typeof process !== "undefined" &&
+  (process.env.NODE_ENV === "development" ||
+    process.env.NEXT_PUBLIC_SHOW_SYNC_BUTTON === "true");
+
 function DesktopSidebar() {
   const state = useFilter();
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const result = await runManualSync();
+      if (result.ok) {
+        const s = result.summary;
+        const parts: string[] = [];
+        if (s.monday) parts.push(`Monday: ${(s.monday as { funnelRows: number; activityRows: number }).activityRows} activity`);
+        if (s.billing) parts.push(`Billing: ${(s.billing as { monthsUpdated: number }).monthsUpdated} months`);
+        if (s.xdash) parts.push(`XDASH: ${(s.xdash as { rowsUpserted: number }).rowsUpserted} rows`);
+        setSyncResult(parts.length ? parts.join("; ") : "Done.");
+      } else {
+        setSyncResult(result.error);
+      }
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <aside
       className="fixed right-0 top-0 z-30 hidden h-screen flex-shrink-0 flex-col border-l border-white/10 bg-white/[0.06] shadow-2xl backdrop-blur-xl lg:flex"
@@ -147,6 +177,28 @@ function DesktopSidebar() {
       <div className="flex-1 overflow-y-auto p-4">
         <FilterFormContent state={state} isMobile={false} />
       </div>
+      {showSyncButton && (
+        <div className="border-t border-white/10 p-3">
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={syncing}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-white/15 disabled:opacity-50"
+          >
+            {syncing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            Sync Now
+          </button>
+          {syncResult && (
+            <p className="mt-2 truncate text-[10px] text-zinc-500" title={syncResult}>
+              {syncResult}
+            </p>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
