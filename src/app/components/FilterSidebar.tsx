@@ -2,7 +2,7 @@
 
 import { Filter, Loader2, RefreshCw, X } from "lucide-react";
 import { useState } from "react";
-import { runManualSync } from "@/app/actions/sync";
+import { triggerSyncViaCronApi } from "@/app/actions/sync";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -142,22 +142,20 @@ const showSyncButton =
 function DesktopSidebar() {
   const state = useFilter();
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<string | null>(null);
+  const [syncMessage, setSyncMessage] = useState<"success" | "error" | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const handleSync = async () => {
     setSyncing(true);
-    setSyncResult(null);
+    setSyncMessage(null);
+    setSyncError(null);
     try {
-      const result = await runManualSync();
+      const result = await triggerSyncViaCronApi();
       if (result.ok) {
-        const s = result.summary;
-        const parts: string[] = [];
-        if (s.monday) parts.push(`Monday: ${(s.monday as { funnelRows: number; activityRows: number }).activityRows} activity`);
-        if (s.billing) parts.push(`Billing: ${(s.billing as { monthsUpdated: number }).monthsUpdated} months`);
-        if (s.xdash) parts.push(`XDASH: ${(s.xdash as { rowsUpserted: number }).rowsUpserted} rows`);
-        setSyncResult(parts.length ? parts.join("; ") : "Done.");
+        setSyncMessage("success");
       } else {
-        setSyncResult(result.error);
+        setSyncMessage("error");
+        setSyncError(result.error);
       }
     } finally {
       setSyncing(false);
@@ -183,18 +181,28 @@ function DesktopSidebar() {
             type="button"
             onClick={handleSync}
             disabled={syncing}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-white/15 disabled:opacity-50"
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-200 shadow-sm transition-colors hover:bg-white/10 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {syncing ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <>
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-zinc-400" />
+                <span>Syncing...</span>
+              </>
             ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
+              <>
+                <RefreshCw className="h-4 w-4 shrink-0 text-zinc-400" />
+                <span>Sync Data</span>
+              </>
             )}
-            Sync Now
           </button>
-          {syncResult && (
-            <p className="mt-2 truncate text-[10px] text-zinc-500" title={syncResult}>
-              {syncResult}
+          {syncMessage === "success" && !syncing && (
+            <p className="mt-2 text-center text-xs font-medium text-emerald-400">
+              All synced!
+            </p>
+          )}
+          {syncMessage === "error" && syncError && !syncing && (
+            <p className="mt-2 truncate text-center text-xs text-red-400" title={syncError}>
+              {syncError}
             </p>
           )}
         </div>
