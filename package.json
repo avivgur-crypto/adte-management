@@ -3,15 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "fetch:xdash": "tsx --env-file=.env.local scripts/fetch-xdash.ts",
+    "fetch:monday": "tsx --env-file=.env.local src/scripts/fetch-monday.ts",
+    "fetch:goals": "tsx --env-file=.env.local src/scripts/fetch-goals.ts",
+    "fetch:billing": "tsx --env-file=.env.local src/scripts/fetch-billing.ts",
+    "fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.95.3",
+    "@tremor/react": "^3.18.7",
+    "google-auth-library": "^10.5.0",
+    "googleapis": "^171.4.0",
+    "lucide-react": "^0.563.0",
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "recharts": "^3.7.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -21,6 +32,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
