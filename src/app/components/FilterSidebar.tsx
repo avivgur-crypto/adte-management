@@ -1,9 +1,8 @@
 "use client";
 
 import { Filter, Loader2, RefreshCw, X } from "lucide-react";
-import { useState } from "react";
 import { triggerSyncViaCronApi } from "@/app/actions/sync";
-import { useCallback, useEffect, useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import {
   useFilter,
