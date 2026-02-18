@@ -36,7 +36,7 @@ export default async function Home() {
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
       <main className="mx-auto max-w-5xl px-4 py-10">
-        <h1 className="mb-8 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+        <h1 className="mb-8 text-2xl font-semibold text-blue-600 dark:text-blue-400">
           Adte Management
         </h1>
         {error && (
