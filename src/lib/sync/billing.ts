@@ -26,7 +26,7 @@ const MONTH_ABBR: Record<string, number> = {
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
-/** Explicit map: 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026, etc. DB stores YYYY-MM-01. */
+/** Month mapping: 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026 (2026-02-01), etc. DB stores YYYY-MM-01. */
 const SHORT_MONTH_TO_DB: Record<string, string> = {
   jan26: "2026-01-01", feb26: "2026-02-01", mar26: "2026-03-01", apr26: "2026-04-01",
   may26: "2026-05-01", jun26: "2026-06-01", jul26: "2026-07-01", aug26: "2026-08-01",
@@ -34,7 +34,7 @@ const SHORT_MONTH_TO_DB: Record<string, string> = {
 };
 
 /**
- * Map Column A to DB month (YYYY-MM-01). Uses explicit Jan26→January 2026, Feb26→February 2026, etc.
+ * Map Column A to DB month. 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026 (2026-02-01), etc.
  */
 function parseMonthKey(cell: string | number | undefined): string | null {
   const raw = String(cell ?? "").trim().replace(/\s+/g, " ");
@@ -90,7 +90,7 @@ function isEmptyOrHeaderRow(row: string[], colA: number): boolean {
 }
 
 /**
- * Column H: parseFloat(String(row[7]).replace(/[^0-9.-]+/g, '')). Returns NaN if invalid so caller can skip row.
+ * Column H: currency cleaning with replace(/[^0-9.-]+/g, '') to handle '$' and ',' (e.g. '$157,271.11').
  */
 function parseAmount(cell: string | number | undefined): number {
   if (cell == null) return NaN;
@@ -98,8 +98,7 @@ function parseAmount(cell: string | number | undefined): number {
   if (raw === "") return 0;
   const cleaned = raw.replace(/[^0-9.-]+/g, "");
   if (!cleaned) return NaN;
-  const n = parseFloat(cleaned);
-  return n;
+  return parseFloat(cleaned);
 }
 
 interface MonthBreakdown {
@@ -111,7 +110,7 @@ interface MonthBreakdown {
 }
 
 /**
- * Column C (Type): use .toLowerCase().trim() to match 'media' and 'saas'.
+ * Column C (Type): use .toLowerCase().trim() to match 'media' or 'saas' (and Supply types).
  */
 function normalizeType(value: string | number | undefined): string {
   return String(value ?? "")
@@ -132,6 +131,7 @@ function processDemandRows(
   const rowsPerMonth = new Map<string, number>();
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
+    if (!row[0]) continue;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
     console.log("Processing:", row[0], row[2], row[7]);
     try {
@@ -174,6 +174,7 @@ function processSupplyRows(
 ): void {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
+    if (!row[0]) continue;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
     console.log("Processing:", row[0], row[2], row[7]);
     try {
