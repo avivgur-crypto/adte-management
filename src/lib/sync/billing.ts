@@ -8,8 +8,8 @@ import { getSheetValues } from "@/lib/google-sheets";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const BILLING_SHEET_ID = "1GKzqtjt-5bk4uBd-MIhkbbgSasfcF86eJ9UR-VQYZdQ";
-const RANGE_DEMAND = "Demand!A:H1000";
-const RANGE_SUPPLY = "Supply!A:H1000";
+const RANGE_DEMAND = "Demand!A1:H990";
+const RANGE_SUPPLY = "Supply!A1:H990";
 const TABLE = "monthly_goals";
 
 const COL_DATE = 0;   // A - Month e.g. 'Jan26'
