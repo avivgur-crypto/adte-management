@@ -26,23 +26,34 @@ const MONTH_ABBR: Record<string, number> = {
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
-/** Month mapping: 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026 (2026-02-01), etc. DB stores YYYY-MM-01. */
-const SHORT_MONTH_TO_DB: Record<string, string> = {
+/**
+ * Map sheet month string to DB month (YYYY-MM-01). 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026, etc.
+ * Use this helper for all months to avoid processing empty or invalid rows.
+ */
+const SHEET_MONTH_TO_DB: Record<string, string> = {
   jan26: "2026-01-01", feb26: "2026-02-01", mar26: "2026-03-01", apr26: "2026-04-01",
   may26: "2026-05-01", jun26: "2026-06-01", jul26: "2026-07-01", aug26: "2026-08-01",
   sep26: "2026-09-01", oct26: "2026-10-01", nov26: "2026-11-01", dec26: "2026-12-01",
 };
 
-/**
- * Map Column A to DB month. 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026 (2026-02-01), etc.
- */
-function parseMonthKey(cell: string | number | undefined): string | null {
+function sheetMonthToDbMonth(cell: string | number | undefined): string | null {
   const raw = String(cell ?? "").trim().replace(/\s+/g, " ");
   if (!raw) return null;
-
   const short = raw.replace(/\s/g, "").toLowerCase();
-  const explicit = SHORT_MONTH_TO_DB[short];
+  const dbMonth = SHEET_MONTH_TO_DB[short];
+  if (dbMonth) return dbMonth;
+  return null;
+}
+
+/**
+ * Parse Column A to DB month. Prefer explicit mapping (Jan26 → January 2026); fallback to long/slash formats.
+ */
+function parseMonthKey(cell: string | number | undefined): string | null {
+  const explicit = sheetMonthToDbMonth(cell);
   if (explicit) return explicit;
+  const raw = String(cell ?? "").trim().replace(/\s+/g, " ");
+  if (!raw) return null;
+  const short = raw.replace(/\s/g, "").toLowerCase();
 
   const longMatch = raw.match(/^(january|february|march|april|may|june|july|august|september|october|november|december)\s*(\d{2,4})$/i);
   if (longMatch) {
@@ -90,15 +101,16 @@ function isEmptyOrHeaderRow(row: string[], colA: number): boolean {
 }
 
 /**
- * Column H: currency cleaning with replace(/[^0-9.-]+/g, '') to handle '$' and ',' (e.g. '$157,271.11').
+ * Column H: clean '$' and ',' with replace(/[^0-9.-]+/g, '') then parseFloat (e.g. '$157,271.11' → 157271.11).
  */
-function parseAmount(cell: string | number | undefined): number {
-  if (cell == null) return NaN;
-  const raw = String(cell).trim();
+function parseCurrency(val: string | number | undefined): number {
+  if (val == null) return NaN;
+  const raw = String(val).trim();
   if (raw === "") return 0;
   const cleaned = raw.replace(/[^0-9.-]+/g, "");
   if (!cleaned) return NaN;
-  return parseFloat(cleaned);
+  const n = parseFloat(cleaned);
+  return Number.isNaN(n) ? NaN : n;
 }
 
 interface MonthBreakdown {
@@ -121,8 +133,8 @@ function normalizeType(value: string | number | undefined): string {
 }
 
 /**
- * Demand sheet: sum all rows per month. Skip empty/header rows. Media → media_revenue, SaaS → saas_actual.
- * Column C: .toLowerCase().trim() to match 'media' or 'saas'. Row errors are caught and logged; sync continues.
+ * Demand sheet: sum all rows per month. Row validation: if Column A (Month) is empty or doesn't match a month pattern, continue immediately.
+ * Column C: .toLowerCase().trim() to match 'media' or 'saas'. Currency: replace(/[^0-9.-]+/g, '') on Column H.
  */
 function processDemandRows(
   rows: string[][]
@@ -138,7 +150,7 @@ function processDemandRows(
       const type = normalizeType(row[COL_TYPE]);
       const monthKey = parseMonthKey(row[COL_DATE]);
       if (!monthKey) continue;
-      const amount = parseFloat(String(row[COL_AMOUNT] ?? "").replace(/[^0-9.-]+/g, ""));
+      const amount = parseCurrency(row[COL_AMOUNT]);
       if (Number.isNaN(amount)) continue;
       const cur = byMonth.get(monthKey) ?? {
         media_revenue: 0,
@@ -164,8 +176,8 @@ function processDemandRows(
 }
 
 /**
- * Supply sheet: same skip empty/header, robust parsing, try/catch per row.
- * Column C: .toLowerCase().trim() for Media, Tech Provider, Brand Safety Vendor.
+ * Supply sheet: same row validation (empty Column A or no month pattern → continue). Try/catch per row.
+ * Column C: .toLowerCase().trim(). Column H: parseCurrency (replace /[^0-9.-]+/g, '').
  */
 function processSupplyRows(
   rows: string[][],
@@ -181,7 +193,7 @@ function processSupplyRows(
       const type = normalizeType(row[COL_TYPE]);
       const monthKey = parseMonthKey(row[COL_DATE]);
       if (!monthKey) continue;
-      const amount = parseFloat(String(row[COL_AMOUNT] ?? "").replace(/[^0-9.-]+/g, ""));
+      const amount = parseCurrency(row[COL_AMOUNT]);
       if (Number.isNaN(amount)) continue;
       const cur = byMonth.get(monthKey) ?? {
         media_revenue: 0,
@@ -190,8 +202,8 @@ function processSupplyRows(
         tech_cost: 0,
         bs_cost: 0,
       };
-      if (type === TYPE_MEDIA) {
-        cur.media_cost += amount;
+    if (type === TYPE_MEDIA) {
+      cur.media_cost += amount;
         console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
       } else if (type === TYPE_TECH_PROVIDER) {
         cur.tech_cost += amount;
