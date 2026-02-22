@@ -125,14 +125,13 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     items: Awaited<ReturnType<typeof fetchBoardItems>>,
     boardId: string,
     creationLogColumnId: string
-  ): { item_id: string; board_id: string; created_at: string; created_date: string }[] {
+  ): { item_id: string; created_at: string; created_date: string }[] {
     return items.map((item) => {
       const createdAtDate = getCreationLogDate(item, creationLogColumnId);
       const createdAt = createdAtDate ?? new Date();
       const createdDate = createdAt.toISOString().split("T")[0];
       return {
         item_id: String(item.id),
-        board_id: boardId,
         created_at: createdAt.toISOString(),
         created_date: createdDate,
       };
@@ -148,7 +147,7 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
   if (activityRows.length > 0) {
     const { error: activityError } = await supabaseAdmin
       .from(ACTIVITY_TABLE)
-      .upsert(activityRows, { onConflict: "item_id,board_id", ignoreDuplicates: false });
+      .upsert(activityRows, { onConflict: "item_id", ignoreDuplicates: false });
     if (activityError) throw new Error(`Activity upsert failed: ${activityError.message}`);
     activityRowsUpserted = activityRows.length;
   }

@@ -14,9 +14,11 @@ export type TriggerSyncResult =
  */
 export async function triggerSyncViaCronApi(): Promise<TriggerSyncResult> {
   try {
-    await syncMondayData();
-    await syncBillingData();
-    await syncXDASHData();
+    await Promise.all([
+      syncMondayData(),
+      syncBillingData(),
+      syncXDASHData(),
+    ]);
     return { success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
