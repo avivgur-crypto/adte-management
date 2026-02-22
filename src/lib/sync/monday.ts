@@ -125,15 +125,13 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     items: Awaited<ReturnType<typeof fetchBoardItems>>,
     boardId: string,
     creationLogColumnId: string
-  ): { item_id: string; created_at: string; created_date: string }[] {
+  ): { item_id: string; created_at: string }[] {
     return items.map((item) => {
       const createdAtDate = getCreationLogDate(item, creationLogColumnId);
       const createdAt = createdAtDate ?? new Date();
-      const createdDate = createdAt.toISOString().split("T")[0];
       return {
         item_id: String(item.id),
         created_at: createdAt.toISOString(),
-        created_date: createdDate,
       };
     });
   }
