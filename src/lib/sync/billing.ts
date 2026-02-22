@@ -16,23 +16,33 @@ const COL_DATE = 0;   // A - Month e.g. 'Jan26'
 const COL_TYPE = 2;   // C - Type: 'Media', 'SaaS', etc.
 const COL_AMOUNT = 7; // H - Amount e.g. '$157,271.11'
 
-const TYPE_MEDIA = "MEDIA";
-const TYPE_SAAS = "SAAS";
-const TYPE_TECH_PROVIDER = "TECH PROVIDER";
-const TYPE_BRAND_SAFETY_VENDOR = "BRAND SAFETY VENDOR";
+const TYPE_MEDIA = "media";
+const TYPE_SAAS = "saas";
+const TYPE_TECH_PROVIDER = "tech provider";
+const TYPE_BRAND_SAFETY_VENDOR = "brand safety vendor";
 
 const MONTH_ABBR: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
+/** Explicit map: 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026, etc. DB stores YYYY-MM-01. */
+const SHORT_MONTH_TO_DB: Record<string, string> = {
+  jan26: "2026-01-01", feb26: "2026-02-01", mar26: "2026-03-01", apr26: "2026-04-01",
+  may26: "2026-05-01", jun26: "2026-06-01", jul26: "2026-07-01", aug26: "2026-08-01",
+  sep26: "2026-09-01", oct26: "2026-10-01", nov26: "2026-11-01", dec26: "2026-12-01",
+};
+
 /**
- * Column A → database month. 'Jan26' → '2026-01-01' (January 2026).
- * Handles 'Jan26', 'Jan 26', 'January 2026'.
+ * Map Column A to DB month (YYYY-MM-01). Uses explicit Jan26→January 2026, Feb26→February 2026, etc.
  */
 function parseMonthKey(cell: string | number | undefined): string | null {
   const raw = String(cell ?? "").trim().replace(/\s+/g, " ");
   if (!raw) return null;
+
+  const short = raw.replace(/\s/g, "").toLowerCase();
+  const explicit = SHORT_MONTH_TO_DB[short];
+  if (explicit) return explicit;
 
   const longMatch = raw.match(/^(january|february|march|april|may|june|july|august|september|october|november|december)\s*(\d{2,4})$/i);
   if (longMatch) {
@@ -44,9 +54,8 @@ function parseMonthKey(cell: string | number | undefined): string | null {
     return `${fullYear}-${String(monthNum).padStart(2, "0")}-01`;
   }
 
-  const short = raw.replace(/\s/g, "");
   if (short.length >= 4) {
-    const monthStr = short.slice(0, 3).toLowerCase();
+    const monthStr = short.slice(0, 3);
     const monthNum = MONTH_ABBR[monthStr];
     if (monthNum != null) {
       const rest = short.slice(3).replace(/\D/g, "");
@@ -72,17 +81,25 @@ function parseMonthKey(cell: string | number | undefined): string | null {
   return null;
 }
 
+/** Return true if row should be skipped (empty or header). */
+function isEmptyOrHeaderRow(row: string[], colA: number): boolean {
+  const a = String(row[colA] ?? "").trim();
+  if (!a) return true;
+  if (a.toLowerCase() === "month") return true;
+  return false;
+}
+
 /**
- * Column H: strip '$' and ',' (e.g. '$157,271.11' → 157271.11) then parse. Returns 0 for empty/NaN.
+ * Column H: parseFloat(String(row[7]).replace(/[^0-9.-]+/g, '')). Returns NaN if invalid so caller can skip row.
  */
 function parseAmount(cell: string | number | undefined): number {
-  if (cell == null) return 0;
+  if (cell == null) return NaN;
   const raw = String(cell).trim();
   if (raw === "") return 0;
-  const cleaned = raw.replace(/[$,\s]/g, "").trim();
-  if (!cleaned) return 0;
-  const n = Number(cleaned);
-  return Number.isNaN(n) ? 0 : n;
+  const cleaned = raw.replace(/[^0-9.-]+/g, "");
+  if (!cleaned) return NaN;
+  const n = parseFloat(cleaned);
+  return n;
 }
 
 interface MonthBreakdown {
@@ -94,20 +111,19 @@ interface MonthBreakdown {
 }
 
 /**
- * Column C (Type): normalize sheet value for comparison.
- * Both sheet value and targets use uppercase + trim so 'Media' / ' media ' match 'MEDIA'.
+ * Column C (Type): use .toLowerCase().trim() to match 'media' and 'saas'.
  */
 function normalizeType(value: string | number | undefined): string {
   return String(value ?? "")
     .replace(/\uFEFF/g, "")
     .trim()
-    .toUpperCase()
+    .toLowerCase()
     .replace(/\s+/g, " ");
 }
 
 /**
- * Demand sheet: sum all rows per month (aggregation). Media → media_revenue, SaaS → saas_actual.
- * Same month can appear multiple rows; we add each amount to the bucket.
+ * Demand sheet: sum all rows per month. Skip empty/header rows. Media → media_revenue, SaaS → saas_actual.
+ * Column C: .toLowerCase().trim() to match 'media' or 'saas'. Row errors are caught and logged; sync continues.
  */
 function processDemandRows(
   rows: string[][]
@@ -115,34 +131,41 @@ function processDemandRows(
   const byMonth = new Map<string, MonthBreakdown>();
   const rowsPerMonth = new Map<string, number>();
   for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const type = normalizeType(row[COL_TYPE]);
-    const monthKey = parseMonthKey(row[COL_DATE]);
-    if (!monthKey) continue;
-    const amount = parseAmount(row[COL_AMOUNT]);
-    const cur = byMonth.get(monthKey) ?? {
-      media_revenue: 0,
-      saas_actual: 0,
-      media_cost: 0,
-      tech_cost: 0,
-      bs_cost: 0,
-    };
-    if (type === TYPE_MEDIA) {
-      cur.media_revenue += amount;
-      console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
-    } else if (type === TYPE_SAAS) {
-      cur.saas_actual += amount;
-      console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=${TYPE_SAAS} amount=${amount}`);
-    } else continue;
-    byMonth.set(monthKey, cur);
-    rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
+    const row = rows[i] ?? [];
+    if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
+    console.log("Processing:", row[0], row[2], row[7]);
+    try {
+      const type = normalizeType(row[COL_TYPE]);
+      const monthKey = parseMonthKey(row[COL_DATE]);
+      if (!monthKey) continue;
+      const amount = parseFloat(String(row[COL_AMOUNT] ?? "").replace(/[^0-9.-]+/g, ""));
+      if (Number.isNaN(amount)) continue;
+      const cur = byMonth.get(monthKey) ?? {
+        media_revenue: 0,
+        saas_actual: 0,
+        media_cost: 0,
+        tech_cost: 0,
+        bs_cost: 0,
+      };
+      if (type === TYPE_MEDIA) {
+        cur.media_revenue += amount;
+        console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
+      } else if (type === TYPE_SAAS) {
+        cur.saas_actual += amount;
+        console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=${TYPE_SAAS} amount=${amount}`);
+      } else continue;
+      byMonth.set(monthKey, cur);
+      rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
+    } catch (err) {
+      console.error(`[billing sync] Demand row ${i + 1} error:`, err);
+    }
   }
   return { byMonth, rowsPerMonth };
 }
 
 /**
- * Supply sheet: same normalization and aggregation. Sum all rows per month.
- * Media → media_cost, Tech Provider → tech_cost, Brand Safety Vendor → bs_cost.
+ * Supply sheet: same skip empty/header, robust parsing, try/catch per row.
+ * Column C: .toLowerCase().trim() for Media, Tech Provider, Brand Safety Vendor.
  */
 function processSupplyRows(
   rows: string[][],
@@ -150,30 +173,37 @@ function processSupplyRows(
   supplyRowsPerMonth: Map<string, number>
 ): void {
   for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const type = normalizeType(row[COL_TYPE]);
-    const monthKey = parseMonthKey(row[COL_DATE]);
-    if (!monthKey) continue;
-    const amount = parseAmount(row[COL_AMOUNT]);
-    const cur = byMonth.get(monthKey) ?? {
-      media_revenue: 0,
-      saas_actual: 0,
-      media_cost: 0,
-      tech_cost: 0,
-      bs_cost: 0,
-    };
-    if (type === TYPE_MEDIA) {
-      cur.media_cost += amount;
-      console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
-    } else if (type === TYPE_TECH_PROVIDER) {
-      cur.tech_cost += amount;
-      console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_TECH_PROVIDER} amount=${amount}`);
-    } else if (type === TYPE_BRAND_SAFETY_VENDOR) {
-      cur.bs_cost += amount;
-      console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_BRAND_SAFETY_VENDOR} amount=${amount}`);
-    } else continue;
-    byMonth.set(monthKey, cur);
-    supplyRowsPerMonth.set(monthKey, (supplyRowsPerMonth.get(monthKey) ?? 0) + 1);
+    const row = rows[i] ?? [];
+    if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
+    console.log("Processing:", row[0], row[2], row[7]);
+    try {
+      const type = normalizeType(row[COL_TYPE]);
+      const monthKey = parseMonthKey(row[COL_DATE]);
+      if (!monthKey) continue;
+      const amount = parseFloat(String(row[COL_AMOUNT] ?? "").replace(/[^0-9.-]+/g, ""));
+      if (Number.isNaN(amount)) continue;
+      const cur = byMonth.get(monthKey) ?? {
+        media_revenue: 0,
+        saas_actual: 0,
+        media_cost: 0,
+        tech_cost: 0,
+        bs_cost: 0,
+      };
+      if (type === TYPE_MEDIA) {
+        cur.media_cost += amount;
+        console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
+      } else if (type === TYPE_TECH_PROVIDER) {
+        cur.tech_cost += amount;
+        console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_TECH_PROVIDER} amount=${amount}`);
+      } else if (type === TYPE_BRAND_SAFETY_VENDOR) {
+        cur.bs_cost += amount;
+        console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_BRAND_SAFETY_VENDOR} amount=${amount}`);
+      } else continue;
+      byMonth.set(monthKey, cur);
+      supplyRowsPerMonth.set(monthKey, (supplyRowsPerMonth.get(monthKey) ?? 0) + 1);
+    } catch (err) {
+      console.error(`[billing sync] Supply row ${i + 1} error:`, err);
+    }
   }
 }
 

@@ -4,6 +4,10 @@ import { AUTH_COOKIE_NAME, hashPasswordEdge } from "@/lib/auth";
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
   if (pathname === "/login") {
     const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
     const expected = process.env.DASHBOARD_PASSWORD
