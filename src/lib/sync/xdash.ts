@@ -43,6 +43,23 @@ function datesFromMonthStartThroughYesterday(): string[] {
   return out;
 }
 
+/** Dates from 1st through last day of the given month, or through yesterday if that month is the current month. */
+function datesForMonth(year: number, month: number): string[] {
+  const now = new Date();
+  const yesterday = getYesterday(now);
+  const firstOfMonth = new Date(year, month - 1, 1);
+  const lastDayOfMonth = new Date(year, month, 0);
+  const endDate = lastDayOfMonth <= yesterday ? lastDayOfMonth : yesterday;
+  if (firstOfMonth > endDate) return [];
+  const out: string[] = [];
+  const cur = new Date(firstOfMonth);
+  while (cur <= endDate) {
+    out.push(formatLocalDate(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
 async function upsertPartnerRows(
   date: string,
   partnerType: "demand" | "supply",
@@ -71,6 +88,30 @@ export interface SyncXDASHResult {
 
 export async function syncXDASHData(): Promise<SyncXDASHResult> {
   const dates = datesFromMonthStartThroughYesterday();
+  let rowsUpserted = 0;
+
+  for (const date of dates) {
+    const demandRaw = await fetchDemandPartners(date);
+    const demandRows = mapDemandPartners(demandRaw);
+    rowsUpserted += await upsertPartnerRows(date, "demand", demandRows);
+
+    const supplyRaw = await fetchSupplyPartners(date);
+    const supplyRows = mapSupplyPartners(supplyRaw);
+    rowsUpserted += await upsertPartnerRows(date, "supply", supplyRows);
+  }
+
+  return { datesSynced: dates.length, rowsUpserted };
+}
+
+/**
+ * Sync XDASH data for a specific month: all days from 1 through end of month,
+ * or through yesterday if that month is the current month.
+ */
+export async function syncXDASHDataForMonth(
+  year: number,
+  month: number
+): Promise<SyncXDASHResult> {
+  const dates = datesForMonth(year, month);
   let rowsUpserted = 0;
 
   for (const date of dates) {

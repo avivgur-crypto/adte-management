@@ -150,17 +150,36 @@ export async function getPacingSummary(
       `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
   }
 
-  const { data: perfRows } = await supabase
+  // Media revenue = SUM(revenue) for partner_type = 'demand' (matches billing / XDASH Demand).
+  // Media cost = SUM(cost) for partner_type = 'supply'.
+  // Query each type separately and use a high limit so we get all rows (PostgREST default is 1000).
+  const LIMIT = 50000;
+
+  const { data: demandRows } = await supabase
     .from("daily_partner_performance")
-    .select("revenue, cost")
+    .select("revenue")
+    .eq("partner_type", "demand")
     .gte("date", monthStart)
-    .lte("date", dataThroughDate);
+    .lte("date", dataThroughDate)
+    .limit(LIMIT);
+
+  const { data: supplyRows } = await supabase
+    .from("daily_partner_performance")
+    .select("cost")
+    .eq("partner_type", "supply")
+    .gte("date", monthStart)
+    .lte("date", dataThroughDate)
+    .limit(LIMIT);
 
   let mediaRevenue = 0;
   let mediaCost = 0;
-  if (perfRows) {
-    for (const row of perfRows) {
+  if (demandRows) {
+    for (const row of demandRows) {
       mediaRevenue += Number(row.revenue ?? 0);
+    }
+  }
+  if (supplyRows) {
+    for (const row of supplyRows) {
       mediaCost += Number(row.cost ?? 0);
     }
   }
