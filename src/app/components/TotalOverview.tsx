@@ -104,9 +104,17 @@ export default function TotalOverview({
   }
 
   return (
-    <section className="mb-8 grid gap-6 sm:grid-cols-2">
-      <RevenueCard data={filteredData} />
-      <CostCard data={filteredData} />
+    <section className="mb-8">
+      <h2 className="mb-2 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+        Revenue vs. Cost
+      </h2>
+      <p className="mb-4 text-sm text-zinc-400 dark:text-zinc-500">
+        (from Billing)
+      </p>
+      <div className="grid gap-6 sm:grid-cols-2">
+        <RevenueCard data={filteredData} />
+        <CostCard data={filteredData} />
+      </div>
     </section>
   );
 }

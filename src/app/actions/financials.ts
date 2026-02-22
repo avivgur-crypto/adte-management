@@ -7,12 +7,17 @@ import type { PacingSummary } from "@/lib/pacing";
 
 export type PacingTrend = "up" | "down" | "stable";
 
-export interface FinancialPaceWithTrend extends PacingSummary {
+/** When true, section.projected and section.projectedVsGoalPercent are null. */
+export interface FinancialPaceWithTrend extends Omit<PacingSummary, "total" | "media" | "saas"> {
   trend: {
     total: PacingTrend;
     media: PacingTrend;
     saas: PacingTrend;
   };
+  isMultiMonth?: boolean;
+  total: PacingSummary["total"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
+  media: PacingSummary["media"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
+  saas: PacingSummary["saas"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
 }
 
 function comparePace(nowPercent: number | null, prevPercent: number | null): PacingTrend {
@@ -24,33 +29,107 @@ function comparePace(nowPercent: number | null, prevPercent: number | null): Pac
 }
 
 /**
- * Get pacing summary for a given month (or current month if omitted).
- * When monthStart is a closed month (in the past), completion is 100% and MTD target = full goal.
+ * Get pacing summary for given month(s). When monthStarts has more than one month,
+ * returns aggregated actual and goal sums; projected is null in that case.
+ * When monthStarts is empty or omitted, uses current month only.
  */
 export async function getFinancialPace(
-  monthStart?: string
+  monthStarts?: string[]
 ): Promise<FinancialPaceWithTrend> {
   return withRetry(async () => {
-    const summary = await getPacingSummary(supabaseAdmin, undefined, monthStart);
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    let priorSummary: PacingSummary;
-    try {
-      priorSummary = monthStart
-        ? await getPacingSummary(supabaseAdmin, undefined, priorMonthKey(monthStart))
-        : await getPacingSummary(supabaseAdmin, yesterday);
-    } catch {
-      priorSummary = summary;
+    const months =
+      monthStarts && monthStarts.length > 0
+        ? monthStarts
+        : [getCurrentMonthKey()];
+
+    if (months.length === 1) {
+      const monthStart = months[0]!;
+      const summary = await getPacingSummary(supabaseAdmin, undefined, monthStart);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      let priorSummary: PacingSummary;
+      try {
+        priorSummary = await getPacingSummary(
+          supabaseAdmin,
+          undefined,
+          priorMonthKey(monthStart)
+        );
+      } catch {
+        priorSummary = summary;
+      }
+      return {
+        ...summary,
+        trend: {
+          total: comparePace(summary.total.pacePercent, priorSummary.total.pacePercent),
+          media: comparePace(summary.media.pacePercent, priorSummary.media.pacePercent),
+          saas: comparePace(summary.saas.pacePercent, priorSummary.saas.pacePercent),
+        },
+      };
     }
+
+    const summaries = await Promise.all(
+      months.map((m) => getPacingSummary(supabaseAdmin, undefined, m))
+    );
+
+    function aggSection(
+      key: "total" | "media" | "saas"
+    ): FinancialPaceWithTrend["total"] {
+      let actual = 0;
+      let goal = 0;
+      let targetMtd = 0;
+      let requiredDailyRunRate = 0;
+      for (const s of summaries) {
+        const sec = s[key];
+        actual += sec.actual;
+        goal += sec.goal;
+        targetMtd += sec.targetMtd;
+        requiredDailyRunRate += sec.requiredDailyRunRate;
+      }
+      const delta = actual - targetMtd;
+      const pacePercent =
+        targetMtd > 0 ? Math.round((actual / targetMtd) * 100) : null;
+      return {
+        actual,
+        targetMtd,
+        projected: null,
+        goal,
+        pacePercent,
+        projectedVsGoalPercent: null,
+        delta,
+        requiredDailyRunRate,
+      } as unknown as FinancialPaceWithTrend["total"];
+    }
+
+    const totalEffective = summaries.reduce((s, x) => s + x.effectiveDaysPassed, 0);
+    const totalDays = summaries.reduce((s, x) => s + x.daysInMonth, 0);
+    const totalRemaining = summaries.reduce((s, x) => s + x.daysRemaining, 0);
+    const lastSummary = summaries[summaries.length - 1]!;
+
     return {
-      ...summary,
+      month: months.map((m) => (m.length === 7 ? m : m.slice(0, 7))).join(", "),
+      daysInMonth: totalDays,
+      effectiveDaysPassed: totalEffective,
+      daysRemaining: totalRemaining,
+      paceTargetRatio: totalDays > 0 ? totalEffective / totalDays : 0,
+      dataThroughDate: lastSummary.dataThroughDate,
+      total: aggSection("total"),
+      media: aggSection("media"),
+      saas: aggSection("saas"),
       trend: {
-        total: comparePace(summary.total.pacePercent, priorSummary.total.pacePercent),
-        media: comparePace(summary.media.pacePercent, priorSummary.media.pacePercent),
-        saas: comparePace(summary.saas.pacePercent, priorSummary.saas.pacePercent),
+        total: "stable",
+        media: "stable",
+        saas: "stable",
       },
+      isMultiMonth: true,
     };
   });
+}
+
+function getCurrentMonthKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  return `${y}-${String(m).padStart(2, "0")}-01`;
 }
 
 function priorMonthKey(monthStart: string): string {

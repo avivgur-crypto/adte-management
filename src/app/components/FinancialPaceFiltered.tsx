@@ -13,11 +13,10 @@ function getCurrentMonthStart(): string {
   return `${y}-${String(m).padStart(2, "0")}-01`;
 }
 
-/** Stable key so we only refetch when the effective month changes. */
-function effectiveMonthKey(selectedMonths: Set<string>): string {
-  if (selectedMonths.size === 0) return getCurrentMonthStart();
-  const sorted = Array.from(selectedMonths).sort();
-  return sorted[0] ?? getCurrentMonthStart();
+/** Stable key for refetch: all selected months (or current month only if none selected). */
+function monthStartsForFilter(selectedMonths: Set<string>): string[] {
+  if (selectedMonths.size === 0) return [getCurrentMonthStart()];
+  return Array.from(selectedMonths).sort();
 }
 
 export default function FinancialPaceFiltered() {
@@ -26,13 +25,14 @@ export default function FinancialPaceFiltered() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const monthStart = useMemo(() => effectiveMonthKey(selectedMonths), [selectedMonths]);
+  const monthStarts = useMemo(() => monthStartsForFilter(selectedMonths), [selectedMonths]);
+  const monthStartsKey = monthStarts.join(",");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getFinancialPace(monthStart)
+    getFinancialPace(monthStarts)
       .then((result) => {
         if (!cancelled) setSummary(result);
       })
@@ -48,7 +48,8 @@ export default function FinancialPaceFiltered() {
     return () => {
       cancelled = true;
     };
-  }, [monthStart]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- monthStartsKey is stable string; monthStarts used in closure
+  }, [monthStartsKey]);
 
   if (loading) {
     return (
