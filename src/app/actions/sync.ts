@@ -17,7 +17,6 @@ export async function triggerSyncViaCronApi(): Promise<TriggerSyncResult> {
     await Promise.all([
       syncMondayData(),
       syncBillingData(),
-      syncXDASHData(),
     ]);
     return { success: true };
   } catch (err) {
