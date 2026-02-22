@@ -150,7 +150,7 @@ function DesktopSidebar() {
     setSyncError(null);
     try {
       const result = await triggerSyncViaCronApi();
-      if (result.ok) {
+      if (result.success) {
         setSyncMessage("success");
       } else {
         setSyncMessage("error");

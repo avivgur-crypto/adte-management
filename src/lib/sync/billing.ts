@@ -27,8 +27,7 @@ const MONTH_ABBR: Record<string, number> = {
 };
 
 /**
- * Map sheet month string to DB month (YYYY-MM-01). 'Jan26' → January 2026 (2026-01-01), 'Feb26' → February 2026, etc.
- * Use this helper for all months to avoid processing empty or invalid rows.
+ * Map Column A exactly: 'Jan26' → January 2026 (DB: 2026-01-01), 'Feb26' → February 2026 (2026-02-01), etc.
  */
 const SHEET_MONTH_TO_DB: Record<string, string> = {
   jan26: "2026-01-01", feb26: "2026-02-01", mar26: "2026-03-01", apr26: "2026-04-01",
@@ -101,13 +100,11 @@ function isEmptyOrHeaderRow(row: string[], colA: number): boolean {
 }
 
 /**
- * Column H: clean '$' and ',' with replace(/[^0-9.-]+/g, '') then parseFloat (e.g. '$157,271.11' → 157271.11).
+ * Column H: use parseFloat(String(val).replace(/[^0-9.-]+/g, '')) to handle '$' and commas.
  */
 function parseCurrency(val: string | number | undefined): number {
   if (val == null) return NaN;
-  const raw = String(val).trim();
-  if (raw === "") return 0;
-  const cleaned = raw.replace(/[^0-9.-]+/g, "");
+  const cleaned = String(val).replace(/[^0-9.-]+/g, "");
   if (!cleaned) return NaN;
   const n = parseFloat(cleaned);
   return Number.isNaN(n) ? NaN : n;
@@ -143,7 +140,7 @@ function processDemandRows(
   const rowsPerMonth = new Map<string, number>();
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
-    if (!row[0]) continue;
+    if (!row[0]) break;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
     console.log("Processing:", row[0], row[2], row[7]);
     try {
@@ -186,7 +183,7 @@ function processSupplyRows(
 ): void {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
-    if (!row[0]) continue;
+    if (!row[0]) break;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
     console.log("Processing:", row[0], row[2], row[7]);
     try {
