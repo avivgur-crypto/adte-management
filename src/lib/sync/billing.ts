@@ -1,9 +1,7 @@
 /**
- * Billing sync: Master Billing 2026 — DEMAND (revenue) + SUPPLY (cost) → monthly_goals.
- * Both sheets: Column A = month, Column C = type, Column H = amount.
- * DEMAND: MEDIA → media_revenue, SAAS → saas_actual.
- * SUPPLY: MEDIA → media_cost, TECH PROVIDER → tech_cost, BRAND SAFETY VENDOR → bs_cost.
- * Used by the unified cron sync and by npm run fetch:billing.
+ * Billing sync: Master Billing 2026 — Demand (revenue) + Supply (cost) → monthly_goals.
+ * Tabs: exact names 'Demand' and 'Supply'. Column A = month (e.g. 'Jan26'), C = type, H = amount.
+ * Demand: Media → media_revenue, SaaS → saas_actual. Supply: Media → media_cost, etc.
  */
 
 import { getSheetValues } from "@/lib/google-sheets";
@@ -14,17 +12,21 @@ const RANGE_DEMAND = "Demand!A:H1000";
 const RANGE_SUPPLY = "Supply!A:H1000";
 const TABLE = "monthly_goals";
 
-const COL_DATE = 0;   // A
-const COL_TYPE = 2;   // C
-const COL_AMOUNT = 7; // H
+const COL_DATE = 0;   // A - Month e.g. 'Jan26'
+const COL_TYPE = 2;   // C - 'Media', 'SaaS', etc.
+const COL_AMOUNT = 7; // H - e.g. '$157,271.11'
 
 const MONTH_ABBR: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
-function parseMonthKey(cell: string | undefined): string | null {
-  const raw = String(cell ?? "").trim();
+/**
+ * Map Month column (A) to database format. Handles 'Jan26' → '2026-01-01'.
+ * Normalizes: trim, collapse spaces, so 'Jan 26' or 'Jan26' both work.
+ */
+function parseMonthKey(cell: string | number | undefined): string | null {
+  const raw = String(cell ?? "").trim().replace(/\s+/g, " ");
   if (!raw) return null;
 
   const longMatch = raw.match(/^(january|february|march|april|may|june|july|august|september|october|november|december)\s*(\d{2,4})$/i);
@@ -37,11 +39,12 @@ function parseMonthKey(cell: string | undefined): string | null {
     return `${fullYear}-${String(monthNum).padStart(2, "0")}-01`;
   }
 
-  if (raw.length >= 4) {
-    const monthStr = raw.slice(0, 3).toLowerCase();
+  const short = raw.replace(/\s/g, "");
+  if (short.length >= 4) {
+    const monthStr = short.slice(0, 3).toLowerCase();
     const monthNum = MONTH_ABBR[monthStr];
     if (monthNum != null) {
-      const rest = raw.slice(3).replace(/\D/g, "");
+      const rest = short.slice(3).replace(/\D/g, "");
       if (rest.length >= 2) {
         const yearStr = rest.length >= 4 ? rest.slice(0, 4) : rest;
         const year = parseInt(yearStr, 10);
@@ -64,11 +67,14 @@ function parseMonthKey(cell: string | undefined): string | null {
   return null;
 }
 
-function parseAmount(cell: string | undefined): number {
+/**
+ * Column H: remove '$' and ',' with regex, then parse (e.g. '$157,271.11' → 157271.11).
+ */
+function parseAmount(cell: string | number | undefined): number {
   if (cell == null) return 0;
   const raw = String(cell).trim();
   if (raw === "") return 0;
-  const cleaned = raw.replace(/\$/g, "").replace(/,/g, "").replace(/\s+/g, "").trim();
+  const cleaned = raw.replace(/[$,\s]/g, "").trim();
   if (!cleaned) return 0;
   const n = Number(cleaned);
   return Number.isNaN(n) ? 0 : n;
@@ -82,6 +88,7 @@ interface MonthBreakdown {
   bs_cost: number;
 }
 
+/** Column C: trim and uppercase for comparison ('Media' → 'MEDIA', 'SaaS' → 'SAAS'). */
 function normalizeType(value: string | undefined): string {
   return String(value ?? "").trim().toUpperCase().replace(/\s+/g, " ");
 }
@@ -104,9 +111,13 @@ function processDemandRows(
       tech_cost: 0,
       bs_cost: 0,
     };
-    if (type === "MEDIA") cur.media_revenue += amount;
-    else if (type === "SAAS") cur.saas_actual += amount;
-    else continue;
+    if (type === "MEDIA") {
+      cur.media_revenue += amount;
+      console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=MEDIA amount=${amount}`);
+    } else if (type === "SAAS") {
+      cur.saas_actual += amount;
+      console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=SAAS amount=${amount}`);
+    } else continue;
     byMonth.set(monthKey, cur);
     rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
   }
@@ -131,10 +142,16 @@ function processSupplyRows(
       tech_cost: 0,
       bs_cost: 0,
     };
-    if (type === "MEDIA") cur.media_cost += amount;
-    else if (type === "TECH PROVIDER") cur.tech_cost += amount;
-    else if (type === "BRAND SAFETY VENDOR") cur.bs_cost += amount;
-    else continue;
+    if (type === "MEDIA") {
+      cur.media_cost += amount;
+      console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=MEDIA amount=${amount}`);
+    } else if (type === "TECH PROVIDER") {
+      cur.tech_cost += amount;
+      console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=TECH PROVIDER amount=${amount}`);
+    } else if (type === "BRAND SAFETY VENDOR") {
+      cur.bs_cost += amount;
+      console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=BRAND SAFETY VENDOR amount=${amount}`);
+    } else continue;
     byMonth.set(monthKey, cur);
     supplyRowsPerMonth.set(monthKey, (supplyRowsPerMonth.get(monthKey) ?? 0) + 1);
   }
@@ -145,10 +162,12 @@ export interface SyncBillingResult {
 }
 
 export async function syncBillingData(): Promise<SyncBillingResult> {
+  console.log("[billing sync] Fetching Demand and Supply sheets (exact tab names: Demand, Supply)");
   const [demandRows, supplyRows] = await Promise.all([
     getSheetValues(BILLING_SHEET_ID, RANGE_DEMAND),
     getSheetValues(BILLING_SHEET_ID, RANGE_SUPPLY),
   ]);
+  console.log(`[billing sync] Demand rows: ${demandRows.length}, Supply rows: ${supplyRows.length}`);
 
   const { byMonth, rowsPerMonth: demandRowsPerMonth } = processDemandRows(demandRows);
   const supplyRowsPerMonth = new Map<string, number>();
