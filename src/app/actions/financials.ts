@@ -166,46 +166,31 @@ const OVERVIEW_MONTHS = Array.from({ length: 12 }, (_, i) =>
   `${OVERVIEW_YEAR}-${String(i + 1).padStart(2, "0")}-01`
 );
 
-/** Returns per-month revenue and cost for Total Overview. Tech/BS from Billing sheet can be added later. */
+/** Returns per-month revenue and cost for Total Overview from Master Billing 2026 (monthly_goals). */
 export async function getTotalOverviewData(): Promise<MonthOverview[]> {
   return withRetry(async () => {
   const results: MonthOverview[] = [];
 
   for (const monthKey of OVERVIEW_MONTHS) {
-    const [year, month] = monthKey.split("-").map(Number);
-    const daysInMonth = new Date(year, month, 0).getDate();
-    const lastDay = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
-
-    const { data: perfRows } = await supabaseAdmin
-      .from("daily_partner_performance")
-      .select("revenue, cost")
-      .gte("date", monthKey)
-      .lte("date", lastDay);
-
-    let mediaRevenue = 0;
-    let mediaCost = 0;
-    if (perfRows) {
-      for (const row of perfRows) {
-        mediaRevenue += Number(row.revenue ?? 0);
-        mediaCost += Number(row.cost ?? 0);
-      }
-    }
-
     const { data: goalsRow } = await supabaseAdmin
       .from("monthly_goals")
-      .select("saas_actual")
+      .select("media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
       .eq("month", monthKey)
       .maybeSingle();
 
+    const mediaRevenue = Number(goalsRow?.media_revenue ?? 0);
     const saasRevenue = Number(goalsRow?.saas_actual ?? 0);
+    const mediaCost = Number(goalsRow?.media_cost ?? 0);
+    const techCost = Number(goalsRow?.tech_cost ?? 0);
+    const bsCost = Number(goalsRow?.bs_cost ?? 0);
 
     results.push({
       month: monthKey,
       mediaRevenue,
       saasRevenue,
       mediaCost,
-      techCost: 0,
-      bsCost: 0,
+      techCost,
+      bsCost,
     });
   }
 

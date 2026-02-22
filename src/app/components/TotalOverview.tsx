@@ -73,7 +73,7 @@ function CostCard({ data }: { data: MonthOverview[] }) {
         <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
           {formatCurrency(techCost)}
         </span>
-        <span className="font-medium text-zinc-600 dark:text-zinc-400">BS</span>
+        <span className="font-medium text-zinc-600 dark:text-zinc-400">Brand Safety</span>
         <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
           {formatCurrency(bsCost)}
         </span>
