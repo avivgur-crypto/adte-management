@@ -9,18 +9,23 @@ export type TriggerSyncResult =
   | { success: false; error: string };
 
 /**
- * Runs the full sync directly (no fetch). Imports and calls sync functions from lib/sync.
- * Wrapped in try/catch: returns { success: true } or { success: false, error } so the UI can show the actual error.
+ * Starts the full sync in the background and returns success immediately
+ * so the UI does not wait for the entire process. Sync runs: Monday + Billing + XDASH in parallel.
  */
 export async function triggerSyncViaCronApi(): Promise<TriggerSyncResult> {
+  void runSyncInBackground();
+  return { success: true };
+}
+
+async function runSyncInBackground(): Promise<void> {
   try {
     await Promise.all([
       syncMondayData(),
       syncBillingData(),
+      syncXDASHData(),
     ]);
-    return { success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { success: false, error: message || "Sync failed" };
+    console.error("[sync] Background sync error:", message);
   }
 }

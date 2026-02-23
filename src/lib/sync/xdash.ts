@@ -1,7 +1,7 @@
 /**
  * XDASH sync: demand & supply partner data → daily_partner_performance.
  * Fetches BOTH demand (revenue) and supply (cost) partners so revenue and cost are captured.
- * Syncs current month from 1st through yesterday. Used by cron and npm run fetch:xdash.
+ * Optimized: parallel fetches for all dates, single batch upsert.
  */
 
 import {
@@ -14,6 +14,7 @@ import {
 import { supabaseAdmin } from "@/lib/supabase";
 
 const TABLE = "daily_partner_performance";
+const BATCH_UPSERT_SIZE = 2000;
 
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
@@ -61,25 +62,49 @@ function datesForMonth(year: number, month: number): string[] {
   return out;
 }
 
-async function upsertPartnerRows(
+function rowToRecord(
   date: string,
   partnerType: "demand" | "supply",
-  rows: PartnerRow[]
-): Promise<number> {
-  if (rows.length === 0) return 0;
-  const records = rows.map((r) => ({
+  r: PartnerRow
+): Record<string, unknown> {
+  return {
     date,
     partner_name: r.name,
     partner_type: partnerType,
     revenue: r.revenue,
     cost: r.cost,
     impressions: r.impressions,
-  }));
-  const { error } = await supabaseAdmin
-    .from(TABLE)
-    .upsert(records, { onConflict: "date,partner_name,partner_type" });
-  if (error) throw new Error(`${partnerType} upsert failed for ${date}: ${error.message}`);
-  return records.length;
+  };
+}
+
+/** Fetch demand + supply for one date. */
+async function fetchDay(
+  date: string
+): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }> {
+  const [demandRaw, supplyRaw] = await Promise.all([
+    fetchDemandPartners(date),
+    fetchSupplyPartners(date),
+  ]);
+  return {
+    date,
+    demand: mapDemandPartners(demandRaw),
+    supply: mapSupplyPartners(supplyRaw),
+  };
+}
+
+/** Perform batch upsert in chunks to stay under payload limits. */
+async function batchUpsert(records: Record<string, unknown>[]): Promise<number> {
+  if (records.length === 0) return 0;
+  let total = 0;
+  for (let i = 0; i < records.length; i += BATCH_UPSERT_SIZE) {
+    const chunk = records.slice(i, i + BATCH_UPSERT_SIZE);
+    const { error } = await supabaseAdmin
+      .from(TABLE)
+      .upsert(chunk, { onConflict: "date,partner_name,partner_type" });
+    if (error) throw new Error(`XDASH upsert failed: ${error.message}`);
+    total += chunk.length;
+  }
+  return total;
 }
 
 export interface SyncXDASHResult {
@@ -89,18 +114,13 @@ export interface SyncXDASHResult {
 
 export async function syncXDASHData(): Promise<SyncXDASHResult> {
   const dates = datesFromMonthStartThroughYesterday();
-  let rowsUpserted = 0;
-
-  for (const date of dates) {
-    const demandRaw = await fetchDemandPartners(date);
-    const demandRows = mapDemandPartners(demandRaw);
-    rowsUpserted += await upsertPartnerRows(date, "demand", demandRows);
-
-    const supplyRaw = await fetchSupplyPartners(date);
-    const supplyRows = mapSupplyPartners(supplyRaw);
-    rowsUpserted += await upsertPartnerRows(date, "supply", supplyRows);
+  const dayResults = await Promise.all(dates.map((date) => fetchDay(date)));
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    for (const r of demand) records.push(rowToRecord(date, "demand", r));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r));
   }
-
+  const rowsUpserted = await batchUpsert(records);
   return { datesSynced: dates.length, rowsUpserted };
 }
 
@@ -113,17 +133,12 @@ export async function syncXDASHDataForMonth(
   month: number
 ): Promise<SyncXDASHResult> {
   const dates = datesForMonth(year, month);
-  let rowsUpserted = 0;
-
-  for (const date of dates) {
-    const demandRaw = await fetchDemandPartners(date);
-    const demandRows = mapDemandPartners(demandRaw);
-    rowsUpserted += await upsertPartnerRows(date, "demand", demandRows);
-
-    const supplyRaw = await fetchSupplyPartners(date);
-    const supplyRows = mapSupplyPartners(supplyRaw);
-    rowsUpserted += await upsertPartnerRows(date, "supply", supplyRows);
+  const dayResults = await Promise.all(dates.map((date) => fetchDay(date)));
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    for (const r of demand) records.push(rowToRecord(date, "demand", r));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r));
   }
-
+  const rowsUpserted = await batchUpsert(records);
   return { datesSynced: dates.length, rowsUpserted };
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { PacingSection } from "@/lib/pacing";
 import type { FinancialPaceWithTrend, PacingTrend } from "@/app/actions/financials";
 
@@ -163,7 +164,7 @@ function SectionBlock({
   );
 }
 
-export default function FinancialPaceCard({
+function FinancialPaceCard({
   summary,
 }: {
   summary: FinancialPaceWithTrend;
@@ -199,3 +200,5 @@ export default function FinancialPaceCard({
     </div>
   );
 }
+
+export default memo(FinancialPaceCard);

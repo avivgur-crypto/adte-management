@@ -131,7 +131,7 @@ function normalizeType(value: string | number | undefined): string {
 }
 
 /**
- * Demand sheet: sum all rows per month. Row validation: if Column A (Month) is empty or doesn't match a month pattern, continue immediately.
+ * Demand sheet: sum all rows per month. Stop at first empty row in Column A (do not iterate all 990).
  * Column C: .toLowerCase().trim() to match 'media' or 'saas'. Currency: replace(/[^0-9.-]+/g, '') on Column H.
  */
 function processDemandRows(
@@ -141,7 +141,7 @@ function processDemandRows(
   const rowsPerMonth = new Map<string, number>();
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
-    if (!row[0]) break;
+    if (!row[COL_DATE] || String(row[COL_DATE]).trim() === "") break;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
     console.log("Processing:", row[0], row[2], row[7]);
     try {
@@ -174,7 +174,7 @@ function processDemandRows(
 }
 
 /**
- * Supply sheet: same row validation (empty Column A or no month pattern → continue). Try/catch per row.
+ * Supply sheet: same row validation. Stop at first empty row in Column A (do not iterate all 990).
  * Column C: .toLowerCase().trim(). Column H: parseCurrency (replace /[^0-9.-]+/g, '').
  */
 function processSupplyRows(
@@ -184,7 +184,7 @@ function processSupplyRows(
 ): void {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
-    if (!row[0]) break;
+    if (!row[COL_DATE] || String(row[COL_DATE]).trim() === "") break;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
     console.log("Processing:", row[0], row[2], row[7]);
     try {
@@ -243,21 +243,19 @@ export async function syncBillingData(): Promise<SyncBillingResult> {
     );
   }
 
-  for (const [month, breakdown] of byMonth) {
+  const batch = Array.from(byMonth.entries()).map(([month, breakdown]) => ({
+    month,
+    media_revenue: breakdown.media_revenue,
+    saas_actual: breakdown.saas_actual,
+    media_cost: breakdown.media_cost,
+    tech_cost: breakdown.tech_cost,
+    bs_cost: breakdown.bs_cost,
+  }));
+  if (batch.length > 0) {
     const { error } = await supabaseAdmin
       .from(TABLE)
-      .upsert(
-        {
-          month,
-          media_revenue: breakdown.media_revenue,
-          saas_actual: breakdown.saas_actual,
-          media_cost: breakdown.media_cost,
-          tech_cost: breakdown.tech_cost,
-          bs_cost: breakdown.bs_cost,
-        },
-        { onConflict: "month" }
-      );
-    if (error) throw new Error(`Supabase billing upsert failed for ${month}: ${error.message}`);
+      .upsert(batch, { onConflict: "month" });
+    if (error) throw new Error(`Supabase billing upsert failed: ${error.message}`);
   }
 
   return { monthsUpdated: byMonth.size };

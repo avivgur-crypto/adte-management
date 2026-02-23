@@ -1,7 +1,10 @@
 import {
+  getFinancialPace,
   getPartnerConcentration,
   getTotalOverviewData,
 } from "@/app/actions/financials";
+import type { FinancialPaceWithTrend } from "@/app/actions/financials";
+import { MONTH_KEYS } from "@/app/context/FilterContext";
 import ActivitySummary from "@/app/components/ActivitySummary";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
@@ -15,15 +18,21 @@ export default async function Home() {
   let concentrationJan;
   let concentrationFeb;
   let overviewData;
+  let paceByMonth: Record<string, FinancialPaceWithTrend> = {};
   let error: string | null = null;
-  const [concJan, concFeb, overviewResult] = await Promise.allSettled([
+
+  const [concJan, concFeb, overviewResult, ...paceResults] = await Promise.allSettled([
     getPartnerConcentration("2026-01-01"),
     getPartnerConcentration("2026-02-01"),
     getTotalOverviewData(),
+    ...MONTH_KEYS.map((m) => getFinancialPace([m])),
   ]);
   concentrationJan = concJan.status === "fulfilled" ? concJan.value : null;
   concentrationFeb = concFeb.status === "fulfilled" ? concFeb.value : null;
   overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
+  paceResults.forEach((p, i) => {
+    if (p.status === "fulfilled" && MONTH_KEYS[i]) paceByMonth[MONTH_KEYS[i]!] = p.value;
+  });
   if (concJan.status === "rejected" || concFeb.status === "rejected" || overviewResult.status === "rejected") {
     error = "Some data could not be loaded. The rest of the dashboard may still work.";
   }
@@ -48,7 +57,7 @@ export default async function Home() {
           {overview.length > 0 && <TotalOverview dataByMonth={overview} />}
         </DashboardErrorBoundary>
         <DashboardErrorBoundary sectionName="Financial pacing">
-          <FinancialPaceFiltered />
+          <FinancialPaceFiltered paceByMonth={paceByMonth} />
         </DashboardErrorBoundary>
         <div className="mt-8">
           <DashboardErrorBoundary sectionName="Client concentration">
