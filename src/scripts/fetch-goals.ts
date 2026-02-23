@@ -29,13 +29,13 @@ const COL_LAST_MONTH = 12;
 
 /**
  * Parse a cell value: strip $ and commas, then parse as number.
- * Empty or non-numeric defaults to 0.
+ * Strips '$' and ',' so cents are preserved (e.g. "$1,234.56" -> 1234.56). Empty or non-numeric defaults to 0.
  */
 function parseGoalValue(cell: string | undefined): number {
   if (cell == null || String(cell).trim() === "") return 0;
   const s = String(cell).replace(/\$/g, "").replace(/,/g, "").trim();
   if (!s) return 0;
-  const n = Number(s);
+  const n = parseFloat(s);
   return Number.isNaN(n) ? 0 : n;
 }
 

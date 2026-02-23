@@ -141,6 +141,7 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     ...toActivityRows(contractsItems, CONTRACTS_BOARD_ID, CREATION_LOG_COLUMN_IDS.contracts),
   ];
 
+  // Upsert only item_id and created_at (no created_date — DB uses created_at / auto-handling; created_date caused sync crashes).
   let activityRowsUpserted = 0;
   if (activityRows.length > 0) {
     const { error: activityError } = await supabaseAdmin

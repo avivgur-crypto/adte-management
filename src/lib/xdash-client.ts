@@ -158,6 +158,14 @@ export interface PartnerRow {
 // Shared helpers
 // ============================================================================
 
+/** Parse revenue/cost from API (handles numbers or strings with $ and commas; preserves cents). */
+function parseCurrencyValue(v: unknown): number {
+  if (typeof v === "number" && !Number.isNaN(v)) return v;
+  const s = String(v ?? "").replace(/\$/g, "").replace(/,/g, "").trim();
+  const n = parseFloat(s);
+  return Number.isNaN(n) ? 0 : n;
+}
+
 /** Build common headers used by every XDASH API call */
 function buildHeaders(): Record<string, string> {
   return {
@@ -319,7 +327,7 @@ export function mapDemandPartners(
     const name =
       item.partner?.name ?? (item as { name?: string }).name ?? "Unknown Partner";
     const totals = item.totals ?? ({} as XDashPartnerTotals);
-    const revenue = totals.revenue ?? totals.netRevenue ?? 0;
+    const revenue = parseCurrencyValue(totals.revenue ?? totals.netRevenue ?? 0);
 
     return {
       name,
@@ -333,6 +341,7 @@ export function mapDemandPartners(
 /**
  * Map a supply response into PartnerRow[].
  * Name from item.partner.name; cost from totals.cost or totals.netCost; revenue = 0.
+ * Both demand and supply are fetched by the sync so revenue and cost are captured correctly.
  */
 export function mapSupplyPartners(
   data: XDashPartnerApiResponse
@@ -347,7 +356,7 @@ export function mapSupplyPartners(
     const name =
       item.partner?.name ?? (item as { name?: string }).name ?? "Unknown Partner";
     const totals = item.totals ?? ({} as XDashPartnerTotals);
-    const cost = totals.cost ?? totals.netCost ?? 0;
+    const cost = parseCurrencyValue(totals.cost ?? totals.netCost ?? 0);
 
     return {
       name,

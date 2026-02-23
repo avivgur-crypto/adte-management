@@ -100,7 +100,8 @@ function isEmptyOrHeaderRow(row: string[], colA: number): boolean {
 }
 
 /**
- * Column H: use parseFloat(String(val).replace(/[^0-9.-]+/g, '')) to handle '$' and commas.
+ * Parse currency: strip '$' and ',' (and any other non-numeric except minus and decimal point).
+ * Preserves cents (e.g. "$1,234.56" -> 1234.56).
  */
 function parseCurrency(val: string | number | undefined): number {
   if (val == null) return NaN;

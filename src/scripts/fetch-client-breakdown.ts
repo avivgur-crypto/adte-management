@@ -36,11 +36,11 @@ function monthShortToKey(short: string): string {
   return `${year}-${mm}-01`;
 }
 
-/** Robust amount: "$2,349.92" or "2000.00" -> number. */
+/** Robust amount: strip '$' and ',' so cents are preserved ("$2,349.92" -> 2349.92). */
 function parseAmount(cell: string | number | undefined): number {
   const val = cell == null ? "" : String(cell).trim();
   if (val === "") return 0;
-  const n = parseFloat(String(val).replace(/[$,]/g, "")) || 0;
+  const n = parseFloat(String(val).replace(/\$/g, "").replace(/,/g, "")) || 0;
   return Number.isNaN(n) ? 0 : n;
 }
 

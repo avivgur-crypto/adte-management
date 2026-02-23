@@ -1,5 +1,6 @@
 /**
  * XDASH sync: demand & supply partner data → daily_partner_performance.
+ * Fetches BOTH demand (revenue) and supply (cost) partners so revenue and cost are captured.
  * Syncs current month from 1st through yesterday. Used by cron and npm run fetch:xdash.
  */
 

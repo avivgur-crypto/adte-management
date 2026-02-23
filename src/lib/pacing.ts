@@ -150,38 +150,45 @@ export async function getPacingSummary(
       `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
   }
 
-  // Media revenue = SUM(revenue) for partner_type = 'demand' (matches billing / XDASH Demand).
-  // Media cost = SUM(cost) for partner_type = 'supply'.
-  // Query each type separately and use a high limit so we get all rows (PostgREST default is 1000).
-  const LIMIT = 50000;
-
-  const { data: demandRows } = await supabase
-    .from("daily_partner_performance")
-    .select("revenue")
-    .eq("partner_type", "demand")
-    .gte("date", monthStart)
-    .lte("date", dataThroughDate)
-    .limit(LIMIT);
-
-  const { data: supplyRows } = await supabase
-    .from("daily_partner_performance")
-    .select("cost")
-    .eq("partner_type", "supply")
-    .gte("date", monthStart)
-    .lte("date", dataThroughDate)
-    .limit(LIMIT);
+  // Media revenue (MTD Actual for "Media (from Xdash)"): SUM(revenue) where partner_type IN ('demand', 'media')
+  // over full month range [monthStart, dataThroughDate]. Media cost: SUM(cost) where partner_type = 'supply'.
+  // Paginate to fetch all rows (PostgREST default limit 1000).
+  const PAGE_SIZE = 5000;
 
   let mediaRevenue = 0;
-  let mediaCost = 0;
-  if (demandRows) {
-    for (const row of demandRows) {
+  let offset = 0;
+  while (true) {
+    const { data: revenueRows } = await supabase
+      .from("daily_partner_performance")
+      .select("revenue")
+      .in("partner_type", ["demand", "media"])
+      .gte("date", monthStart)
+      .lte("date", dataThroughDate)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (!revenueRows?.length) break;
+    for (const row of revenueRows) {
       mediaRevenue += Number(row.revenue ?? 0);
     }
+    if (revenueRows.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
   }
-  if (supplyRows) {
-    for (const row of supplyRows) {
+
+  let mediaCost = 0;
+  offset = 0;
+  while (true) {
+    const { data: costRows } = await supabase
+      .from("daily_partner_performance")
+      .select("cost")
+      .eq("partner_type", "supply")
+      .gte("date", monthStart)
+      .lte("date", dataThroughDate)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (!costRows?.length) break;
+    for (const row of costRows) {
       mediaCost += Number(row.cost ?? 0);
     }
+    if (costRows.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
   }
 
   const { data: goalsRow } = await supabase
