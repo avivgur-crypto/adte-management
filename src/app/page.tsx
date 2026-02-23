@@ -4,7 +4,6 @@ import {
   getTotalOverviewData,
 } from "@/app/actions/financials";
 import type { FinancialPaceWithTrend } from "@/app/actions/financials";
-import { MONTH_KEYS } from "@/app/context/FilterContext";
 import ActivitySummary from "@/app/components/ActivitySummary";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
@@ -13,6 +12,11 @@ import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
 import TotalOverview from "@/app/components/TotalOverview";
 
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
+
+/** Month keys for 2026 used for pacing pre-fetch (must match FilterContext month keys). */
+const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
+  `2026-${String(i + 1).padStart(2, "0")}-01`
+);
 
 export default async function Home() {
   let concentrationJan;
@@ -25,13 +29,13 @@ export default async function Home() {
     getPartnerConcentration("2026-01-01"),
     getPartnerConcentration("2026-02-01"),
     getTotalOverviewData(),
-    ...MONTH_KEYS.map((m) => getFinancialPace([m])),
+    ...PACING_MONTH_KEYS.map((m) => getFinancialPace([m])),
   ]);
   concentrationJan = concJan.status === "fulfilled" ? concJan.value : null;
   concentrationFeb = concFeb.status === "fulfilled" ? concFeb.value : null;
   overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
   paceResults.forEach((p, i) => {
-    if (p.status === "fulfilled" && MONTH_KEYS[i]) paceByMonth[MONTH_KEYS[i]!] = p.value;
+    if (p.status === "fulfilled" && PACING_MONTH_KEYS[i]) paceByMonth[PACING_MONTH_KEYS[i]!] = p.value;
   });
   if (concJan.status === "rejected" || concFeb.status === "rejected" || overviewResult.status === "rejected") {
     error = "Some data could not be loaded. The rest of the dashboard may still work.";
