@@ -184,6 +184,33 @@ function buildDatePayload(date: string): string {
   });
 }
 
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 3000;
+
+/** Fetch with retry on network errors (ETIMEDOUT, ECONNRESET, etc.). */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      return res;
+    } catch (e) {
+      lastErr = e;
+      const isNetwork =
+        e instanceof TypeError && (e.message === "fetch failed" || e.cause != null);
+      if (attempt < RETRY_ATTEMPTS && isNetwork) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 // ============================================================================
 // Core fetch function (legacy — ad-server overview)
 // ============================================================================
@@ -249,7 +276,7 @@ export async function fetchDemandPartners(
   assertEnvVars();
   const url = `${XDASH_API_BASE}/partners/demand/overview`;
 
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: buildHeaders(),
     body: buildDatePayload(date),
@@ -276,7 +303,7 @@ export async function fetchSupplyPartners(
   assertEnvVars();
   const url = `${XDASH_API_BASE}/partners/supply/overview`;
 
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: buildHeaders(),
     body: buildDatePayload(date),

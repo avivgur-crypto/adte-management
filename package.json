@@ -11,7 +11,8 @@
     "fetch:monday": "tsx --env-file=.env.local src/scripts/fetch-monday.ts",
     "fetch:goals": "tsx --env-file=.env.local src/scripts/fetch-goals.ts",
     "fetch:billing": "tsx --env-file=.env.local src/scripts/fetch-billing.ts",
-    "fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts"
+"fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts",
+    "backfill:january": "tsx --env-file=.env.local src/scripts/backfill-january.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",
