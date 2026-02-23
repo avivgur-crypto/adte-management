@@ -21,7 +21,6 @@ const STAGES: {
   label: string;
   tooltip: string;
   bg: string;
-  /** Soft gradient for rounded 3D look (lighter top → darker bottom) */
   gradient: string;
   icon: LucideIcon;
 }[] = [
@@ -59,28 +58,14 @@ const STAGES: {
   },
 ];
 
-/** Per-segment trapezoid clip: top wider, bottom narrower. Segment 4 = full trapezoid (not cut off). */
 const SEGMENT_CLIPS: [string, string, string, string][] = [
   ["0% 0", "100% 0", "85% 100%", "15% 100%"],
   ["15% 0", "85% 0", "70% 100%", "30% 100%"],
   ["30% 0", "70% 0", "58% 100%", "42% 100%"],
-  ["42% 0", "58% 0", "54% 100%", "46% 100%"], // complete trapezoid, ~8% bottom width
+  ["42% 0", "58% 0", "54% 100%", "46% 100%"],
 ];
 
-/** Vertical center of each funnel segment (%), for connector lines. */
 const SEGMENT_CENTER_Y = [11.8, 36.9, 62.4, 87.9];
-
-function monthLabel(month: string): string {
-  const [y, m] = month.split("-");
-  const names = "JanFebMarAprMayJunJulAugSepOctNovDec";
-  const name = names.slice((parseInt(m, 10) - 1) * 3, parseInt(m, 10) * 3);
-  return `${name} ${y}`;
-}
-
-function formatMonthsLabel(months: string[]): string {
-  if (months.length === 0) return "";
-  return months.map(monthLabel).join(", ");
-}
 
 function StagePopover({
   stageLabel,
@@ -116,15 +101,15 @@ function StagePopover({
         role="dialog"
         aria-modal="true"
         aria-label={`${stageLabel}: ${text}`}
-        className="fixed z-[100] w-[calc(100vw-2rem)] max-w-sm rounded-lg border border-white/10 bg-[var(--adte-funnel-bg)] px-4 py-3 shadow-xl"
+        className="fixed z-[100] w-[calc(100vw-2rem)] max-w-xs rounded-lg border border-white/10 bg-[var(--adte-funnel-bg)] px-3 py-2.5 shadow-xl"
         style={
           isDesktop
             ? {
                 left: Math.min(
-                  triggerRect.left + triggerRect.width + 10,
-                  typeof window !== "undefined" ? window.innerWidth - 320 : 0
+                  triggerRect.left + triggerRect.width + 8,
+                  typeof window !== "undefined" ? window.innerWidth - 280 : 0
                 ),
-                top: Math.max(12, triggerRect.top + triggerRect.height / 2 - 40),
+                top: Math.max(12, triggerRect.top + triggerRect.height / 2 - 32),
                 transform: "translateY(-50%)",
               }
             : {
@@ -136,10 +121,10 @@ function StagePopover({
       >
         <div className="flex items-start justify-between gap-2">
           <div>
-            <div className="font-semibold uppercase tracking-wide text-white">
+            <div className="text-sm font-semibold uppercase tracking-wide text-white">
               {stageLabel}
             </div>
-            <div className="mt-1 text-sm leading-relaxed text-white/70">
+            <div className="mt-0.5 text-xs leading-relaxed text-white/70">
               {text}
             </div>
           </div>
@@ -149,7 +134,7 @@ function StagePopover({
             className="rounded p-1 text-white/50 hover:bg-white/10"
             aria-label="Close"
           >
-            <X className="h-4 w-4" />
+            <X className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -196,7 +181,7 @@ export default function SalesFunnel({
   if (!data) {
     return (
       <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-        <h2 className="mb-4 text-center text-xl font-semibold text-white">
+        <h2 className="mb-4 text-center text-lg font-semibold text-white">
           Sales <span className="highlight-brand">Funnel</span>
         </h2>
         <p className="text-center text-sm text-white/60">
@@ -223,30 +208,28 @@ export default function SalesFunnel({
     data.qualifiedToWonPercent,
   ];
 
-  const funnelHeight = 320;
-  const segmentGap = 6;
+  const funnelHeight = 240;
+  const segmentGap = 4;
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6 pb-8 md:p-8">
-      <h2 className="relative text-center text-2xl font-semibold text-white md:text-3xl">
+    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5 md:p-6">
+      <h2 className="text-center text-xl font-semibold text-white">
         Sales <span className="highlight-brand">Funnel</span>
       </h2>
-      <p className="relative mb-1 text-center text-sm text-white/60">
-        All-time pipeline from Monday · {data.month}
+      <p className="mb-6 text-center text-xs text-white/50">
+        All-time pipeline from Monday
       </p>
-      {data.months.length > 0 && (
-        <p className="relative mb-8 text-center text-xs text-white/50">
-          Displaying data for: {formatMonthsLabel(data.months)}
-        </p>
-      )}
-      {data.months.length === 0 && <div className="relative mb-8" />}
 
-      {/* Desktop (md+): 5-column grid — left cards | connector | funnel | connector | right cards */}
+      {/* Desktop: compact 5-column grid */}
       <div
-        className="relative hidden md:grid md:grid-cols-[300px_36px_320px_36px_300px] md:grid-rows-[320px] md:items-center md:gap-0 md:px-2"
+        className="relative hidden md:grid md:items-center md:gap-0"
+        style={{
+          gridTemplateColumns: "1fr 24px 200px 24px 1fr",
+          gridTemplateRows: `${funnelHeight}px`,
+        }}
       >
-        {/* Column 1: left cards */}
-        <div className="flex flex-col justify-center gap-4 md:min-w-0">
+        {/* Left cards */}
+        <div className="flex flex-col justify-center gap-3">
           <StageCard
             stage={STAGES[0]}
             value={values[0]}
@@ -269,74 +252,42 @@ export default function SalesFunnel({
           />
         </div>
 
-        {/* Column 2: left connector lines (card → funnel), desktop only */}
-        <div className="hidden h-full w-full md:block">
-          <svg
-            viewBox="0 0 36 100"
-            preserveAspectRatio="none"
-            className="h-full w-full text-white/20"
-          >
-            <path
-              d={`M0 ${SEGMENT_CENTER_Y[0]} L36 ${SEGMENT_CENTER_Y[0]}`}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-            />
-            <path
-              d={`M0 ${SEGMENT_CENTER_Y[2]} L36 ${SEGMENT_CENTER_Y[2]}`}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-            />
+        {/* Left connectors */}
+        <div className="h-full w-full">
+          <svg viewBox="0 0 24 100" preserveAspectRatio="none" className="h-full w-full">
+            <path d={`M0 ${SEGMENT_CENTER_Y[0]} L24 ${SEGMENT_CENTER_Y[0]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
+            <path d={`M0 ${SEGMENT_CENTER_Y[2]} L24 ${SEGMENT_CENTER_Y[2]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
           </svg>
         </div>
 
-        {/* Column 3: funnel — no text inside segments on desktop */}
-        <div className="flex flex-shrink-0 flex-col items-center justify-center md:w-[320px] md:min-w-[320px] md:max-w-[320px]">
+        {/* Funnel graphic */}
+        <div className="flex flex-col items-center justify-center">
           <div
-            className="flex w-full flex-col overflow-hidden rounded-xl border border-white/[0.1]"
+            className="flex w-full flex-col overflow-hidden rounded-lg"
             style={{ height: funnelHeight, gap: segmentGap }}
           >
             {STAGES.map((stage, i) => (
               <div
                 key={stage.key}
-                className="relative flex-1 min-h-0 overflow-hidden"
-                style={{
-                  clipPath: `polygon(${SEGMENT_CLIPS[i].join(", ")})`,
-                }}
+                className="relative min-h-0 flex-1 overflow-hidden"
+                style={{ clipPath: `polygon(${SEGMENT_CLIPS[i].join(", ")})` }}
               >
-                <div
-                  className={`h-full w-full bg-gradient-to-b ${stage.gradient} opacity-95`}
-                />
+                <div className={`h-full w-full bg-gradient-to-b ${stage.gradient} opacity-90`} />
               </div>
             ))}
           </div>
         </div>
 
-        {/* Column 4: right connector lines (funnel → card), desktop only */}
-        <div className="hidden h-full w-full md:block">
-          <svg
-            viewBox="0 0 36 100"
-            preserveAspectRatio="none"
-            className="h-full w-full text-white/20"
-          >
-            <path
-              d={`M36 ${SEGMENT_CENTER_Y[1]} L0 ${SEGMENT_CENTER_Y[1]}`}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-            />
-            <path
-              d={`M36 ${SEGMENT_CENTER_Y[3]} L0 ${SEGMENT_CENTER_Y[3]}`}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
-            />
+        {/* Right connectors */}
+        <div className="h-full w-full">
+          <svg viewBox="0 0 24 100" preserveAspectRatio="none" className="h-full w-full">
+            <path d={`M24 ${SEGMENT_CENTER_Y[1]} L0 ${SEGMENT_CENTER_Y[1]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
+            <path d={`M24 ${SEGMENT_CENTER_Y[3]} L0 ${SEGMENT_CENTER_Y[3]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
           </svg>
         </div>
 
-        {/* Column 5: right cards */}
-        <div className="flex flex-col justify-center gap-4 md:min-w-0">
+        {/* Right cards */}
+        <div className="flex flex-col justify-center gap-3">
           <StageCard
             stage={STAGES[1]}
             value={values[1]}
@@ -360,26 +311,22 @@ export default function SalesFunnel({
         </div>
       </div>
 
-      {/* Mobile (< 768px): vertical stack — funnel then cards; popover opens on tap */}
-      <div className="mt-6 flex flex-col gap-5 md:mt-0 md:hidden">
+      {/* Mobile: vertical stack */}
+      <div className="mt-4 flex flex-col gap-4 md:mt-0 md:hidden">
         <div
-          className="relative mx-auto flex w-full max-w-[260px] flex-col overflow-hidden rounded-xl border border-white/[0.1]"
-          style={{ height: 260, gap: segmentGap }}
+          className="relative mx-auto flex w-full max-w-[200px] flex-col overflow-hidden rounded-lg"
+          style={{ height: 200, gap: segmentGap }}
         >
           {STAGES.map((stage, i) => (
             <div
               key={stage.key}
-              className="relative flex-1 min-h-0 overflow-hidden"
-              style={{
-                clipPath: `polygon(${SEGMENT_CLIPS[i].join(", ")})`,
-              }}
+              className="relative min-h-0 flex-1 overflow-hidden"
+              style={{ clipPath: `polygon(${SEGMENT_CLIPS[i].join(", ")})` }}
             >
-              <div
-                className={`h-full w-full bg-gradient-to-b ${stage.gradient} shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]`}
-              />
+              <div className={`h-full w-full bg-gradient-to-b ${stage.gradient} opacity-90`} />
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-center text-xs font-bold uppercase tracking-wide text-white drop-shadow-md">
-                  {stage.label.toUpperCase()}
+                <span className="text-center text-[10px] font-bold uppercase tracking-wide text-white drop-shadow-md">
+                  {stage.label}
                 </span>
               </div>
             </div>
@@ -400,13 +347,13 @@ export default function SalesFunnel({
         ))}
       </div>
 
-      {/* Win Rate - bottom right, prominent with brand highlight */}
-      <div className="mt-8 flex justify-end">
+      {/* Win Rate */}
+      <div className="mt-5 flex justify-end">
         <div className="text-right">
-          <div className="text-xs font-semibold uppercase tracking-widest text-white/50">
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-white/50">
             Win Rate
           </div>
-          <div className="text-3xl font-bold tabular-nums text-white md:text-4xl">
+          <div className="text-2xl font-bold tabular-nums text-white md:text-3xl">
             <span className="highlight-brand-simplicity">{data.overallWinRatePercent ?? "—"}%</span>
           </div>
         </div>
@@ -436,27 +383,24 @@ function StageCard({
 }) {
   const Icon = stage.icon;
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-black/40 px-4 py-3">
-      <div className="flex items-start gap-3">
+    <div className="rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2.5">
+      <div className="flex items-center gap-2.5">
         <div
-          className={`flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full ${stage.bg} text-white`}
+          className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full ${stage.bg} text-white`}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="font-semibold uppercase tracking-wide text-white">
+          <div className="text-xs font-semibold uppercase tracking-wide text-white/80">
             {stage.label}
           </div>
-          <p className="mt-0.5 text-xs leading-snug text-white/50">
-            {stage.tooltip}
-          </p>
-          <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="highlight-brand text-xl font-bold tabular-nums md:text-2xl">
+          <div className="flex flex-wrap items-baseline gap-x-1.5">
+            <span className="highlight-brand text-base font-bold tabular-nums md:text-lg">
               {value.toLocaleString()}
             </span>
             {conversion != null && (
-              <span className="text-sm font-normal text-white/50">
-                {conversion}% from prior
+              <span className="text-[10px] text-white/40">
+                {conversion}%
               </span>
             )}
           </div>
@@ -472,11 +416,11 @@ function StageCard({
             ref={triggerRef}
             type="button"
             onClick={() => (openPopover ? onPopoverClose() : onPopoverOpen())}
-            className="flex h-11 min-h-[44px] w-11 min-w-[44px] flex-shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/50 hover:bg-white/10 hover:text-white [touch-action:manipulation]"
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-white/10 text-white/30 hover:bg-white/10 hover:text-white/70 [touch-action:manipulation]"
             aria-label={`Info: ${stage.label}`}
             aria-expanded={openPopover}
           >
-            <Info className="h-5 w-5" />
+            <Info className="h-3.5 w-3.5" />
           </button>
         </StagePopover>
       </div>

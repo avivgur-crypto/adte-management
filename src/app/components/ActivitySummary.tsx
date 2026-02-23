@@ -48,7 +48,7 @@ export default function ActivitySummary({
             New Leads
           </h2>
           <p className="mb-1 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
-            {metrics.newLeads}
+            {metrics.newLeads.toLocaleString()}
           </p>
           <p className="text-xs text-white/50">
             SUM(total_leads) from daily_funnel_metrics · based on creation date
@@ -59,7 +59,7 @@ export default function ActivitySummary({
             New Signed Deals
           </h2>
           <p className="mb-1 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
-            {metrics.newSignedDeals}
+            {metrics.newSignedDeals.toLocaleString()}
           </p>
           <p className="text-xs text-white/50">
             SUM(won_deals) from daily_funnel_metrics · based on creation date

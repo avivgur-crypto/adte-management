@@ -1,7 +1,7 @@
 "use client";
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import type {
   PartnerConcentrationResult,
   PartnerShare,
@@ -17,14 +17,6 @@ function formatCurrency(n: number): string {
   }).format(n);
 }
 
-function monthToLabel(month: string): string {
-  const [y, m] = month.split("-");
-  const months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-  const mm = months.slice((parseInt(m, 10) - 1) * 3, parseInt(m, 10) * 3);
-  const yy = y?.slice(-2) ?? "";
-  return `${mm}${yy}`;
-}
-
 const COLORS = [
   "#0088FE",
   "#00C49F",
@@ -38,19 +30,52 @@ const COLORS = [
   "#d0ed57",
 ];
 
+const TOP_N = 10;
+const CONCENTRATION_THRESHOLD = 30;
+
+type Side = { total: number; partners: PartnerShare[] };
+
+function aggregateSides(sides: Side[]): Side {
+  const byName = new Map<string, number>();
+  let total = 0;
+  for (const s of sides) {
+    total += s.total;
+    for (const p of s.partners) {
+      byName.set(p.name, (byName.get(p.name) ?? 0) + Number(p.revenue));
+    }
+  }
+  const sorted = Array.from(byName.entries())
+    .map(([name, revenue]) => ({ name, revenue }))
+    .sort((a, b) => b.revenue - a.revenue);
+  const top = sorted.slice(0, TOP_N);
+  const othersSum = sorted.slice(TOP_N).reduce((s, r) => s + r.revenue, 0);
+  const partners: PartnerShare[] = top.map((p) => ({
+    name: p.name,
+    revenue: p.revenue,
+    percent: total > 0 ? Math.round((p.revenue / total) * 1000) / 10 : 0,
+  }));
+  if (othersSum > 0) {
+    partners.push({
+      name: "Others",
+      revenue: othersSum,
+      percent: total > 0 ? Math.round((othersSum / total) * 1000) / 10 : 0,
+    });
+  }
+  return { total, partners };
+}
+
 function SideDonut({
   title,
   side,
 }: {
   title: string;
-  side: { total: number; partners: PartnerShare[] };
+  side: Side;
 }) {
   const chartData = useMemo(() => {
-    const data = side.partners.map((p) => ({
+    return side.partners.map((p) => ({
       name: String(p.name),
       value: Number(p.revenue),
     }));
-    return data;
   }, [side.partners]);
 
   const top5 = useMemo(() => side.partners.slice(0, 5), [side.partners]);
@@ -65,10 +90,6 @@ function SideDonut({
         <p className="text-sm text-white/50">No data</p>
       </div>
     );
-  }
-
-  if (typeof window !== "undefined") {
-    console.log(`[PartnerDistributionCharts] ${title} data:`, chartData);
   }
 
   return (
@@ -160,12 +181,28 @@ export default function PartnerDistributionCharts({
     () => monthKeys.filter((k) => selectedMonths.has(k)),
     [monthKeys, selectedMonths]
   );
-  const [selectedMonth, setSelectedMonth] = useState(filteredMonthKeys[0] ?? "");
-  useEffect(() => {
-    if (filteredMonthKeys.length > 0 && !filteredMonthKeys.includes(selectedMonth)) {
-      setSelectedMonth(filteredMonthKeys[0]);
+
+  const aggregated = useMemo(() => {
+    const demandSides: Side[] = [];
+    const supplySides: Side[] = [];
+    for (const key of filteredMonthKeys) {
+      const d = dataByMonth[key];
+      if (!d) continue;
+      demandSides.push(d.demand);
+      supplySides.push(d.supply);
     }
-  }, [filteredMonthKeys, selectedMonth]);
+    if (demandSides.length === 0 && supplySides.length === 0) return null;
+    const demand = aggregateSides(demandSides);
+    const supply = aggregateSides(supplySides);
+    const allPartners = [
+      ...demand.partners.filter((p) => p.name !== "Others"),
+      ...supply.partners.filter((p) => p.name !== "Others"),
+    ];
+    const concentrationRisk = allPartners.some(
+      (p) => Number(p.percent) >= CONCENTRATION_THRESHOLD
+    );
+    return { demand, supply, concentrationRisk };
+  }, [filteredMonthKeys, dataByMonth]);
 
   if (monthKeys.length === 0) {
     return (
@@ -180,7 +217,7 @@ export default function PartnerDistributionCharts({
     );
   }
 
-  if (filteredMonthKeys.length === 0) {
+  if (!aggregated) {
     return (
       <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-4 text-lg font-semibold text-white">
@@ -193,12 +230,6 @@ export default function PartnerDistributionCharts({
     );
   }
 
-  const effectiveMonthKeys = filteredMonthKeys;
-  const effectiveSelectedMonth = effectiveMonthKeys.includes(selectedMonth)
-    ? selectedMonth
-    : effectiveMonthKeys[0] ?? "";
-  const effectiveData = effectiveSelectedMonth ? dataByMonth[effectiveSelectedMonth] : null;
-
   return (
     <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -206,40 +237,17 @@ export default function PartnerDistributionCharts({
           Client Concentration
         </h2>
         <div className="flex items-center gap-2">
-          {effectiveData?.concentrationRisk && (
+          {aggregated.concentrationRisk && (
             <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-0.5 text-xs font-medium text-white/90">
               Concentration risk (partner &gt; 30%)
             </span>
           )}
-          <div className="flex rounded-lg border border-white/10 p-0.5">
-            {effectiveMonthKeys.map((key) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setSelectedMonth(key)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  effectiveSelectedMonth === key
-                    ? "bg-white/15 text-white"
-                    : "text-white/60 hover:bg-white/10"
-                }`}
-              >
-                {monthToLabel(key)}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
-
-      {!effectiveData ? (
-        <p className="text-sm text-white/50">
-          No data for this month.
-        </p>
-      ) : (
-        <div className="grid gap-6 sm:grid-cols-2">
-          <SideDonut title="Demand (Revenue)" side={effectiveData.demand} />
-          <SideDonut title="Supply (Cost)" side={effectiveData.supply} />
-        </div>
-      )}
+      <div className="grid gap-6 sm:grid-cols-2">
+        <SideDonut title="Demand (Revenue)" side={aggregated.demand} />
+        <SideDonut title="Supply (Cost)" side={aggregated.supply} />
+      </div>
     </div>
   );
 }

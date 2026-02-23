@@ -85,13 +85,16 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     items: Awaited<ReturnType<typeof fetchBoardItems>>,
     boardId: string,
     creationLogColumnId: string
-  ): { item_id: string; created_at: string }[] {
+  ) {
     return items.map((item) => {
       const createdAtDate = getCreationLogDate(item, creationLogColumnId);
-      const createdAt = createdAtDate ?? new Date();
+      const createdAt = createdAtDate ?? new Date(item.created_at ?? Date.now());
+      const dateStr = dateToKey(createdAt);
       return {
         item_id: String(item.id),
+        board_id: boardId,
         created_at: createdAt.toISOString(),
+        created_date: dateStr,
       };
     });
   }
@@ -101,12 +104,11 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     ...toActivityRows(contractsItems, CONTRACTS_BOARD_ID, CREATION_LOG_COLUMN_IDS.contracts),
   ];
 
-  // Upsert only item_id and created_at (no created_date — DB uses created_at / auto-handling; created_date caused sync crashes).
   let activityRowsUpserted = 0;
   if (activityRows.length > 0) {
     const { error: activityError } = await supabaseAdmin
       .from(ACTIVITY_TABLE)
-      .upsert(activityRows, { onConflict: "item_id", ignoreDuplicates: false });
+      .upsert(activityRows, { onConflict: "item_id,board_id", ignoreDuplicates: false });
     if (activityError) throw new Error(`Activity upsert failed: ${activityError.message}`);
     activityRowsUpserted = activityRows.length;
   }

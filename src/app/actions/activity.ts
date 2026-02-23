@@ -3,7 +3,9 @@
 import { withRetry } from "@/lib/resilience";
 import { supabaseAdmin } from "@/lib/supabase";
 
-const FUNNEL_TABLE = "daily_funnel_metrics";
+const ACTIVITY_TABLE = "monday_items_activity";
+const LEADS_BOARD_ID = "7832231403";
+const CONTRACTS_BOARD_ID = "8280704003";
 
 export interface ActivityMetrics {
   newLeads: number;
@@ -17,23 +19,39 @@ export interface ActivityDailyRow {
 }
 
 /**
- * Fetch all daily_funnel_metrics rows for 2026 for the Activity summary.
- * New Leads = SUM(total_leads), New Signed Deals = SUM(won_deals) over selected months.
+ * Count new leads and new signed deals per date from the monday_items_activity
+ * table, which has one row per item with board_id and created_date.
+ * Returns daily rows for 2026 so the client can filter by selected months.
  */
 export async function getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
   return withRetry(async () => {
-    const { data, error } = await supabaseAdmin
-      .from(FUNNEL_TABLE)
-      .select("date, total_leads, won_deals")
-      .gte("date", "2026-01-01")
-      .lt("date", "2027-01-01")
-      .order("date", { ascending: true });
+    const { data: rows, error } = await supabaseAdmin
+      .from(ACTIVITY_TABLE)
+      .select("board_id, created_date")
+      .in("board_id", [LEADS_BOARD_ID, CONTRACTS_BOARD_ID])
+      .gte("created_date", "2026-01-01")
+      .lt("created_date", "2027-01-01")
+      .order("created_date", { ascending: true });
 
     if (error) throw new Error(`Activity data fetch failed: ${error.message}`);
-    return (data ?? []).map((row) => ({
-      date: String(row.date),
-      total_leads: Number(row.total_leads ?? 0),
-      won_deals: Number(row.won_deals ?? 0),
+    if (!rows?.length) return [];
+
+    const byDate = new Map<string, { leads: number; deals: number }>();
+    for (const row of rows) {
+      const d = String(row.created_date);
+      const entry = byDate.get(d) ?? { leads: 0, deals: 0 };
+      if (String(row.board_id) === LEADS_BOARD_ID) {
+        entry.leads += 1;
+      } else if (String(row.board_id) === CONTRACTS_BOARD_ID) {
+        entry.deals += 1;
+      }
+      byDate.set(d, entry);
+    }
+
+    return Array.from(byDate.entries()).map(([date, counts]) => ({
+      date,
+      total_leads: counts.leads,
+      won_deals: counts.deals,
     }));
   });
 }

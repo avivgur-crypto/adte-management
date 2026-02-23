@@ -174,7 +174,7 @@ function FinancialPaceCard({
       <div className="mb-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="text-lg font-semibold text-white">
-            Pacing achievement — {summary.month}
+            Pacing achievement
           </h2>
           <p className="text-xs text-white/50">
             Effective days: {summary.effectiveDaysPassed} of {summary.daysInMonth} (N-1)
