@@ -55,3 +55,33 @@ export async function getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
     }));
   });
 }
+
+export interface SignedDealCompany {
+  created_date: string;
+  company_name: string;
+}
+
+/**
+ * Fetch all signed deals (contracts) in 2026 with company name (column text_mkpw5mcs).
+ * Client filters by selected months and displays names under "New Signed Deals".
+ */
+export async function getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
+  return withRetry(async () => {
+    const { data: rows, error } = await supabaseAdmin
+      .from(ACTIVITY_TABLE)
+      .select("created_date, company_name")
+      .eq("board_id", CONTRACTS_BOARD_ID)
+      .gte("created_date", "2026-01-01")
+      .lt("created_date", "2027-01-01")
+      .not("company_name", "is", null)
+      .order("created_date", { ascending: true });
+
+    if (error) throw new Error(`Signed deals companies fetch failed: ${error.message}`);
+    if (!rows?.length) return [];
+
+    return rows.map((row) => ({
+      created_date: String(row.created_date),
+      company_name: String(row.company_name ?? "").trim(),
+    })).filter((r) => r.company_name !== "");
+  });
+}

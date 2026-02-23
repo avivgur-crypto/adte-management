@@ -1,4 +1,8 @@
-import { getActivityDataFromFunnel, type ActivityDailyRow } from "@/app/actions/activity";
+import {
+  getActivityDataFromFunnel,
+  getSignedDealsCompanies,
+  type ActivityDailyRow,
+} from "@/app/actions/activity";
 import {
   getFinancialPace,
   getPartnerConcentration,
@@ -26,17 +30,19 @@ export default async function Home() {
   let paceByMonth: Record<string, FinancialPaceWithTrend> = {};
   let error: string | null = null;
 
-  const [concJan, concFeb, overviewResult, activityDataResult, ...paceResults] = await Promise.allSettled([
+  const [concJan, concFeb, overviewResult, activityDataResult, signedDealsResult, ...paceResults] = await Promise.allSettled([
     getPartnerConcentration("2026-01-01"),
     getPartnerConcentration("2026-02-01"),
     getTotalOverviewData(),
     getActivityDataFromFunnel(),
+    getSignedDealsCompanies(),
     ...PACING_MONTH_KEYS.map((m) => getFinancialPace([m])),
   ]);
   concentrationJan = concJan.status === "fulfilled" ? concJan.value : null;
   concentrationFeb = concFeb.status === "fulfilled" ? concFeb.value : null;
   overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
   const activityData: ActivityDailyRow[] = activityDataResult.status === "fulfilled" ? activityDataResult.value : [];
+  const signedDealsCompanies = signedDealsResult.status === "fulfilled" ? signedDealsResult.value : [];
   paceResults.forEach((p, i) => {
     if (p.status === "fulfilled" && PACING_MONTH_KEYS[i]) paceByMonth[PACING_MONTH_KEYS[i]!] = p.value;
   });
@@ -82,7 +88,7 @@ export default async function Home() {
           </div>
           <div>
             <DashboardErrorBoundary sectionName="Activity summary">
-              <ActivitySummary activityData={activityData} />
+              <ActivitySummary activityData={activityData} signedDealsCompanies={signedDealsCompanies} />
             </DashboardErrorBoundary>
           </div>
         </div>

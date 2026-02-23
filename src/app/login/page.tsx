@@ -6,7 +6,7 @@ import LoginForm from "./LoginForm";
 import AdteLogo from "@/app/components/AdteLogo";
 
 export default async function LoginPage() {
-  const password = process.env.DASHBOARD_PASSWORD;
+  const password = (process.env.DASHBOARD_PASSWORD ?? "").trim();
   if (!password) {
     redirect("/");
   }

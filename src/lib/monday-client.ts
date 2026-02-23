@@ -100,6 +100,9 @@ export const CREATION_LOG_COLUMN_IDS = {
   contracts: "pulse_log_mkzm1prs",
 } as const;
 
+/** Contracts board: column with company name. */
+export const CONTRACTS_COMPANY_COLUMN_ID = "text_mkpw5mcs";
+
 const ITEMS_PAGE_LIMIT = 500;
 
 /**
@@ -190,6 +193,18 @@ export function getItemStatus(item: MondayItem): string | null {
       (c.id && c.id.toLowerCase().includes("status"))
   );
   return statusCol?.text ?? statusCol?.value ?? null;
+}
+
+/**
+ * Get text value of a column by id (e.g. text_mkpw5mcs for company name on Contracts board).
+ */
+export function getColumnText(item: MondayItem, columnId: string): string | null {
+  const cols = item.column_values ?? [];
+  const col = cols.find((c) => c.id === columnId);
+  const raw = col?.text ?? col?.value ?? null;
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "string") return raw.trim() || null;
+  return null;
 }
 
 /**

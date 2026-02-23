@@ -10,8 +10,9 @@ export async function middleware(request: NextRequest) {
 
   if (pathname === "/login") {
     const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-    const expected = process.env.DASHBOARD_PASSWORD
-      ? await hashPasswordEdge(process.env.DASHBOARD_PASSWORD)
+    const envPassword = (process.env.DASHBOARD_PASSWORD ?? "").trim();
+    const expected = envPassword
+      ? await hashPasswordEdge(envPassword)
       : "";
     if (token && expected && token === expected) {
       return NextResponse.redirect(new URL("/", request.url));
@@ -19,7 +20,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const password = process.env.DASHBOARD_PASSWORD;
+  const password = (process.env.DASHBOARD_PASSWORD ?? "").trim();
   if (!password) {
     return NextResponse.next();
   }

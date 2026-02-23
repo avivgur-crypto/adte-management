@@ -9,8 +9,8 @@ export type LoginResult = { ok: true } | { ok: false; error: string };
 
 export async function login(formData: FormData): Promise<LoginResult> {
   const password = formData.get("password");
-  const raw = typeof password === "string" ? password : "";
-  const expected = process.env.DASHBOARD_PASSWORD;
+  const raw = typeof password === "string" ? password.trim() : "";
+  const expected = (process.env.DASHBOARD_PASSWORD ?? "").trim();
   if (!expected) {
     return { ok: false, error: "Login is not configured." };
   }

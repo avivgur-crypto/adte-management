@@ -46,3 +46,7 @@ ADD CONSTRAINT monday_items_activity_item_id_board_id_key UNIQUE (item_id, board
 -- 6. אינדקס לחיפוש לפי board + תאריך
 CREATE INDEX IF NOT EXISTS idx_monday_items_activity_board_created
 ON monday_items_activity (board_id, created_date);
+
+-- 7. עמודת שם חברה לחוזים (בורד Media Contracts, עמודה text_mkpw5mcs)
+ALTER TABLE monday_items_activity
+ADD COLUMN IF NOT EXISTS company_name text;

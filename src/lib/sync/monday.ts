@@ -7,8 +7,10 @@
 
 import {
   CREATION_LOG_COLUMN_IDS,
+  CONTRACTS_COMPANY_COLUMN_ID,
   fetchBoardItems,
   getCreationLogDate,
+  getColumnText,
 } from "@/lib/monday-client";
 import { supabaseAdmin } from "@/lib/supabase";
 
@@ -84,24 +86,33 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
   function toActivityRows(
     items: Awaited<ReturnType<typeof fetchBoardItems>>,
     boardId: string,
-    creationLogColumnId: string
+    creationLogColumnId: string,
+    companyColumnId?: string
   ) {
     return items.map((item) => {
       const createdAtDate = getCreationLogDate(item, creationLogColumnId);
       const createdAt = createdAtDate ?? new Date(item.created_at ?? Date.now());
       const dateStr = dateToKey(createdAt);
+      const company_name =
+        companyColumnId != null ? getColumnText(item, companyColumnId) : null;
       return {
         item_id: String(item.id),
         board_id: boardId,
         created_at: createdAt.toISOString(),
         created_date: dateStr,
+        ...(company_name != null && company_name !== "" && { company_name }),
       };
     });
   }
 
   const activityRows = [
     ...toActivityRows(leadsItems, LEADS_BOARD_ID, CREATION_LOG_COLUMN_IDS.leads),
-    ...toActivityRows(contractsItems, CONTRACTS_BOARD_ID, CREATION_LOG_COLUMN_IDS.contracts),
+    ...toActivityRows(
+      contractsItems,
+      CONTRACTS_BOARD_ID,
+      CREATION_LOG_COLUMN_IDS.contracts,
+      CONTRACTS_COMPANY_COLUMN_ID
+    ),
   ];
 
   let activityRowsUpserted = 0;
