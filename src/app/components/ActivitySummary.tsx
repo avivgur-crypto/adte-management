@@ -11,6 +11,23 @@ function getCurrentMonthStart(): string {
   return `${y}-${String(m).padStart(2, "0")}-01`;
 }
 
+/** Format month key (YYYY-MM-01) to "Jan 2026". */
+function formatMonthLabel(key: string): string {
+  const [y, m] = key.split("-");
+  const names = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  const name = names.slice((parseInt(m ?? "1", 10) - 1) * 3, parseInt(m ?? "1", 10) * 3);
+  return `${name} ${y}`;
+}
+
+/** Return a short period label for the selected months. */
+function getPeriodLabel(monthStarts: string[]): string {
+  if (monthStarts.length === 0) return "";
+  if (monthStarts.length === 1) return formatMonthLabel(monthStarts[0]!);
+  const first = formatMonthLabel(monthStarts[0]!);
+  const last = formatMonthLabel(monthStarts[monthStarts.length - 1]!);
+  return `${first} – ${last}`;
+}
+
 /** True if date (YYYY-MM-DD) falls in one of the given month starts (YYYY-MM-01). */
 function dateInMonths(date: string, monthStarts: string[]): boolean {
   if (monthStarts.length === 0) return false;
@@ -25,33 +42,44 @@ export default function ActivitySummary({
 }) {
   const { selectedMonths } = useFilter();
 
-  const metrics = useMemo(() => {
+  const { metrics, monthStarts, periodLabel, hasSelection } = useMemo(() => {
     const monthStarts =
-      selectedMonths.size > 0
-        ? Array.from(selectedMonths).sort()
-        : [getCurrentMonthStart()];
+      selectedMonths.size > 0 ? Array.from(selectedMonths).sort() : [];
     let newLeads = 0;
     let newSignedDeals = 0;
     for (const row of activityData) {
-      if (!dateInMonths(row.date, monthStarts)) continue;
+      if (monthStarts.length === 0 || !dateInMonths(row.date, monthStarts))
+        continue;
       newLeads += row.total_leads;
       newSignedDeals += row.won_deals;
     }
-    return { newLeads, newSignedDeals };
+    const periodLabel =
+      monthStarts.length === 0
+        ? "Select months in the filter to see data"
+        : getPeriodLabel(monthStarts);
+    return {
+      metrics: { newLeads, newSignedDeals },
+      monthStarts,
+      periodLabel,
+      hasSelection: monthStarts.length > 0,
+    };
   }, [activityData, selectedMonths]);
 
   return (
     <section className="mb-8">
+      <p className="mb-3 text-sm text-white/50">
+        Period: <span className="font-medium text-white/70">{periodLabel}</span>
+      </p>
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
           <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
             New Leads
           </h2>
           <p className="mb-1 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
-            {metrics.newLeads.toLocaleString()}
+            {hasSelection ? metrics.newLeads.toLocaleString() : "—"}
           </p>
           <p className="text-xs text-white/50">
-            SUM(total_leads) from daily_funnel_metrics · based on creation date
+            New leads created in selected period (Monday&apos;s &apos;Leads&apos; board creation date)
           </p>
         </div>
         <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
@@ -59,10 +87,10 @@ export default function ActivitySummary({
             New Signed Deals
           </h2>
           <p className="mb-1 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
-            {metrics.newSignedDeals.toLocaleString()}
+            {hasSelection ? metrics.newSignedDeals.toLocaleString() : "—"}
           </p>
           <p className="text-xs text-white/50">
-            SUM(won_deals) from daily_funnel_metrics · based on creation date
+            New deals signed in selected period (Monday&apos;s &apos;Media Contracts&apos; board creation date)
           </p>
         </div>
       </div>

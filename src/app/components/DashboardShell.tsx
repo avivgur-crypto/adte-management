@@ -11,7 +11,7 @@ export default function DashboardShell({
   return (
     <>
       <header className="sticky top-0 z-30 border-b border-white/5 bg-black/95 backdrop-blur-sm">
-        <div className="mx-auto flex h-14 max-w-5xl items-center px-4">
+        <div className="mx-auto flex h-16 max-w-5xl items-center px-4 md:h-20">
           <AdteLogoHeader />
         </div>
       </header>

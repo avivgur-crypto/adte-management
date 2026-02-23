@@ -1,7 +1,5 @@
 "use client";
 
-import Image from "next/image";
-
 const TAGLINE = "Stream Your Brand";
 
 type AdteLogoProps = {
@@ -28,13 +26,14 @@ export default function AdteLogo({
       className={`flex flex-col items-center gap-2 ${className}`}
       aria-label="Adte"
     >
-      <Image
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
         src="/logo.svg"
         alt="Adte"
         width={w}
         height={h}
-        className="h-auto w-auto object-contain"
-        priority
+        className="h-auto w-auto max-w-[180px] object-contain"
+        loading="eager"
       />
       {showWordmark && (
         <div className="flex flex-col items-center gap-0.5">
@@ -61,23 +60,24 @@ export function AdteLogoHeader({
 }: { showTagline?: boolean; className?: string } = {}) {
   return (
     <div
-      className={`flex items-center gap-3 ${className}`}
+      className={`flex items-center gap-4 ${className}`}
       aria-label="Adte"
     >
-      <Image
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
         src="/logo.svg"
         alt="Adte"
-        width={36}
-        height={26}
-        className="h-8 w-auto object-contain"
-        priority
+        width={56}
+        height={40}
+        className="h-12 w-auto object-contain"
+        loading="eager"
       />
       <div className="flex flex-col justify-center gap-0">
-        <span className="text-lg font-bold tracking-tight text-white leading-tight">
-          Adte
+        <span className="text-xl font-bold tracking-tight text-white leading-tight">
+          Adte&apos;s Management App
         </span>
         {showTagline && (
-          <span className="text-[0.65rem] font-normal tracking-wide text-white/50 leading-tight">
+          <span className="text-[0.7rem] font-normal tracking-wide text-white/50 leading-tight">
             {TAGLINE}
           </span>
         )}

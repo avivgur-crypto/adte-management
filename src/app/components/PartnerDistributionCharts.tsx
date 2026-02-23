@@ -93,12 +93,12 @@ function SideDonut({
   }
 
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-4">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-white/50">
+    <div className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5">
+      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-white/50">
         {title}
       </h3>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-        <div className="h-52 w-full min-w-0 sm:h-56 sm:w-56">
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:gap-8">
+        <div className="mx-auto h-64 w-64 shrink-0 sm:h-72 sm:w-72 lg:h-80 lg:w-80">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -107,8 +107,8 @@ function SideDonut({
                 nameKey="name"
                 cx="50%"
                 cy="50%"
-                innerRadius={60}
-                outerRadius={80}
+                innerRadius="55%"
+                outerRadius="75%"
                 stroke="none"
                 paddingAngle={1}
               >
@@ -142,19 +142,16 @@ function SideDonut({
           </ResponsiveContainer>
         </div>
         <div className="min-w-0 flex-1">
-          <p className="mb-2 text-xs font-medium text-white/50">
+          <p className="mb-3 text-sm font-medium text-white/50">
             Top 5 — {formatCurrency(side.total)} total
           </p>
-          <ul className="space-y-1.5 text-sm">
+          <ul className="space-y-2.5 text-sm">
             {top5.map((p, i) => (
               <li
                 key={`${p.name}-${i}`}
-                className="flex min-w-0 items-center justify-between gap-2"
+                className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"
               >
-                <span
-                  className="min-w-0 truncate text-white/90"
-                  title={p.name}
-                >
+                <span className="break-words text-white/95">
                   {p.name}
                 </span>
                 <span className="shrink-0 whitespace-nowrap text-white/60">
@@ -206,7 +203,7 @@ export default function PartnerDistributionCharts({
 
   if (monthKeys.length === 0) {
     return (
-      <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-4 text-lg font-semibold text-white">
           Partner Distribution
         </h2>
@@ -219,7 +216,7 @@ export default function PartnerDistributionCharts({
 
   if (!aggregated) {
     return (
-      <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-4 text-lg font-semibold text-white">
           Client Concentration
         </h2>
@@ -231,8 +228,8 @@ export default function PartnerDistributionCharts({
   }
 
   return (
-    <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold text-white">
           Client Concentration
         </h2>
@@ -244,7 +241,7 @@ export default function PartnerDistributionCharts({
           )}
         </div>
       </div>
-      <div className="grid gap-6 sm:grid-cols-2">
+      <div className="grid gap-8 lg:grid-cols-2">
         <SideDonut title="Demand (Revenue)" side={aggregated.demand} />
         <SideDonut title="Supply (Cost)" side={aggregated.supply} />
       </div>

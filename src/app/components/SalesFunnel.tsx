@@ -58,28 +58,21 @@ const STAGES: {
   },
 ];
 
-const SEGMENT_CLIPS: [string, string, string, string][] = [
-  ["0% 0", "100% 0", "85% 100%", "15% 100%"],
-  ["15% 0", "85% 0", "70% 100%", "30% 100%"],
-  ["30% 0", "70% 0", "58% 100%", "42% 100%"],
-  ["42% 0", "58% 0", "54% 100%", "46% 100%"],
-];
-
-const SEGMENT_CENTER_Y = [11.8, 36.9, 62.4, 87.9];
-
 function StagePopover({
   stageLabel,
   text,
   open,
   onClose,
-  triggerRect,
+  cardRefs,
+  index,
   children,
 }: {
   stageLabel: string;
   text: string;
   open: boolean;
   onClose: () => void;
-  triggerRect: DOMRect | null;
+  cardRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
+  index: number;
   children: React.ReactNode;
 }) {
   useEffect(() => {
@@ -93,7 +86,15 @@ function StagePopover({
 
   if (!open || typeof document === "undefined") return <>{children}</>;
 
-  const isDesktop = triggerRect && triggerRect.width > 0;
+  const anchor = cardRefs.current[index];
+  const rect = anchor?.getBoundingClientRect();
+  const style = rect
+    ? {
+        left: Math.min(rect.left + rect.width / 2 - 140, window.innerWidth - 300),
+        top: rect.top + rect.height + 8,
+      }
+    : { left: "50%", top: "50%", transform: "translate(-50%, -50%)" as const };
+
   const popover = (
     <>
       <div className="fixed inset-0 z-[99]" onClick={onClose} aria-hidden />
@@ -101,23 +102,8 @@ function StagePopover({
         role="dialog"
         aria-modal="true"
         aria-label={`${stageLabel}: ${text}`}
-        className="fixed z-[100] w-[calc(100vw-2rem)] max-w-xs rounded-lg border border-white/10 bg-[var(--adte-funnel-bg)] px-3 py-2.5 shadow-xl"
-        style={
-          isDesktop
-            ? {
-                left: Math.min(
-                  triggerRect.left + triggerRect.width + 8,
-                  typeof window !== "undefined" ? window.innerWidth - 280 : 0
-                ),
-                top: Math.max(12, triggerRect.top + triggerRect.height / 2 - 32),
-                transform: "translateY(-50%)",
-              }
-            : {
-                left: "50%",
-                top: "50%",
-                transform: "translate(-50%, -50%)",
-              }
-        }
+        className="fixed z-[100] w-[280px] rounded-lg border border-white/10 bg-[var(--adte-funnel-bg)] px-3 py-2.5 shadow-xl"
+        style={style}
       >
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -154,29 +140,10 @@ export default function SalesFunnel({
 }: {
   data: SalesFunnelMetrics | null;
 }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [openPopoverIndex, setOpenPopoverIndex] = useState<number | null>(null);
-  const [triggerRects, setTriggerRects] = useState<(DOMRect | null)[]>([]);
-  const triggerRefs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  const updateRect = (i: number) => {
-    const el = triggerRefs.current[i];
-    if (el) {
-      const rect = el.getBoundingClientRect();
-      setTriggerRects((prev) => {
-        const next = [...prev];
-        while (next.length <= i) next.push(null);
-        next[i] = rect;
-        return next;
-      });
-    }
-  };
-
-  useEffect(() => {
-    if (openPopoverIndex !== null) {
-      const id = requestAnimationFrame(() => updateRect(openPopoverIndex));
-      return () => cancelAnimationFrame(id);
-    }
-  }, [openPopoverIndex]);
+  const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   if (!data) {
     return (
@@ -208,9 +175,6 @@ export default function SalesFunnel({
     data.qualifiedToWonPercent,
   ];
 
-  const funnelHeight = 240;
-  const segmentGap = 4;
-
   return (
     <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5 md:p-6">
       <h2 className="text-center text-xl font-semibold text-white">
@@ -220,209 +184,114 @@ export default function SalesFunnel({
         All-time pipeline from Monday
       </p>
 
-      {/* Desktop: compact 5-column grid */}
-      <div
-        className="relative hidden md:grid md:items-center md:gap-0"
-        style={{
-          gridTemplateColumns: "1fr 24px 200px 24px 1fr",
-          gridTemplateRows: `${funnelHeight}px`,
-        }}
-      >
-        {/* Left cards */}
-        <div className="flex flex-col justify-center gap-3">
-          <StageCard
-            stage={STAGES[0]}
-            value={values[0]}
-            conversion={conversionFromPrevious[0]}
-            openPopover={openPopoverIndex === 0}
-            onPopoverOpen={() => setOpenPopoverIndex(0)}
-            onPopoverClose={() => setOpenPopoverIndex(null)}
-            triggerRect={triggerRects[0] ?? null}
-            triggerRef={(el) => { triggerRefs.current[0] = el; }}
-          />
-          <StageCard
-            stage={STAGES[2]}
-            value={values[2]}
-            conversion={conversionFromPrevious[2]}
-            openPopover={openPopoverIndex === 2}
-            onPopoverOpen={() => setOpenPopoverIndex(2)}
-            onPopoverClose={() => setOpenPopoverIndex(null)}
-            triggerRect={triggerRects[2] ?? null}
-            triggerRef={(el) => { triggerRefs.current[2] = el; }}
-          />
-        </div>
-
-        {/* Left connectors */}
-        <div className="h-full w-full">
-          <svg viewBox="0 0 24 100" preserveAspectRatio="none" className="h-full w-full">
-            <path d={`M0 ${SEGMENT_CENTER_Y[0]} L24 ${SEGMENT_CENTER_Y[0]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
-            <path d={`M0 ${SEGMENT_CENTER_Y[2]} L24 ${SEGMENT_CENTER_Y[2]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
-          </svg>
-        </div>
-
-        {/* Funnel graphic */}
-        <div className="flex flex-col items-center justify-center">
+      {/* One row per stage: [Card] —— line —— [Segment] */}
+      <div className="mx-auto max-w-2xl space-y-0">
+        {STAGES.map((stage, i) => (
           <div
-            className="flex w-full flex-col overflow-hidden rounded-lg"
-            style={{ height: funnelHeight, gap: segmentGap }}
+            key={stage.key}
+            className="flex items-stretch gap-0"
+            style={{ minHeight: 72 }}
           >
-            {STAGES.map((stage, i) => (
-              <div
-                key={stage.key}
-                className="relative min-h-0 flex-1 overflow-hidden"
-                style={{ clipPath: `polygon(${SEGMENT_CLIPS[i].join(", ")})` }}
-              >
-                <div className={`h-full w-full bg-gradient-to-b ${stage.gradient} opacity-90`} />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Right connectors */}
-        <div className="h-full w-full">
-          <svg viewBox="0 0 24 100" preserveAspectRatio="none" className="h-full w-full">
-            <path d={`M24 ${SEGMENT_CENTER_Y[1]} L0 ${SEGMENT_CENTER_Y[1]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
-            <path d={`M24 ${SEGMENT_CENTER_Y[3]} L0 ${SEGMENT_CENTER_Y[3]}`} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8" />
-          </svg>
-        </div>
-
-        {/* Right cards */}
-        <div className="flex flex-col justify-center gap-3">
-          <StageCard
-            stage={STAGES[1]}
-            value={values[1]}
-            conversion={conversionFromPrevious[1]}
-            openPopover={openPopoverIndex === 1}
-            onPopoverOpen={() => setOpenPopoverIndex(1)}
-            onPopoverClose={() => setOpenPopoverIndex(null)}
-            triggerRect={triggerRects[1] ?? null}
-            triggerRef={(el) => { triggerRefs.current[1] = el; }}
-          />
-          <StageCard
-            stage={STAGES[3]}
-            value={values[3]}
-            conversion={conversionFromPrevious[3]}
-            openPopover={openPopoverIndex === 3}
-            onPopoverOpen={() => setOpenPopoverIndex(3)}
-            onPopoverClose={() => setOpenPopoverIndex(null)}
-            triggerRect={triggerRects[3] ?? null}
-            triggerRef={(el) => { triggerRefs.current[3] = el; }}
-          />
-        </div>
-      </div>
-
-      {/* Mobile: vertical stack */}
-      <div className="mt-4 flex flex-col gap-4 md:mt-0 md:hidden">
-        <div
-          className="relative mx-auto flex w-full max-w-[200px] flex-col overflow-hidden rounded-lg"
-          style={{ height: 200, gap: segmentGap }}
-        >
-          {STAGES.map((stage, i) => (
+            {/* Left: stage card with label, value, conversion */}
             <div
-              key={stage.key}
-              className="relative min-h-0 flex-1 overflow-hidden"
-              style={{ clipPath: `polygon(${SEGMENT_CLIPS[i].join(", ")})` }}
+              ref={(el) => { cardRefs.current[i] = el; }}
+              className="flex min-w-0 flex-1 items-center rounded-l-lg border border-white/[0.08] border-r-0 bg-black/30 py-3 pl-4 pr-2"
             >
-              <div className={`h-full w-full bg-gradient-to-b ${stage.gradient} opacity-90`} />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-center text-[10px] font-bold uppercase tracking-wide text-white drop-shadow-md">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <div
+                  className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full ${stage.bg} text-white`}
+                >
+                  <stage.icon className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-white/90">
+                    {stage.label}
+                  </div>
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="highlight-brand text-lg font-bold tabular-nums">
+                      {values[i]!.toLocaleString()}
+                    </span>
+                    {conversionFromPrevious[i] != null && (
+                      <span className="rounded bg-white/10 px-1.5 py-0.5 text-sm font-semibold text-white/90">
+                        {conversionFromPrevious[i]}% conversion
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <StagePopover
+                  stageLabel={stage.label}
+                  text={stage.tooltip}
+                  open={openPopoverIndex === i}
+                  onClose={() => setOpenPopoverIndex(null)}
+                  cardRefs={cardRefs}
+                  index={i}
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenPopoverIndex(openPopoverIndex === i ? null : i)
+                    }
+                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-white/40 hover:bg-white/10 hover:text-white/80"
+                    aria-label={`Info: ${stage.label}`}
+                  >
+                    <Info className="h-4 w-4" />
+                  </button>
+                </StagePopover>
+              </div>
+            </div>
+
+            {/* Center: visible connector line */}
+            <div
+              className="flex w-8 flex-shrink-0 items-center bg-[var(--adte-funnel-bg)]"
+              aria-hidden
+            >
+              <div className="h-0.5 w-full bg-white/25" title="" />
+            </div>
+
+            {/* Right: funnel segment (interactive) */}
+            <div
+              ref={(el) => { segmentRefs.current[i] = el; }}
+              className="relative flex w-28 flex-shrink-0 items-center justify-center rounded-r-lg border border-white/[0.08] border-l-0"
+              onMouseEnter={() => setHoveredIndex(i)}
+              onMouseLeave={() => setHoveredIndex(null)}
+            >
+              <div
+                className={`h-full w-full rounded-r-lg bg-gradient-to-b ${stage.gradient} transition-all duration-200 ${
+                  hoveredIndex === i ? "opacity-100 ring-2 ring-white/40" : "opacity-90"
+                }`}
+                style={{ minHeight: 72 }}
+              />
+              <div className="absolute inset-0 flex items-center justify-center rounded-r-lg border-0 border-transparent">
+                <span className="text-center text-xs font-bold uppercase tracking-wide text-white drop-shadow-md">
                   {stage.label}
                 </span>
               </div>
+              {/* Tooltip on segment hover */}
+              {hoveredIndex === i && (
+                <div
+                  className="absolute bottom-full left-1/2 z-10 mb-1 -translate-x-1/2 rounded bg-white/95 px-2 py-1 text-xs font-medium text-zinc-900 shadow-lg"
+                  role="tooltip"
+                >
+                  {stage.tooltip}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-        {STAGES.map((stage, i) => (
-          <StageCard
-            key={stage.key}
-            stage={stage}
-            value={values[i]}
-            conversion={conversionFromPrevious[i]}
-            openPopover={openPopoverIndex === i}
-            onPopoverOpen={() => setOpenPopoverIndex(i)}
-            onPopoverClose={() => setOpenPopoverIndex(null)}
-            triggerRect={triggerRects[i] ?? null}
-            triggerRef={(el) => { triggerRefs.current[i] = el; }}
-          />
+          </div>
         ))}
       </div>
 
       {/* Win Rate */}
-      <div className="mt-5 flex justify-end">
+      <div className="mt-6 flex justify-end border-t border-white/5 pt-4">
         <div className="text-right">
           <div className="text-[10px] font-semibold uppercase tracking-widest text-white/50">
             Win Rate
           </div>
           <div className="text-2xl font-bold tabular-nums text-white md:text-3xl">
-            <span className="highlight-brand-simplicity">{data.overallWinRatePercent ?? "—"}%</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StageCard({
-  stage,
-  value,
-  conversion,
-  openPopover,
-  onPopoverOpen,
-  onPopoverClose,
-  triggerRect,
-  triggerRef,
-}: {
-  stage: (typeof STAGES)[number];
-  value: number;
-  conversion: number | null;
-  openPopover: boolean;
-  onPopoverOpen: () => void;
-  onPopoverClose: () => void;
-  triggerRect: DOMRect | null;
-  triggerRef: (el: HTMLButtonElement | null) => void;
-}) {
-  const Icon = stage.icon;
-  return (
-    <div className="rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2.5">
-      <div className="flex items-center gap-2.5">
-        <div
-          className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full ${stage.bg} text-white`}
-        >
-          <Icon className="h-4 w-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold uppercase tracking-wide text-white/80">
-            {stage.label}
-          </div>
-          <div className="flex flex-wrap items-baseline gap-x-1.5">
-            <span className="highlight-brand text-base font-bold tabular-nums md:text-lg">
-              {value.toLocaleString()}
+            <span className="highlight-brand-simplicity">
+              {data.overallWinRatePercent ?? "—"}%
             </span>
-            {conversion != null && (
-              <span className="text-[10px] text-white/40">
-                {conversion}%
-              </span>
-            )}
           </div>
         </div>
-        <StagePopover
-          stageLabel={stage.label}
-          text={stage.tooltip}
-          open={openPopover}
-          onClose={onPopoverClose}
-          triggerRect={triggerRect}
-        >
-          <button
-            ref={triggerRef}
-            type="button"
-            onClick={() => (openPopover ? onPopoverClose() : onPopoverOpen())}
-            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-white/10 text-white/30 hover:bg-white/10 hover:text-white/70 [touch-action:manipulation]"
-            aria-label={`Info: ${stage.label}`}
-            aria-expanded={openPopover}
-          >
-            <Info className="h-3.5 w-3.5" />
-          </button>
-        </StagePopover>
       </div>
     </div>
   );
