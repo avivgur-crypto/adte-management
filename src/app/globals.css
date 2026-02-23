@@ -1,26 +1,163 @@
 @import "tailwindcss";
 
+/* Adte brand design language — dark, elegant, professional */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #000000;
+  --foreground: #ffffff;
+  /* Brand gradient (logomark): cyan → blue → purple → red/orange */
+  --adte-cyan: #00ffff;
+  --adte-blue: #0080ff;
+  --adte-mid: #566df7;
+  --adte-purple: #8000ff;
+  --adte-red: #ff0080;
+  --adte-orange: #ff8000;
+  --adte-gradient: linear-gradient(
+    135deg,
+    var(--adte-cyan) 0%,
+    var(--adte-blue) 25%,
+    var(--adte-mid) 45%,
+    var(--adte-purple) 65%,
+    var(--adte-red) 85%,
+    var(--adte-orange) 100%
+  );
+  --adte-gradient-subtle: linear-gradient(
+    135deg,
+    rgba(0, 255, 255, 0.12) 0%,
+    rgba(128, 0, 255, 0.12) 50%,
+    rgba(255, 128, 0, 0.08) 100%
+  );
+  --adte-card-bg: #0a0a0a;
+  --adte-card-border: rgba(255, 255, 255, 0.08);
+  --adte-text-muted: rgba(255, 255, 255, 0.6);
+  --adte-text-strong: #ffffff;
+  /* Text highlight (e.g. "From Connected to Curated"): rounded pill, blue → coral */
+  --adte-highlight-from: #6d8eff;
+  --adte-highlight-to: #ff6d8e;
+  --adte-highlight-gradient: linear-gradient(
+    90deg,
+    var(--adte-highlight-from) 0%,
+    var(--adte-highlight-to) 100%
+  );
+  /* Alternate: lime → fuchsia (e.g. "reshaping", slide 2) */
+  --adte-highlight-lime: #a3e635;
+  --adte-highlight-fuchsia: #e879f9;
+  --adte-highlight-gradient-alt: linear-gradient(
+    90deg,
+    var(--adte-highlight-lime) 0%,
+    var(--adte-highlight-fuchsia) 100%
+  );
+  /* "Simplicity" style: green → cyan → blue (slide 5) */
+  --adte-highlight-green: #4ade80;
+  --adte-highlight-cyan: #22d3ee;
+  --adte-highlight-blue: #3b82f6;
+  --adte-highlight-gradient-simplicity: linear-gradient(
+    90deg,
+    var(--adte-highlight-green) 0%,
+    var(--adte-highlight-cyan) 50%,
+    var(--adte-highlight-blue) 100%
+  );
+  /* Funnel section: dark elegant background (matches slides) */
+  --adte-funnel-bg: #1a1a1a;
+  /* Page: subtle radial (lighter center like slides) */
+  --adte-page-bg: radial-gradient(ellipse 120% 80% at 50% 0%, #1a1a1a 0%, #0a0a0a 50%, #000000 100%);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-adte-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* Subtle radial background (slides: lighter center, darker edges) */
+.bg-adte-page {
+  background: var(--adte-page-bg);
+  min-height: 100vh;
+}
+
+/* Focus ring with brand gradient */
+.focus-ring-brand:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--adte-mid);
+}
+
+/* Subtle entrance animation */
+@keyframes adte-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-adte-in {
+  animation: adte-fade-in 0.4s ease-out forwards;
+}
+
+/* Stagger children */
+.stagger-children > * {
+  animation: adte-fade-in 0.4s ease-out forwards;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.3s; }
+
+/* Gradient text utility */
+.text-gradient-brand {
+  background: var(--adte-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Button gradient */
+.bg-gradient-brand {
+  background: var(--adte-gradient);
+}
+.bg-gradient-brand:hover {
+  filter: brightness(1.1);
+}
+.bg-gradient-brand:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--adte-mid);
+}
+
+/* Text highlight: rounded background, gradient, white text — like "Connected" in brand imagery */
+.highlight-brand {
+  background: var(--adte-highlight-gradient);
+  color: #ffffff;
+  padding: 0.15em 0.5em;
+  border-radius: 0.35rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* Lime → fuchsia (e.g. "reshaping") */
+.highlight-brand-alt {
+  background: var(--adte-highlight-gradient-alt);
+  color: #ffffff;
+  padding: 0.15em 0.5em;
+  border-radius: 0.35rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* Green → cyan → blue ("simplicity" slide) */
+.highlight-brand-simplicity {
+  background: var(--adte-highlight-gradient-simplicity);
+  color: #ffffff;
+  padding: 0.15em 0.5em;
+  border-radius: 0.35rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }

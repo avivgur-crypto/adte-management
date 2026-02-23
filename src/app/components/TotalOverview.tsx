@@ -22,20 +22,20 @@ function RevenueCard({ data }: { data: MonthOverview[] }) {
   const saasTotal = useMemo(() => data.reduce((s, d) => s + d.saasRevenue, 0), [data]);
 
   return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         Publisher Revenue
       </h2>
-      <p className="mb-4 text-4xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400 sm:text-5xl">
+      <p className="mb-4 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
         {formatCurrency(totalRevenue)}
       </p>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 items-center text-sm">
-        <span className="font-medium text-zinc-600 dark:text-zinc-400">Media</span>
-        <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
+        <span className="font-medium text-white/50">Media</span>
+        <span className="text-right tabular-nums text-white/90">
           {formatCurrency(mediaTotal)}
         </span>
-        <span className="font-medium text-zinc-600 dark:text-zinc-400">SaaS</span>
-        <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
+        <span className="font-medium text-white/50">SaaS</span>
+        <span className="text-right tabular-nums text-white/90">
           {formatCurrency(saasTotal)}
         </span>
       </div>
@@ -57,24 +57,24 @@ function CostCard({ data }: { data: MonthOverview[] }) {
   const bsCost = useMemo(() => data.reduce((s, d) => s + d.bsCost, 0), [data]);
 
   return (
-    <div className="rounded-2xl border-2 border-amber-200 bg-white p-6 shadow-sm dark:border-amber-800/60 dark:bg-zinc-950">
-      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         Total Cost
       </h2>
-      <p className="mb-4 text-4xl font-bold tabular-nums text-amber-600 dark:text-amber-400 sm:text-5xl">
+      <p className="mb-4 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
         {formatCurrency(totalCost)}
       </p>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 items-center text-sm">
-        <span className="font-medium text-zinc-600 dark:text-zinc-400">Media</span>
-        <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
+        <span className="font-medium text-white/50">Media</span>
+        <span className="text-right tabular-nums text-white/90">
           {formatCurrency(mediaCost)}
         </span>
-        <span className="font-medium text-zinc-600 dark:text-zinc-400">Tech</span>
-        <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
+        <span className="font-medium text-white/50">Tech</span>
+        <span className="text-right tabular-nums text-white/90">
           {formatCurrency(techCost)}
         </span>
-        <span className="font-medium text-zinc-600 dark:text-zinc-400">Brand Safety</span>
-        <span className="text-right tabular-nums text-zinc-900 dark:text-zinc-200">
+        <span className="font-medium text-white/50">Brand Safety</span>
+        <span className="text-right tabular-nums text-white/90">
           {formatCurrency(bsCost)}
         </span>
       </div>
@@ -96,7 +96,7 @@ export default function TotalOverview({
   if (filteredData.length === 0) {
     return (
       <section className="mb-8">
-        <p className="rounded-xl border border-zinc-200 bg-zinc-50/50 px-4 py-3 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-400">
+        <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/60">
           Select at least one month in the filter to see total overview.
         </p>
       </section>
@@ -105,10 +105,10 @@ export default function TotalOverview({
 
   return (
     <section className="mb-8">
-      <h2 className="mb-2 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+      <h2 className="mb-2 text-lg font-semibold text-white">
         Revenue vs. Cost
       </h2>
-      <p className="mb-4 text-sm text-zinc-400 dark:text-zinc-500">
+      <p className="mb-4 text-sm text-white/50">
         (from Billing)
       </p>
       <div className="grid gap-6 sm:grid-cols-2">

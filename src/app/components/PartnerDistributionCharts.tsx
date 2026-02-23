@@ -58,11 +58,11 @@ function SideDonut({
 
   if (side.partners.length === 0) {
     return (
-      <div className="rounded-xl border border-zinc-200 bg-zinc-50/50 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
-        <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+      <div className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-4">
+        <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-white/50">
           {title}
         </h3>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">No data</p>
+        <p className="text-sm text-white/50">No data</p>
       </div>
     );
   }
@@ -72,8 +72,8 @@ function SideDonut({
   }
 
   return (
-    <div className="rounded-xl border border-zinc-200 bg-zinc-50/50 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+    <div className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-4">
+      <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-white/50">
         {title}
       </h3>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
@@ -106,11 +106,11 @@ function SideDonut({
                   const percent =
                     total > 0 ? ((Number(p.value) / total) * 100).toFixed(1) : "0";
                   return (
-                    <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
-                      <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                    <div className="rounded-lg border border-white/10 bg-[var(--adte-funnel-bg)] px-3 py-2">
+                      <p className="font-medium text-white">
                         {p.name}
                       </p>
-                      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      <p className="text-sm text-white/60">
                         {formatCurrency(Number(p.value))} ({percent}%)
                       </p>
                     </div>
@@ -121,7 +121,7 @@ function SideDonut({
           </ResponsiveContainer>
         </div>
         <div className="min-w-0 flex-1">
-          <p className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          <p className="mb-2 text-xs font-medium text-white/50">
             Top 5 — {formatCurrency(side.total)} total
           </p>
           <ul className="space-y-1.5 text-sm">
@@ -131,12 +131,12 @@ function SideDonut({
                 className="flex min-w-0 items-center justify-between gap-2"
               >
                 <span
-                  className="min-w-0 truncate text-zinc-800 dark:text-zinc-200"
+                  className="min-w-0 truncate text-white/90"
                   title={p.name}
                 >
                   {p.name}
                 </span>
-                <span className="shrink-0 whitespace-nowrap text-zinc-600 dark:text-zinc-400">
+                <span className="shrink-0 whitespace-nowrap text-white/60">
                   {formatCurrency(Number(p.revenue))} ({Number(p.percent)}%)
                 </span>
               </li>
@@ -169,11 +169,11 @@ export default function PartnerDistributionCharts({
 
   if (monthKeys.length === 0) {
     return (
-      <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+      <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+        <h2 className="mb-4 text-lg font-semibold text-white">
           Partner Distribution
         </h2>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="text-sm text-white/50">
           No concentration data. Run fetch:client-breakdown for Jan26 and Feb26.
         </p>
       </div>
@@ -182,11 +182,11 @@ export default function PartnerDistributionCharts({
 
   if (filteredMonthKeys.length === 0) {
     return (
-      <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h2 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+      <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+        <h2 className="mb-4 text-lg font-semibold text-white">
           Client Concentration
         </h2>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="text-sm text-white/50">
           Select at least one month in the filter to view concentration data.
         </p>
       </div>
@@ -200,18 +200,18 @@ export default function PartnerDistributionCharts({
   const effectiveData = effectiveSelectedMonth ? dataByMonth[effectiveSelectedMonth] : null;
 
   return (
-    <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+        <h2 className="text-lg font-semibold text-white">
           Client Concentration
         </h2>
         <div className="flex items-center gap-2">
           {effectiveData?.concentrationRisk && (
-            <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/50 dark:text-amber-200">
+            <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-0.5 text-xs font-medium text-white/90">
               Concentration risk (partner &gt; 30%)
             </span>
           )}
-          <div className="flex rounded-lg border border-zinc-200 dark:border-zinc-700 p-0.5">
+          <div className="flex rounded-lg border border-white/10 p-0.5">
             {effectiveMonthKeys.map((key) => (
               <button
                 key={key}
@@ -219,8 +219,8 @@ export default function PartnerDistributionCharts({
                 onClick={() => setSelectedMonth(key)}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                   effectiveSelectedMonth === key
-                    ? "bg-zinc-200 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-100"
-                    : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                    ? "bg-white/15 text-white"
+                    : "text-white/60 hover:bg-white/10"
                 }`}
               >
                 {monthToLabel(key)}
@@ -231,7 +231,7 @@ export default function PartnerDistributionCharts({
       </div>
 
       {!effectiveData ? (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="text-sm text-white/50">
           No data for this month.
         </p>
       ) : (

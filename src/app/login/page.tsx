@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { hashPassword } from "@/lib/auth-server";
 import { AUTH_COOKIE_NAME } from "@/lib/auth";
 import LoginForm from "./LoginForm";
+import AdteLogo from "@/app/components/AdteLogo";
 
 export default async function LoginPage() {
   const password = process.env.DASHBOARD_PASSWORD;
@@ -16,13 +17,14 @@ export default async function LoginPage() {
     redirect("/");
   }
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-100 px-4 dark:bg-zinc-950">
-      <div className="w-full max-w-sm">
-        <div className="rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h1 className="mb-1 text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-            Dashboard
+    <div className="flex min-h-screen flex-col items-center justify-center bg-adte-page px-4 py-12">
+      <div className="animate-adte-in flex w-full max-w-sm flex-col items-center gap-8">
+        <AdteLogo size="lg" showWordmark showTagline className="shrink-0" />
+        <div className="w-full rounded-2xl border border-white/[0.08] bg-[var(--adte-card-bg)] p-8 shadow-2xl">
+          <h1 className="mb-1 text-xl font-semibold text-white">
+            Sign in
           </h1>
-          <p className="mb-6 text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="mb-6 text-sm text-[var(--adte-text-muted)]">
             Enter the password to continue.
           </p>
           <LoginForm />

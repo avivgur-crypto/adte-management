@@ -1,15 +1,14 @@
 /**
  * Monday.com sync: funnel metrics + Leads/Contracts activity.
- * Used by the unified cron sync and by npm run fetch:monday.
+ * - Leads board 7832231403 → total_leads per day (by creation date).
+ * - Signed Deals board 8280704003 → won_deals per day (by creation date).
+ * Uses created_at / creation log from Monday to determine date for each item.
  */
 
 import {
   CREATION_LOG_COLUMN_IDS,
-  MONDAY_BOARD_ID,
-  MONDAY_BOARD_IDS,
   fetchBoardItems,
   getCreationLogDate,
-  getItemStatus,
 } from "@/lib/monday-client";
 import { supabaseAdmin } from "@/lib/supabase";
 
@@ -18,75 +17,26 @@ const ACTIVITY_TABLE = "monday_items_activity";
 const LEADS_BOARD_ID = "7832231403";
 const CONTRACTS_BOARD_ID = "8280704003";
 
-const STATUS_TO_METRIC = {
-  "new leads": "total_leads",
-  "qualified/discovery": "qualified_leads",
-  "qualified": "qualified_leads",
-  "discovery": "qualified_leads",
-  "proposal/negotiation": "ops_approved_leads",
-  "proposal": "ops_approved_leads",
-  "negotiation": "ops_approved_leads",
-  "closed won": "won_deals",
-  "closed won ": "won_deals",
-} as Record<string, "total_leads" | "qualified_leads" | "ops_approved_leads" | "won_deals">;
-
-function normalizeStatus(s: string | null): string {
-  if (!s) return "";
-  return s.trim().toLowerCase();
+function dateToKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-function safeRate(num: number, denom: number): number | null {
-  if (denom === 0) return null;
-  return Number(((num / denom) * 100).toFixed(2));
-}
-
-async function runStatusBasedFunnel(boardId: string) {
-  const items = await fetchBoardItems(boardId, { includeColumnValues: true });
-  const counts = {
-    total_leads: 0,
-    qualified_leads: 0,
-    ops_approved_leads: 0,
-    won_deals: 0,
-  };
+/** Count items per creation date (YYYY-MM-DD) for a board. */
+function countByCreationDate(
+  items: Awaited<ReturnType<typeof fetchBoardItems>>,
+  creationLogColumnId: string
+): Map<string, number> {
+  const byDate = new Map<string, number>();
   for (const item of items) {
-    const status = normalizeStatus(getItemStatus(item));
-    if (!status) continue;
-    const key = STATUS_TO_METRIC[status];
-    if (key) counts[key]++;
+    const createdAt = getCreationLogDate(item, creationLogColumnId);
+    const d = createdAt ?? new Date();
+    const key = dateToKey(d);
+    byDate.set(key, (byDate.get(key) ?? 0) + 1);
   }
-  const { total_leads, qualified_leads, ops_approved_leads, won_deals } = counts;
-  return {
-    total_leads,
-    qualified_leads,
-    ops_approved_leads,
-    won_deals,
-    conversion_rate: safeRate(qualified_leads, total_leads),
-    win_rate: safeRate(won_deals, total_leads),
-  };
-}
-
-async function runLegacyFunnel() {
-  const [leadsItems, dealsItems, contractsItems] = await Promise.all([
-    fetchBoardItems(MONDAY_BOARD_IDS.leads),
-    fetchBoardItems(MONDAY_BOARD_IDS.deals, { includeColumnValues: true }),
-    fetchBoardItems(MONDAY_BOARD_IDS.contracts),
-  ]);
-  const OPS_STATUSES = ["Ops", "Legal", "Sign"];
-  const isOps = (s: string | null) =>
-    s && OPS_STATUSES.some((o) => o.toLowerCase() === s.trim().toLowerCase());
-  const wonDeals = contractsItems.length;
-  const totalLeads = leadsItems.length + wonDeals;
-  const qualifiedLeads = dealsItems.length + wonDeals;
-  const opsApprovedLeads =
-    dealsItems.filter((i) => isOps(getItemStatus(i))).length + wonDeals;
-  return {
-    total_leads: totalLeads,
-    qualified_leads: qualifiedLeads,
-    ops_approved_leads: opsApprovedLeads,
-    won_deals: wonDeals,
-    conversion_rate: safeRate(qualifiedLeads, totalLeads),
-    win_rate: safeRate(wonDeals, totalLeads),
-  };
+  return byDate;
 }
 
 export interface SyncMondayResult {
@@ -95,31 +45,41 @@ export interface SyncMondayResult {
 }
 
 export async function syncMondayData(): Promise<SyncMondayResult> {
-  const today = new Date().toISOString().split("T")[0];
-  let row: {
+  const [leadsItems, contractsItems] = await Promise.all([
+    fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
+    fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
+  ]);
+
+  const totalLeadsByDate = countByCreationDate(leadsItems, CREATION_LOG_COLUMN_IDS.leads);
+  const wonDealsByDate = countByCreationDate(contractsItems, CREATION_LOG_COLUMN_IDS.contracts);
+  const allDates = new Set<string>([...totalLeadsByDate.keys(), ...wonDealsByDate.keys()]);
+
+  const funnelRows: Array<{
+    date: string;
     total_leads: number;
     qualified_leads: number;
     ops_approved_leads: number;
     won_deals: number;
     conversion_rate: number | null;
     win_rate: number | null;
-  };
-
-  if (MONDAY_BOARD_ID) {
-    row = await runStatusBasedFunnel(MONDAY_BOARD_ID);
-  } else {
-    row = await runLegacyFunnel();
+  }> = [];
+  for (const date of allDates) {
+    funnelRows.push({
+      date,
+      total_leads: totalLeadsByDate.get(date) ?? 0,
+      qualified_leads: 0,
+      ops_approved_leads: 0,
+      won_deals: wonDealsByDate.get(date) ?? 0,
+      conversion_rate: null,
+      win_rate: null,
+    });
   }
-
-  const { error } = await supabaseAdmin
-    .from(TABLE)
-    .upsert({ date: today, ...row }, { onConflict: "date" });
-  if (error) throw new Error(`Supabase funnel upsert failed: ${error.message}`);
-
-  const [leadsItems, contractsItems] = await Promise.all([
-    fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: true }),
-    fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: true }),
-  ]);
+  if (funnelRows.length > 0) {
+    const { error: funnelError } = await supabaseAdmin
+      .from(TABLE)
+      .upsert(funnelRows, { onConflict: "date" });
+    if (funnelError) throw new Error(`Supabase funnel upsert failed: ${funnelError.message}`);
+  }
 
   function toActivityRows(
     items: Awaited<ReturnType<typeof fetchBoardItems>>,
@@ -151,5 +111,5 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     activityRowsUpserted = activityRows.length;
   }
 
-  return { funnelRows: 1, activityRows: activityRowsUpserted };
+  return { funnelRows: funnelRows.length, activityRows: activityRowsUpserted };
 }

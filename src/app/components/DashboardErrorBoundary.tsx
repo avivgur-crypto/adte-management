@@ -40,13 +40,13 @@ export default class DashboardErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
       return (
         <div
-          className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-6 dark:border-amber-800/50 dark:bg-amber-950/30"
+          className="rounded-xl border border-amber-500/30 bg-amber-950/20 px-4 py-6"
           role="alert"
         >
-          <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+          <p className="text-sm font-medium text-amber-200">
             {this.props.sectionName}
           </p>
-          <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
+          <p className="mt-1 text-sm text-amber-200/80">
             Data temporarily unavailable. Please try again in a moment.
           </p>
         </div>

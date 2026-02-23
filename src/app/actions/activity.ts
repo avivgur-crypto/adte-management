@@ -3,61 +3,37 @@
 import { withRetry } from "@/lib/resilience";
 import { supabaseAdmin } from "@/lib/supabase";
 
-const LEADS_BOARD_ID = "7832231403";
-const CONTRACTS_BOARD_ID = "8280704003";
-const TABLE = "monday_items_activity";
+const FUNNEL_TABLE = "daily_funnel_metrics";
 
 export interface ActivityMetrics {
   newLeads: number;
   newSignedDeals: number;
 }
 
-/**
- * Build date range filter for a list of month starts (YYYY-MM-01).
- * Each month is [monthStart, nextMonthStart).
- */
-function monthRanges(monthStarts: string[]): { start: string; end: string }[] {
-  return monthStarts.map((monthStart) => {
-    const [y, m] = monthStart.split("-").map(Number);
-    const endMonth = m === 12 ? 1 : m + 1;
-    const endYear = m === 12 ? y + 1 : y;
-    const end = `${endYear}-${String(endMonth).padStart(2, "0")}-01`;
-    return { start: monthStart, end };
-  });
+export interface ActivityDailyRow {
+  date: string;
+  total_leads: number;
+  won_deals: number;
 }
 
 /**
- * Count items in monday_items_activity for a board where created_date falls within any of the selected months.
+ * Fetch all daily_funnel_metrics rows for 2026 for the Activity summary.
+ * New Leads = SUM(total_leads), New Signed Deals = SUM(won_deals) over selected months.
  */
-export async function getActivityMetrics(
-  monthStarts: string[]
-): Promise<ActivityMetrics> {
-  if (monthStarts.length === 0) {
-    return { newLeads: 0, newSignedDeals: 0 };
-  }
-
+export async function getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
   return withRetry(async () => {
-    const ranges = monthRanges(monthStarts);
+    const { data, error } = await supabaseAdmin
+      .from(FUNNEL_TABLE)
+      .select("date, total_leads, won_deals")
+      .gte("date", "2026-01-01")
+      .lt("date", "2027-01-01")
+      .order("date", { ascending: true });
 
-    async function countForBoard(boardId: string): Promise<number> {
-      const queries = ranges.map(({ start, end }) =>
-        supabaseAdmin
-          .from(TABLE)
-          .select("id", { count: "exact", head: true })
-          .eq("board_id", boardId)
-          .gte("created_date", start)
-          .lt("created_date", end)
-      );
-
-      const results = await Promise.all(queries);
-      return results.reduce((sum, r) => sum + (r.count ?? 0), 0);
-    }
-
-    const [newLeads, newSignedDeals] = await Promise.all([
-      countForBoard(LEADS_BOARD_ID),
-      countForBoard(CONTRACTS_BOARD_ID),
-    ]);
-
-    return { newLeads, newSignedDeals };
+    if (error) throw new Error(`Activity data fetch failed: ${error.message}`);
+    return (data ?? []).map((row) => ({
+      date: String(row.date),
+      total_leads: Number(row.total_leads ?? 0),
+      won_deals: Number(row.won_deals ?? 0),
+    }));
   });
 }

@@ -72,14 +72,14 @@ function aggregateMultiMonth(
 function PacingSkeleton() {
   return (
     <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-      <h2 className="mb-2 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+      <h2 className="mb-2 text-lg font-semibold text-white">
         Pacing achievement
       </h2>
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
         {[1, 2, 3].map((i) => (
           <div
             key={i}
-            className="h-48 animate-pulse rounded-xl border border-zinc-200 bg-zinc-100/80 dark:border-zinc-800 dark:bg-zinc-800/50"
+            className="h-48 animate-pulse rounded-xl border border-white/10 bg-white/5"
           />
         ))}
       </div>

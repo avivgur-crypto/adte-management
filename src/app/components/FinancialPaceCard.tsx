@@ -35,7 +35,7 @@ function PaceBadge({
   percent: number | null;
   trend?: PacingTrend;
 }) {
-  if (percent == null) return <span className="text-zinc-500">—</span>;
+  if (percent == null) return <span className="text-white/50">—</span>;
   // When trend is present, color percentage by trend (e.g. 77% ⬇️ in red)
   const byTrend =
     trend === "up"
@@ -78,22 +78,22 @@ function SectionBlock({
   const achievementPercent = goal > 0 ? Math.round((actual / goal) * 100) : null;
 
   return (
-    <div className="rounded-xl border border-zinc-200 bg-zinc-50/50 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
-      <h3 className="mb-3 text-sm font-semibold text-zinc-500 dark:text-zinc-400">
+    <div className="rounded-xl border border-white/[0.08] bg-black/30 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-white/50">
         {title}
       </h3>
       <div className="space-y-3">
         {/* Two stacked lines: MTD Actual, then MTD Calculated Target */}
         <div className="space-y-1.5">
           <div>
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">MTD Actual: </span>
-            <span className="text-sm font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+            <span className="text-xs text-white/50">MTD Actual: </span>
+            <span className="text-sm font-semibold tabular-nums text-white">
               {formatCurrency(actual)}
             </span>
           </div>
           <div>
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">MTD Calculated Target: </span>
-            <span className="text-sm font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+            <span className="text-xs text-white/50">MTD Calculated Target: </span>
+            <span className="text-sm font-semibold tabular-nums text-white">
               {formatCurrency(targetMtd)}
             </span>
           </div>
@@ -112,14 +112,14 @@ function SectionBlock({
             </span>
           )}
           {!isBehind && !isAhead && (
-            <span className="text-zinc-500 dark:text-zinc-400">On target</span>
+            <span className="text-white/60">On target</span>
           )}
         </div>
 
         {/* Progress bar: dark gray track, lighter gray Actual fill, white dashed line = MTD Calculated Target */}
-        <div className="relative h-3 w-full overflow-hidden rounded-full bg-zinc-700 dark:bg-zinc-800">
+        <div className="relative h-3 w-full overflow-hidden rounded-full bg-white/10">
           <div
-            className="h-full rounded-full bg-zinc-400 dark:bg-zinc-500 transition-all"
+            className="h-full rounded-full bg-white/30 transition-all"
             style={{ width: `${actualPercent}%` }}
           />
           {targetPercent > 0 && targetPercent <= 100 && (
@@ -132,23 +132,23 @@ function SectionBlock({
         </div>
 
         {isMultiMonth ? (
-          <div className="rounded-md bg-zinc-100 px-3 py-2 dark:bg-zinc-800/80">
-            <div className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+          <div className="rounded-md bg-white/5 px-3 py-2">
+            <div className="text-[11px] font-medium text-white/50">
               Actual / Goal = {achievementPercent != null ? `${achievementPercent}%` : "—"}
             </div>
-            <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+            <div className="mt-1 text-xs text-white/80">
               {formatCurrency(actual)} / {formatCurrency(goal)}
             </div>
           </div>
         ) : (
-          <div className="rounded-md bg-zinc-100 px-3 py-2 dark:bg-zinc-800/80">
-            <div className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+          <div className="rounded-md bg-white/5 px-3 py-2">
+            <div className="text-[11px] font-medium text-white/50">
               Projected month-end
             </div>
-            <div className="text-base font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+            <div className="text-base font-semibold tabular-nums text-white">
               {formatCurrency(projected)}
             </div>
-            <div className="mt-1 flex items-baseline justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <div className="mt-1 flex items-baseline justify-between gap-2 text-[11px] text-white/50">
               <span>Goal {formatCurrency(goal)}</span>
               <PaceBadge percent={projectedVsGoalPercent ?? null} trend={trend} />
             </div>
@@ -156,7 +156,7 @@ function SectionBlock({
         )}
 
         {/* Required daily run rate footnote */}
-        <p className="text-[11px] font-medium tabular-nums text-zinc-500 dark:text-zinc-400">
+        <p className="text-[11px] font-medium tabular-nums text-white/50">
           Required daily: {formatCurrency(requiredDailyRunRate)}/day to hit EOM goal
         </p>
       </div>
@@ -170,21 +170,21 @@ function FinancialPaceCard({
   summary: FinancialPaceWithTrend;
 }) {
   return (
-    <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="w-full max-w-4xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+          <h2 className="text-lg font-semibold text-white">
             Pacing achievement — {summary.month}
           </h2>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          <p className="text-xs text-white/50">
             Effective days: {summary.effectiveDaysPassed} of {summary.daysInMonth} (N-1)
           </p>
         </div>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-1 text-sm text-white/50">
           Actual vs. MTD calculated target
         </p>
       </div>
-      <div className="mb-4 flex flex-wrap items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400">
+      <div className="mb-4 flex flex-wrap items-center gap-4 text-xs text-white/50">
         <span><span className="font-semibold text-emerald-600 dark:text-emerald-400">≥100%</span></span>
         <span><span className="font-semibold text-amber-600 dark:text-amber-400">90–99%</span></span>
         <span><span className="font-semibold text-red-600 dark:text-red-400">&lt;90%</span></span>
@@ -194,7 +194,7 @@ function FinancialPaceCard({
         <SectionBlock title="Media (from Xdash)" section={summary.media} trend={summary.trend.media} isMultiMonth={summary.isMultiMonth} />
         <SectionBlock title="SaaS (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
       </div>
-      <p className="mt-4 text-[11px] text-zinc-500 dark:text-zinc-400">
+      <p className="mt-4 text-[11px] text-white/50">
         Based on data up to {formatDataThroughDate(summary.dataThroughDate)}.
       </p>
     </div>

@@ -16,7 +16,7 @@ export default function LoginForm() {
       <div>
         <label
           htmlFor="password"
-          className="mb-1.5 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          className="mb-1.5 block text-sm font-medium text-[var(--adte-text-muted)]"
         >
           Password
         </label>
@@ -28,19 +28,19 @@ export default function LoginForm() {
           autoFocus
           required
           disabled={isPending}
-          className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-500"
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-white placeholder-white/40 transition-colors focus:border-[var(--adte-mid)] focus:outline-none focus:ring-1 focus:ring-[var(--adte-mid)] disabled:opacity-50"
           placeholder="Enter password"
         />
       </div>
       {state && !state.ok && (
-        <p className="text-sm text-red-600 dark:text-red-400">{state.error}</p>
+        <p className="text-sm text-red-400">{state.error}</p>
       )}
       <button
         type="submit"
         disabled={isPending}
-        className="rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-500 focus:ring-offset-2 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+        className="focus-ring-brand bg-gradient-brand rounded-lg px-4 py-2.5 text-sm font-semibold text-white transition-all disabled:opacity-50"
       >
-        {isPending ? "Signing in…" : "Login"}
+        {isPending ? "Signing in…" : "Sign in"}
       </button>
     </form>
   );
