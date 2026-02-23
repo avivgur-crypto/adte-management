@@ -105,7 +105,7 @@ export default function TotalOverview({
 
   return (
     <section className="mb-8">
-      <h2 className="mb-2 text-lg font-semibold text-white">
+      <h2 className="mb-2 text-[25px] font-extrabold text-white">
         Revenue vs. Cost
       </h2>
       <p className="mb-4 text-sm text-white/50">

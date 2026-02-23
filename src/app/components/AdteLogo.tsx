@@ -55,32 +55,27 @@ export default function AdteLogo({
 }
 
 export function AdteLogoHeader({
-  showTagline = true,
   className = "",
-}: { showTagline?: boolean; className?: string } = {}) {
+}: { className?: string } = {}) {
   return (
     <div
-      className={`flex items-center gap-4 ${className}`}
+      className={`flex items-center gap-5 ${className}`}
       aria-label="Adte"
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/logo.svg"
         alt="Adte"
-        width={56}
-        height={40}
-        className="h-12 w-auto object-contain"
+        width={200}
+        height={200}
+        className="h-[200px] w-[200px] object-contain font-medium"
+        style={{ fontSize: "200px" }}
         loading="eager"
       />
-      <div className="flex flex-col justify-center gap-0">
-        <span className="text-xl font-bold tracking-tight text-white leading-tight">
+      <div className="flex flex-col justify-center gap-0.5">
+        <span className="text-2xl font-bold tracking-tight text-white leading-tight md:text-3xl">
           Adte&apos;s Management App
         </span>
-        {showTagline && (
-          <span className="text-[0.7rem] font-normal tracking-wide text-white/50 leading-tight">
-            {TAGLINE}
-          </span>
-        )}
       </div>
     </div>
   );

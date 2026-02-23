@@ -91,7 +91,7 @@ export default function ActivitySummary({
       </p>
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-          <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
+          <h2 className="mb-1 text-xl font-semibold uppercase tracking-wider text-white/50">
             New Leads
           </h2>
           <p className="mb-1 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
@@ -102,7 +102,7 @@ export default function ActivitySummary({
           </p>
         </div>
         <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-          <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
+          <h2 className="mb-1 text-xl font-semibold uppercase tracking-wider text-white/50">
             New Signed Deals
           </h2>
           <p className="mb-1 text-4xl font-semibold tabular-nums text-white sm:text-5xl">

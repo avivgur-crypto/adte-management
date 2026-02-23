@@ -5,7 +5,10 @@ import { AUTH_COOKIE_NAME } from "@/lib/auth";
 import LoginForm from "./LoginForm";
 import AdteLogo from "@/app/components/AdteLogo";
 
-export default async function LoginPage() {
+type LoginPageProps = { searchParams: Promise<{ from?: string; error?: string }> };
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const params = await searchParams;
   const password = (process.env.DASHBOARD_PASSWORD ?? "").trim();
   if (!password) {
     redirect("/");
@@ -27,7 +30,7 @@ export default async function LoginPage() {
           <p className="mb-6 text-sm text-[var(--adte-text-muted)]">
             Enter the password to continue.
           </p>
-          <LoginForm />
+          <LoginForm from={params.from} error={params.error} />
         </div>
       </div>
     </div>

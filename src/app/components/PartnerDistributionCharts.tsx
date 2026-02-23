@@ -1,7 +1,7 @@
 "use client";
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type {
   PartnerConcentrationResult,
   PartnerShare,
@@ -71,6 +71,8 @@ function SideDonut({
   title: string;
   side: Side;
 }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
   const chartData = useMemo(() => {
     return side.partners.map((p) => ({
       name: String(p.name),
@@ -93,29 +95,37 @@ function SideDonut({
   }
 
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5">
+    <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5">
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-white/50">
         {title}
       </h3>
-      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:gap-8">
-        <div className="mx-auto h-64 w-64 shrink-0 sm:h-72 sm:w-72 lg:h-80 lg:w-80">
+      <div className="flex min-w-0 flex-col gap-4">
+        <p className="text-center text-base font-extrabold text-[var(--adte-blue)]">
+          Top 5 — {formatCurrency(side.total)} total
+        </p>
+        <div className="partner-donut-chart mx-auto h-52 w-52 shrink-0 overflow-hidden rounded-lg bg-transparent sm:h-60 sm:w-60 lg:h-72 lg:w-72">
           <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
+            <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
               <Pie
                 data={chartData}
                 dataKey="value"
                 nameKey="name"
                 cx="50%"
                 cy="50%"
-                innerRadius="55%"
-                outerRadius="75%"
-                stroke="none"
-                paddingAngle={1}
+                innerRadius="48%"
+                outerRadius="62%"
+                stroke="rgba(0,0,0,0.25)"
+                strokeWidth={1.5}
+                paddingAngle={2}
+                onMouseEnter={(_: unknown, index: number) => setHoveredIndex(index)}
+                onMouseLeave={() => setHoveredIndex(null)}
               >
                 {chartData.map((_, index) => (
                   <Cell
                     key={`cell-${index}`}
                     fill={COLORS[index % COLORS.length]}
+                    opacity={hoveredIndex != null && hoveredIndex !== index ? 0.35 : 1}
+                    style={{ cursor: "pointer", transition: "opacity 0.15s ease" }}
                   />
                 ))}
               </Pie>
@@ -141,26 +151,33 @@ function SideDonut({
             </PieChart>
           </ResponsiveContainer>
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="mb-3 text-sm font-medium text-white/50">
-            Top 5 — {formatCurrency(side.total)} total
-          </p>
-          <ul className="space-y-2.5 text-sm">
-            {top5.map((p, i) => (
+        <ul className="space-y-2 text-sm">
+          {top5.map((p, i) => {
+            const segmentColor = COLORS[i % COLORS.length];
+            const isHighlighted = hoveredIndex === i;
+            return (
               <li
                 key={`${p.name}-${i}`}
-                className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"
+                className={`flex flex-col gap-0.5 rounded-md border-l-4 py-1.5 pl-3 transition-all duration-150 ${
+                  isHighlighted ? "ring-2 ring-[var(--adte-blue)] ring-opacity-80" : ""
+                }`}
+                style={{
+                  borderLeftColor: segmentColor,
+                  backgroundColor: isHighlighted ? `${segmentColor}30` : `${segmentColor}18`,
+                }}
+                onMouseEnter={() => setHoveredIndex(i)}
+                onMouseLeave={() => setHoveredIndex(null)}
               >
-                <span className="break-words text-white/95">
+                <span className={`break-words ${isHighlighted ? "font-bold text-white" : "text-white/95"}`}>
                   {p.name}
                 </span>
-                <span className="shrink-0 whitespace-nowrap text-white/60">
+                <span className="tabular-nums text-white/60">
                   {formatCurrency(Number(p.revenue))} ({Number(p.percent)}%)
                 </span>
               </li>
-            ))}
-          </ul>
-        </div>
+            );
+          })}
+        </ul>
       </div>
     </div>
   );
@@ -230,7 +247,7 @@ export default function PartnerDistributionCharts({
   return (
     <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-white">
+        <h2 className="text-[25px] font-extrabold text-white">
           Client Concentration
         </h2>
         <div className="flex items-center gap-2">

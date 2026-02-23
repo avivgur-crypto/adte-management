@@ -1,18 +1,17 @@
 "use client";
 
-import { useActionState } from "react";
-import { login, type LoginResult } from "@/app/actions/login";
+type LoginFormProps = {
+  /** Redirect path after login (e.g. from ?from=) */
+  from?: string | null;
+  /** Error to show (e.g. from ?error=invalid) */
+  error?: string | null;
+};
 
-export default function LoginForm() {
-  const [state, formAction, isPending] = useActionState(
-    async (_: LoginResult | null, formData: FormData) => {
-      return await login(formData);
-    },
-    null as LoginResult | null
-  );
+export default function LoginForm({ from, error }: LoginFormProps) {
+  const action = from ? `/api/login?from=${encodeURIComponent(from)}` : "/api/login";
 
   return (
-    <form action={formAction} className="flex flex-col gap-4">
+    <form action={action} method="post" className="flex flex-col gap-4">
       <div>
         <label
           htmlFor="password"
@@ -27,20 +26,20 @@ export default function LoginForm() {
           autoComplete="current-password"
           autoFocus
           required
-          disabled={isPending}
-          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-white placeholder-white/40 transition-colors focus:border-[var(--adte-mid)] focus:outline-none focus:ring-1 focus:ring-[var(--adte-mid)] disabled:opacity-50"
+          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-white placeholder-white/40 transition-colors focus:border-[var(--adte-mid)] focus:outline-none focus:ring-1 focus:ring-[var(--adte-mid)]"
           placeholder="Enter password"
         />
       </div>
-      {state && !state.ok && (
-        <p className="text-sm text-red-400">{state.error}</p>
+      {error && (
+        <p className="text-sm text-red-400">
+          {error === "invalid" ? "Invalid password." : error === "config" ? "Login is not configured." : "Something went wrong."}
+        </p>
       )}
       <button
         type="submit"
-        disabled={isPending}
         className="focus-ring-brand bg-gradient-brand rounded-lg px-4 py-2.5 text-sm font-semibold text-white transition-all disabled:opacity-50"
       >
-        {isPending ? "Signing in…" : "Sign in"}
+        Sign in
       </button>
     </form>
   );

@@ -154,10 +154,22 @@ body {
 }
 /* Green → cyan → blue ("simplicity" slide) */
 .highlight-brand-simplicity {
+  display: inline-block;
+  width: 100px;
+  font-size: 25px;
   background: var(--adte-highlight-gradient-simplicity);
   color: #ffffff;
   padding: 0.15em 0.5em;
   border-radius: 0.35rem;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+}
+
+/* Partner donut charts: no background on Recharts surface */
+.partner-donut-chart .recharts-wrapper,
+.partner-donut-chart .recharts-surface {
+  background: transparent !important;
+}
+.partner-donut-chart .recharts-wrapper rect {
+  fill: transparent !important;
 }

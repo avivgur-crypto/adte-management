@@ -1,7 +1,6 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import { AUTH_COOKIE_NAME } from "@/lib/auth";
 import { hashPassword } from "@/lib/auth-server";
 
@@ -27,5 +26,6 @@ export async function login(formData: FormData): Promise<LoginResult> {
     path: "/",
     maxAge: 60 * 60 * 24 * 7, // 7 days
   });
-  redirect("/");
+  // Return success and let client redirect so cookie is applied before navigation (fixes preview/iframe)
+  return { ok: true };
 }
