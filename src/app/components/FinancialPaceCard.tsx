@@ -83,19 +83,19 @@ function SectionBlock({
         {title}
       </h3>
       <div className="space-y-3">
-        {/* Two stacked lines: MTD Actual, then MTD Calculated Target */}
+        {/* Two stacked lines: MTD Actual, then MTD Calculated Target — label above, number on next line */}
         <div className="space-y-1.5">
-          <div>
-            <span className="text-xs text-white/50">MTD Actual: </span>
-            <span className="text-sm font-semibold tabular-nums text-white">
+          <div className="block">
+            <div className="text-xs text-white/50">MTD Actual:</div>
+            <div className="text-sm font-semibold tabular-nums text-white">
               {formatCurrency(actual)}
-            </span>
+            </div>
           </div>
-          <div>
-            <span className="text-xs text-white/50">MTD Calculated Target: </span>
-            <span className="text-sm font-semibold tabular-nums text-white">
+          <div className="block">
+            <div className="text-xs text-white/50">MTD Calculated Target:</div>
+            <div className="text-sm font-semibold tabular-nums text-white">
               {formatCurrency(targetMtd)}
-            </span>
+            </div>
           </div>
         </div>
 
@@ -194,7 +194,7 @@ function FinancialPaceCard({
         <SectionBlock title="Media (from Xdash)" section={summary.media} trend={summary.trend.media} isMultiMonth={summary.isMultiMonth} />
         <SectionBlock title="SaaS (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
       </div>
-      <p className="mt-4 text-[11px] text-white/50">
+      <p className="mt-4 text-[15px] text-white/50">
         Based on data up to {formatDataThroughDate(summary.dataThroughDate)}.
       </p>
     </div>

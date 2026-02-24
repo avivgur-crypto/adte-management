@@ -21,7 +21,7 @@ export default function ConcentrationPieChart({
     return (
       <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
-          Client Concentration
+          Client Concentration (from Billing)
         </h2>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
           No client breakdown data for this month. Run{" "}
@@ -43,7 +43,7 @@ export default function ConcentrationPieChart({
   return (
     <div className="w-full max-w-4xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
       <h2 className="mb-2 text-lg font-semibold text-zinc-900 dark:text-zinc-100">
-        Client Concentration — {data.month}
+        Client Concentration (from Billing) — {data.month}
       </h2>
       <p className="mb-4 text-xs text-zinc-500 dark:text-zinc-400">
         Top partners by revenue (concentration risk)

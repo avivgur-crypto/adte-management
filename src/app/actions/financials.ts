@@ -1,9 +1,12 @@
 "use server";
 
+import { unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
 import type { PacingSummary } from "@/lib/pacing";
+
+const CACHE_TTL = 60;
 
 export type PacingTrend = "up" | "down" | "stable";
 
@@ -33,7 +36,7 @@ function comparePace(nowPercent: number | null, prevPercent: number | null): Pac
  * returns aggregated actual and goal sums; projected is null in that case.
  * When monthStarts is empty or omitted, uses current month only.
  */
-export async function getFinancialPace(
+async function _getFinancialPace(
   monthStarts?: string[]
 ): Promise<FinancialPaceWithTrend> {
   return withRetry(async () => {
@@ -125,6 +128,17 @@ export async function getFinancialPace(
   });
 }
 
+export async function getFinancialPace(
+  monthStarts?: string[]
+): Promise<FinancialPaceWithTrend> {
+  const key = (monthStarts ?? []).sort().join(",") || "_current_";
+  return unstable_cache(
+    () => _getFinancialPace(monthStarts),
+    ["financial-pace", key],
+    { revalidate: CACHE_TTL },
+  )();
+}
+
 function getCurrentMonthKey(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -164,7 +178,7 @@ const TOP_N = 10;
 const CONCENTRATION_THRESHOLD_PERCENT = 30;
 
 /** Fetches concentration for a month; top 10 per type, rest as "Others"; % share. */
-export async function getPartnerConcentration(
+async function _getPartnerConcentration(
   month: string
 ): Promise<PartnerConcentrationResult | null> {
   return withRetry(async () => {
@@ -227,6 +241,16 @@ export async function getPartnerConcentration(
   });
 }
 
+export async function getPartnerConcentration(
+  month: string
+): Promise<PartnerConcentrationResult | null> {
+  return unstable_cache(
+    () => _getPartnerConcentration(month),
+    ["partner-concentration", month],
+    { revalidate: CACHE_TTL },
+  )();
+}
+
 // ---------------------------------------------------------------------------
 // Total Overview (revenue + cost by month, for filterable dashboard)
 // ---------------------------------------------------------------------------
@@ -246,33 +270,34 @@ const OVERVIEW_MONTHS = Array.from({ length: 12 }, (_, i) =>
 );
 
 /** Returns per-month revenue and cost for Total Overview from Master Billing 2026 (monthly_goals). */
-export async function getTotalOverviewData(): Promise<MonthOverview[]> {
+async function _getTotalOverviewData(): Promise<MonthOverview[]> {
   return withRetry(async () => {
-  const results: MonthOverview[] = [];
-
-  for (const monthKey of OVERVIEW_MONTHS) {
-    const { data: goalsRow } = await supabaseAdmin
+    const { data: rows, error } = await supabaseAdmin
       .from("monthly_goals")
-      .select("media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
-      .eq("month", monthKey)
-      .maybeSingle();
+      .select("month, media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
+      .in("month", OVERVIEW_MONTHS)
+      .order("month", { ascending: true });
 
-    const mediaRevenue = Number(goalsRow?.media_revenue ?? 0);
-    const saasRevenue = Number(goalsRow?.saas_actual ?? 0);
-    const mediaCost = Number(goalsRow?.media_cost ?? 0);
-    const techCost = Number(goalsRow?.tech_cost ?? 0);
-    const bsCost = Number(goalsRow?.bs_cost ?? 0);
+    if (error) throw new Error(`getTotalOverviewData: ${error.message}`);
 
-    results.push({
-      month: monthKey,
-      mediaRevenue,
-      saasRevenue,
-      mediaCost,
-      techCost,
-      bsCost,
+    const rowsByMonth = new Map((rows ?? []).map((r) => [r.month, r]));
+
+    return OVERVIEW_MONTHS.map((monthKey) => {
+      const g = rowsByMonth.get(monthKey);
+      return {
+        month: monthKey,
+        mediaRevenue: Number(g?.media_revenue ?? 0),
+        saasRevenue: Number(g?.saas_actual ?? 0),
+        mediaCost: Number(g?.media_cost ?? 0),
+        techCost: Number(g?.tech_cost ?? 0),
+        bsCost: Number(g?.bs_cost ?? 0),
+      };
     });
-  }
-
-  return results;
   });
 }
+
+export const getTotalOverviewData = unstable_cache(
+  _getTotalOverviewData,
+  ["total-overview"],
+  { revalidate: CACHE_TTL },
+);

@@ -30,7 +30,11 @@ function monthIndexToKey(monthIndex: number): string {
   return `${YEAR}-${String(monthIndex).padStart(2, "0")}-01`;
 }
 
+export type AppScreen = "financial" | "partners" | "sales-funnel";
+
 export interface FilterState {
+  activeScreen: AppScreen;
+  setActiveScreen: (screen: AppScreen) => void;
   selectedMonths: Set<string>;
   setSelectedMonths: (months: Set<string>) => void;
   selectMonth: (key: string) => void;
@@ -49,6 +53,8 @@ export interface FilterState {
 }
 
 const defaultState: FilterState = {
+  activeScreen: "financial",
+  setActiveScreen: () => {},
   selectedMonths: new Set(),
   setSelectedMonths: () => {},
   selectMonth: () => {},
@@ -69,6 +75,7 @@ const defaultState: FilterState = {
 const FilterContext = createContext<FilterState>(defaultState);
 
 export function FilterProvider({ children }: { children: ReactNode }) {
+  const [activeScreen, setActiveScreen] = useState<AppScreen>("financial");
   const [selectedMonths, setSelectedMonths] = useState<Set<string>>(() => new Set(MONTH_KEYS));
 
   const selectMonth = useCallback((key: string) => {
@@ -153,6 +160,8 @@ export function FilterProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<FilterState>(
     () => ({
+      activeScreen,
+      setActiveScreen,
       selectedMonths,
       setSelectedMonths: setSelectedMonthsDirect,
       selectMonth,
@@ -170,6 +179,7 @@ export function FilterProvider({ children }: { children: ReactNode }) {
       year: YEAR,
     }),
     [
+      activeScreen,
       selectedMonths,
       setSelectedMonthsDirect,
       selectMonth,

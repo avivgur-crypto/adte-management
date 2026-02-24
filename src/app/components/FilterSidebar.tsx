@@ -1,6 +1,6 @@
 "use client";
 
-import { Filter, Loader2, RefreshCw, X } from "lucide-react";
+import { Filter, Funnel, LayoutDashboard, Loader2, RefreshCw, Users, X } from "lucide-react";
 import { triggerSyncViaCronApi } from "@/app/actions/sync";
 import { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
@@ -8,7 +8,14 @@ import {
   useFilter,
   monthKeyToMonthIndex,
   type FilterState,
+  type AppScreen,
 } from "@/app/context/FilterContext";
+
+const SCREENS: { key: AppScreen; label: string; icon: typeof LayoutDashboard }[] = [
+  { key: "financial", label: "Financial", icon: LayoutDashboard },
+  { key: "partners", label: "Partners", icon: Users },
+  { key: "sales-funnel", label: "Sales Funnel", icon: Funnel },
+];
 
 const MONTH_LABELS = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -24,6 +31,44 @@ const QUARTER_KEYS: Record<number, string[]> = {
   3: ["2026-07-01", "2026-08-01", "2026-09-01"],
   4: ["2026-10-01", "2026-11-01", "2026-12-01"],
 };
+
+function ScreenNav({ onNavigate }: { onNavigate?: () => void }) {
+  const { activeScreen, setActiveScreen } = useFilter();
+  return (
+    <nav className="mb-3 flex flex-col gap-0.5 border-b border-white/10 pb-3">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        App screens
+      </p>
+      {SCREENS.map(({ key, label, icon: Icon }) => {
+        const isActive = activeScreen === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => {
+              setActiveScreen(key);
+              onNavigate?.();
+            }}
+            className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm font-medium transition-all duration-200 ${
+              isActive
+                ? "border-l-2 border-emerald-400 bg-emerald-500/15 text-emerald-200"
+                : "border-l-2 border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+            }`}
+          >
+            <span
+              className={`flex h-1.5 w-1.5 shrink-0 rounded-full ${
+                isActive ? "bg-emerald-400" : "bg-zinc-500"
+              }`}
+              aria-hidden
+            />
+            <Icon className="h-4 w-4 shrink-0 opacity-80" />
+            <span className="truncate">{label}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
 
 function FilterFormContent({
   state,
@@ -46,12 +91,12 @@ function FilterFormContent({
   } = state;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-3">
       <div>
-        <h3 className="mb-2.5 text-sm font-medium text-zinc-300/90">
+        <h3 className="mb-1.5 text-sm font-medium text-zinc-300/90">
           By quarter
         </h3>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-1.5">
           {([1, 2, 3, 4] as const).map((q) => {
             const active = isQuarterSelected(q);
             return (
@@ -59,7 +104,7 @@ function FilterFormContent({
                 key={q}
                 type="button"
                 onClick={() => toggleQuarter(q)}
-                className={`rounded-lg border px-3.5 py-2 text-sm font-medium transition-all duration-200 ${
+                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-all duration-200 ${
                   active
                     ? "border-emerald-400/50 bg-emerald-500/25 text-emerald-300 shadow-[0_0_20px_-2px_rgba(52,211,153,0.35)]"
                     : "border-white/10 bg-white/5 text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-300"
@@ -72,10 +117,10 @@ function FilterFormContent({
         </div>
       </div>
       <div>
-        <h3 className="mb-2.5 text-sm font-medium text-zinc-300/90">
+        <h3 className="mb-1.5 text-sm font-medium text-zinc-300/90">
           Month filter
         </h3>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-3 gap-1">
           {monthKeys.map((key) => {
             const idx = monthKeyToMonthIndex(key);
             const label = MONTH_LABELS[idx - 1];
@@ -83,7 +128,7 @@ function FilterFormContent({
             return (
               <label
                 key={key}
-                className="flex cursor-pointer items-center gap-1.5 rounded-lg py-1.5 pr-1.5 transition-colors hover:bg-white/5"
+                className="flex cursor-pointer items-center gap-1 rounded-lg py-1 pr-1 transition-colors hover:bg-white/5"
               >
                 <input
                   type="checkbox"
@@ -97,25 +142,25 @@ function FilterFormContent({
           })}
         </div>
       </div>
-      <div className="mt-auto flex flex-wrap gap-2 border-t border-white/10 pt-4">
+      <div className="mt-auto flex flex-wrap gap-1.5 border-t border-white/10 pt-3">
         <button
           type="button"
           onClick={selectAll}
-          className="rounded-lg bg-white/10 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-white/15"
+          className="rounded-lg bg-white/10 px-2.5 py-1 text-sm font-medium text-zinc-200 hover:bg-white/15"
         >
           All
         </button>
         <button
           type="button"
           onClick={selectNone}
-          className="rounded-lg bg-white/10 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-white/15"
+          className="rounded-lg bg-white/10 px-2.5 py-1 text-sm font-medium text-zinc-200 hover:bg-white/15"
         >
           None
         </button>
         <button
           type="button"
           onClick={reset}
-          className="rounded-lg bg-white/10 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-white/15"
+          className="rounded-lg bg-white/10 px-2.5 py-1 text-sm font-medium text-zinc-200 hover:bg-white/15"
         >
           Reset
         </button>
@@ -163,15 +208,14 @@ function DesktopSidebar() {
 
   return (
     <aside
-      className="fixed right-0 top-0 z-30 hidden h-screen flex-shrink-0 flex-col border-l border-white/10 bg-white/[0.06] shadow-2xl backdrop-blur-xl lg:flex"
-      style={{ width: SIDEBAR_WIDTH }}
+      className="fixed right-0 top-[150px] z-30 hidden flex-shrink-0 flex-col border-l border-white/10 bg-white/[0.06] shadow-2xl backdrop-blur-xl lg:flex"
+      style={{ width: SIDEBAR_WIDTH, height: "calc(100vh - 150px)" }}
     >
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3.5">
-        <h2 className="text-sm font-semibold tracking-tight text-zinc-200">
+      <div className="flex-1 overflow-y-auto p-3">
+        <ScreenNav />
+        <h2 className="mb-2 text-sm font-semibold tracking-tight text-zinc-200">
           Filters
         </h2>
-      </div>
-      <div className="flex-1 overflow-y-auto p-4">
         <FilterFormContent state={state} isMobile={false} />
       </div>
       {showSyncButton && (
@@ -290,7 +334,7 @@ function MobileFABAndSheet() {
       >
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3.5">
           <h2 className="text-sm font-semibold tracking-tight text-zinc-200">
-            Filters
+            Menu
           </h2>
           <button
             type="button"
@@ -302,6 +346,10 @@ function MobileFABAndSheet() {
           </button>
         </div>
         <div className="flex flex-col overflow-y-auto p-4 pb-safe">
+          <ScreenNav onNavigate={() => setOpen(false)} />
+          <h3 className="mb-2.5 mt-2 text-sm font-semibold tracking-tight text-zinc-200">
+            Filters
+          </h3>
           <FilterFormContent state={localState} isMobile onApply={apply} />
         </div>
       </div>

@@ -1,7 +1,10 @@
 "use server";
 
+import { unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
 import { supabaseAdmin } from "@/lib/supabase";
+
+const CACHE_TTL = 60;
 
 const ACTIVITY_TABLE = "monday_items_activity";
 const LEADS_BOARD_ID = "7832231403";
@@ -23,7 +26,7 @@ export interface ActivityDailyRow {
  * table, which has one row per item with board_id and created_date.
  * Returns daily rows for 2026 so the client can filter by selected months.
  */
-export async function getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
+async function _getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
   return withRetry(async () => {
     const { data: rows, error } = await supabaseAdmin
       .from(ACTIVITY_TABLE)
@@ -56,6 +59,12 @@ export async function getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
   });
 }
 
+export const getActivityDataFromFunnel = unstable_cache(
+  _getActivityDataFromFunnel,
+  ["activity-funnel"],
+  { revalidate: CACHE_TTL },
+);
+
 export interface SignedDealCompany {
   created_date: string;
   company_name: string;
@@ -65,7 +74,7 @@ export interface SignedDealCompany {
  * Fetch all signed deals (contracts) in 2026 with company name (column text_mkpw5mcs).
  * Client filters by selected months and displays names under "New Signed Deals".
  */
-export async function getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
+async function _getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
   return withRetry(async () => {
     const { data: rows, error } = await supabaseAdmin
       .from(ACTIVITY_TABLE)
@@ -85,3 +94,9 @@ export async function getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
     })).filter((r) => r.company_name !== "");
   });
 }
+
+export const getSignedDealsCompanies = unstable_cache(
+  _getSignedDealsCompanies,
+  ["signed-deals-companies"],
+  { revalidate: CACHE_TTL },
+);
