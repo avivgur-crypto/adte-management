@@ -2,6 +2,11 @@
  * XDASH sync: demand & supply partner data → daily_partner_performance.
  * Fetches BOTH demand (revenue) and supply (cost) partners so revenue and cost are captured.
  *
+ * After partner-level sync, ONE Home API call per synced month stores the
+ * accurate monthly totals (partner_name = '__XDASH_MONTHLY_TOTAL__').
+ * The Partners API misses ~5% of revenue/cost that isn't attributed to a
+ * specific partner, so the Home total is used for dashboard display.
+ *
  * Uses small-batch sequential fetching to avoid overloading the backup server.
  */
 
@@ -9,6 +14,7 @@ import {
   fetchDemandPartners,
   fetchSupplyPartners,
   fetchReportForDate,
+  fetchAdServerOverview,
   mapDemandPartners,
   mapSupplyPartners,
   useReportsForSync,
@@ -137,6 +143,49 @@ async function fetchDatesInBatches(
   return results;
 }
 
+const MONTHLY_TOTAL_PARTNER = "__XDASH_MONTHLY_TOTAL__";
+
+/**
+ * Fetch the Home API total for a month and upsert as a special row.
+ * Uses date = first day of month so _getMonthlyXDASHTotals can pick it up.
+ * ONE API call per month — lightweight compared to per-day fetching.
+ */
+async function syncMonthlyTotal(year: number, month: number): Promise<void> {
+  const firstDay = `${year}-${String(month).padStart(2, "0")}-01`;
+  const lastDay = new Date(year, month, 0);
+  const endDate = `${year}-${String(month).padStart(2, "0")}-${String(lastDay.getDate()).padStart(2, "0")}`;
+
+  console.log(`[xdash-sync] Fetching Home total for ${firstDay} → ${endDate} …`);
+  try {
+    const raw = await fetchAdServerOverview({ startDate: firstDay, endDate });
+    const sd = (raw as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
+    const totals = (sd?.selectedDates as Record<string, unknown> | undefined)?.totals as
+      | { revenue?: number; cost?: number; impressions?: number }
+      | undefined;
+
+    if (!totals) {
+      console.warn("[xdash-sync] No totals in Home response for", firstDay);
+      return;
+    }
+
+    const revenue = Number(totals.revenue ?? 0);
+    const cost = Number(totals.cost ?? 0);
+    const impressions = Number(totals.impressions ?? 0);
+
+    const records = [
+      { date: firstDay, partner_name: MONTHLY_TOTAL_PARTNER, partner_type: "demand", revenue, cost: 0, impressions },
+      { date: firstDay, partner_name: MONTHLY_TOTAL_PARTNER, partner_type: "supply", revenue: 0, cost, impressions: 0 },
+    ];
+    const { error } = await supabaseAdmin
+      .from(TABLE)
+      .upsert(records, { onConflict: "date,partner_name,partner_type" });
+    if (error) console.error("[xdash-sync] Monthly total upsert error:", error.message);
+    else console.log(`[xdash-sync] Monthly total saved: revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}`);
+  } catch (e) {
+    console.warn("[xdash-sync] Home total fetch failed (non-fatal):", e instanceof Error ? e.message : e);
+  }
+}
+
 export interface SyncXDASHResult {
   datesSynced: number;
   rowsUpserted: number;
@@ -176,6 +225,10 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
     for (const r of supply) records.push(rowToRecord(date, "supply", r));
   }
   const rowsUpserted = await batchUpsert(records);
+
+  // Refresh the monthly total from the Home API (one lightweight call)
+  await syncMonthlyTotal(now.getFullYear(), now.getMonth() + 1);
+
   return { datesSynced: dates.length, rowsUpserted };
 }
 
@@ -195,5 +248,11 @@ export async function syncXDASHDataForMonth(
     for (const r of supply) records.push(rowToRecord(date, "supply", r));
   }
   const rowsUpserted = await batchUpsert(records);
+
+  // Refresh the monthly total from the Home API (one call)
+  await syncMonthlyTotal(year, month);
+
   return { datesSynced: dates.length, rowsUpserted };
 }
+
+export { MONTHLY_TOTAL_PARTNER };

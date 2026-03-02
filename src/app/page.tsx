@@ -3,18 +3,21 @@ import {
   getSignedDealsCompanies,
   type ActivityDailyRow,
 } from "@/app/actions/activity";
+import { getDependencyMappingData } from "@/app/actions/dependency-mapping";
 import {
   getDailyMovement,
   getFinancialPace,
+  getMonthlyXDASHTotals,
   getPartnerConcentration,
   getTotalOverviewData,
 } from "@/app/actions/financials";
-import type { FinancialPaceWithTrend } from "@/app/actions/financials";
+import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
 import { getSalesFunnelMetricsFromMonday } from "@/app/actions/sales-funnel-live";
 import ActivitySummary from "@/app/components/ActivitySummary";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import DashboardTabs from "@/app/components/DashboardTabs";
 import DailyMovementChart from "@/app/components/DailyMovementChart";
+import DependencyMappingTable from "@/app/components/DependencyMappingTable";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import RevenueGoalChart from "@/app/components/RevenueGoalChart";
 import PartnerDistributionCharts from "@/app/components/PartnerDistributionCharts";
@@ -31,16 +34,18 @@ export default async function Home() {
   let paceByMonth: Record<string, FinancialPaceWithTrend> = {};
   let error: string | null = null;
 
-  const [concJan, concFeb, overviewResult, activityDataResult, signedDealsResult, funnelResult, dailyJan, dailyFeb, ...paceResults] =
+  const [concJan, concFeb, overviewResult, xdashTotalsResult, activityDataResult, signedDealsResult, funnelResult, dailyJan, dailyFeb, dependencyResult, ...paceResults] =
     await Promise.allSettled([
       getPartnerConcentration("2026-01-01"),
       getPartnerConcentration("2026-02-01"),
       getTotalOverviewData(),
+      getMonthlyXDASHTotals(),
       getActivityDataFromFunnel(),
       getSignedDealsCompanies(),
       getSalesFunnelMetricsFromMonday(),
       getDailyMovement("2026-01-01"),
       getDailyMovement("2026-02-01"),
+      getDependencyMappingData(CONCENTRATION_MONTHS),
       ...PACING_MONTH_KEYS.map((m) => getFinancialPace([m])),
     ]);
 
@@ -49,6 +54,8 @@ export default async function Home() {
   const concentrationJan = concJan.status === "fulfilled" ? concJan.value : null;
   const concentrationFeb = concFeb.status === "fulfilled" ? concFeb.value : null;
   const overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
+  const xdashTotals: Record<string, XDASHMonthTotals> =
+    xdashTotalsResult.status === "fulfilled" ? xdashTotalsResult.value : {};
   const activityData: ActivityDailyRow[] =
     activityDataResult.status === "fulfilled" ? activityDataResult.value : [];
   const signedDealsCompanies =
@@ -61,6 +68,8 @@ export default async function Home() {
   const dailyByMonth: Record<string, Awaited<ReturnType<typeof getDailyMovement>>> = {};
   if (dailyJan.status === "fulfilled") dailyByMonth["2026-01-01"] = dailyJan.value;
   if (dailyFeb.status === "fulfilled") dailyByMonth["2026-02-01"] = dailyFeb.value;
+  const dependencyData =
+    dependencyResult.status === "fulfilled" ? dependencyResult.value : null;
 
   if (
     concJan.status === "rejected" ||
@@ -86,7 +95,9 @@ export default async function Home() {
         <DashboardTabs>
           <div className="stagger-children flex flex-col gap-8">
             <DashboardErrorBoundary sectionName="Total overview">
-              {overview.length > 0 && <TotalOverview dataByMonth={overview} />}
+              {overview.length > 0 && (
+                <TotalOverview dataByMonth={overview} xdashByMonth={xdashTotals} />
+              )}
             </DashboardErrorBoundary>
             <DashboardErrorBoundary sectionName="Financial pacing">
               <FinancialPaceFiltered paceByMonth={paceByMonth} />
@@ -108,6 +119,9 @@ export default async function Home() {
                 dataByMonth={dataByMonth}
                 monthKeys={CONCENTRATION_MONTHS}
               />
+            </DashboardErrorBoundary>
+            <DashboardErrorBoundary sectionName="Dependency mapping">
+              <DependencyMappingTable data={dependencyData} />
             </DashboardErrorBoundary>
           </div>
           <div className="stagger-children flex flex-col gap-8">

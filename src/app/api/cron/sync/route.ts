@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
+import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 import { syncXDASHData } from "@/lib/sync/xdash";
 
 export const dynamic = "force-dynamic";
@@ -29,17 +30,21 @@ export async function GET(request: Request) {
     monday?: { funnelRows: number; activityRows: number };
     billing?: { monthsUpdated: number };
     xdash?: { datesSynced: number; rowsUpserted: number };
+    partnerPairs?: { datesRequested: number; datesSynced: number; rowsUpserted: number };
     errors: string[];
   } = { errors: [] };
 
   const xdashDisabled = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
 
-  const [mondayResult, billingResult, xdashResult] = await Promise.allSettled([
+  const [mondayResult, billingResult, xdashResult, partnerPairsResult] = await Promise.allSettled([
     syncMondayData(),
     syncBillingData(),
     xdashDisabled
       ? Promise.resolve({ datesSynced: 0, rowsUpserted: 0 })
       : syncXDASHData(),
+    xdashDisabled
+      ? Promise.resolve({ datesRequested: 0, datesSynced: 0, rowsUpserted: 0 })
+      : syncPartnerPairsData(),
   ]);
 
   if (mondayResult.status === "fulfilled") {
@@ -58,6 +63,12 @@ export async function GET(request: Request) {
     summary.xdash = xdashResult.value;
   } else {
     summary.errors.push(`XDASH: ${xdashResult.reason}`);
+  }
+
+  if (partnerPairsResult.status === "fulfilled") {
+    summary.partnerPairs = partnerPairsResult.value;
+  } else {
+    summary.errors.push(`Partner pairs: ${partnerPairsResult.reason}`);
   }
 
   const ok = summary.errors.length === 0;

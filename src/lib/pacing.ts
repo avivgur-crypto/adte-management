@@ -94,7 +94,10 @@ export async function getPacingSummary(
   /** When provided, compute summary as of this date (for trend: pass yesterday to get prior pacing). */
   asOfDate?: Date,
   /** When provided, compute for this month (YYYY-MM or YYYY-MM-01). Closed months get 100% completion, target = goal. */
-  monthStartParam?: string
+  monthStartParam?: string,
+  /** Pre-computed XDASH media revenue for this month (from the shared cached totals).
+   *  When provided, the function skips its own daily_partner_performance query. */
+  xdashMediaRevenue?: number,
 ): Promise<PacingSummary> {
   const now = asOfDate ?? new Date();
   let year: number;
@@ -150,29 +153,19 @@ export async function getPacingSummary(
       `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
   }
 
-  // Goals from monthly_goals (Billing). Media actual from XDASH (daily_partner_performance) when present, else Billing.
-  const lastDayOfMonth = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
-  const [goalsResult, xdashResult] = await Promise.all([
-    supabase
-      .from("monthly_goals")
-      .select("revenue_goal, profit_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost")
-      .eq("month", monthStart)
-      .maybeSingle(),
-    supabase
-      .from("daily_partner_performance")
-      .select("partner_type, revenue, cost")
-      .gte("date", monthStart)
-      .lte("date", lastDayOfMonth),
-  ]);
+  // Goals from monthly_goals (Billing). Media actual from XDASH when available.
+  const goalsResult = await supabase
+    .from("monthly_goals")
+    .select("revenue_goal, profit_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost")
+    .eq("month", monthStart)
+    .maybeSingle();
 
   const goalsRow = goalsResult.data;
-  let mediaRevenue = Number(goalsRow?.media_revenue ?? 0);
-  if (xdashResult.data && xdashResult.data.length > 0) {
-    const xdashMediaRevenue = xdashResult.data
-      .filter((r) => (r.partner_type ?? "").toLowerCase() === "demand")
-      .reduce((s, r) => s + Number(r.revenue ?? 0), 0);
-    if (xdashMediaRevenue > 0) mediaRevenue = xdashMediaRevenue;
-  }
+  const billingMediaRevenue = Number(goalsRow?.media_revenue ?? 0);
+  const mediaRevenue =
+    xdashMediaRevenue != null && xdashMediaRevenue > 0
+      ? xdashMediaRevenue
+      : billingMediaRevenue;
   const revenueGoal = Number(goalsRow?.revenue_goal ?? 0);
   const saasGoal = Number(goalsRow?.saas_goal ?? 0);
   const saasActual = Number(goalsRow?.saas_actual ?? 0);

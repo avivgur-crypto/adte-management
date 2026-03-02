@@ -49,17 +49,23 @@ async function _getFinancialPace(
         ? monthStarts
         : [getCurrentMonthKey()];
 
+    // Fetch XDASH totals ONCE (cached) — same source as Total Overview
+    const xdashTotals = await getMonthlyXDASHTotals();
+
     if (months.length === 1) {
       const monthStart = months[0]!;
-      const summary = await getPacingSummary(supabaseAdmin, undefined, monthStart);
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
+      const xdash = xdashTotals[monthStart];
+      const summary = await getPacingSummary(
+        supabaseAdmin, undefined, monthStart,
+        xdash?.mediaRevenue,
+      );
       let priorSummary: PacingSummary;
       try {
+        const priorKey = priorMonthKey(monthStart);
+        const priorXdash = xdashTotals[priorKey];
         priorSummary = await getPacingSummary(
-          supabaseAdmin,
-          undefined,
-          priorMonthKey(monthStart)
+          supabaseAdmin, undefined, priorKey,
+          priorXdash?.mediaRevenue,
         );
       } catch {
         priorSummary = summary;
@@ -75,7 +81,10 @@ async function _getFinancialPace(
     }
 
     const summaries = await Promise.all(
-      months.map((m) => getPacingSummary(supabaseAdmin, undefined, m))
+      months.map((m) => {
+        const xdash = xdashTotals[m];
+        return getPacingSummary(supabaseAdmin, undefined, m, xdash?.mediaRevenue);
+      })
     );
 
     function aggSection(
@@ -273,43 +282,112 @@ const OVERVIEW_MONTHS = Array.from({ length: 12 }, (_, i) =>
   `${OVERVIEW_YEAR}-${String(i + 1).padStart(2, "0")}-01`
 );
 
-/** Aggregate daily_partner_performance by month: mediaRevenue = sum(demand revenue), mediaCost = sum(supply cost). */
-async function _getMonthlyXDASHTotals(): Promise<Map<string, { mediaRevenue: number; mediaCost: number }>> {
-  const firstDay = `${OVERVIEW_YEAR}-01-01`;
-  const lastDay = `${OVERVIEW_YEAR}-12-31`;
-  const { data: rows, error } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .select("date, partner_type, revenue, cost")
-    .gte("date", firstDay)
-    .lte("date", lastDay);
-
-  if (error) throw new Error(`getMonthlyXDASHTotals: ${error.message}`);
-
-  const byMonth = new Map<string, { mediaRevenue: number; mediaCost: number }>();
-  for (const r of rows ?? []) {
-    const monthKey = String(r.date).slice(0, 7) + "-01";
-    const cur = byMonth.get(monthKey) ?? { mediaRevenue: 0, mediaCost: 0 };
-    if ((r.partner_type ?? "").toLowerCase() === "demand") {
-      cur.mediaRevenue += Number(r.revenue ?? 0);
-    } else {
-      cur.mediaCost += Number(r.cost ?? 0);
-    }
-    byMonth.set(monthKey, cur);
-  }
-  return byMonth;
+interface DailyRow {
+  date: string;
+  partner_name: string;
+  partner_type: string;
+  revenue: number;
+  cost: number;
 }
 
-/** Returns per-month revenue and cost. Media from XDASH (daily_partner_performance) when present, else Billing (monthly_goals). */
+/** Paginate through all rows — Supabase default limit is 1000. */
+async function fetchAllDailyRows(firstDay: string, lastDay: string): Promise<DailyRow[]> {
+  const PAGE = 1000;
+  const all: DailyRow[] = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabaseAdmin
+      .from("daily_partner_performance")
+      .select("date, partner_name, partner_type, revenue, cost")
+      .gte("date", firstDay)
+      .lte("date", lastDay)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(`fetchAllDailyRows: ${error.message}`);
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+}
+
+export interface XDASHMonthTotals {
+  mediaRevenue: number;
+  mediaCost: number;
+}
+
+const MONTHLY_TOTAL_PARTNER = "__XDASH_MONTHLY_TOTAL__";
+
+/**
+ * Aggregate daily_partner_performance by month.
+ * Prefers the __XDASH_MONTHLY_TOTAL__ row (from Home API) when present,
+ * otherwise falls back to summing per-partner rows.
+ * This ensures dashboard totals match the XDASH Home screen exactly.
+ */
+async function _getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
+  const firstDay = `${OVERVIEW_YEAR}-01-01`;
+  const lastDay = `${OVERVIEW_YEAR}-12-31`;
+  const rows = await fetchAllDailyRows(firstDay, lastDay);
+
+  // Separate Home totals from per-partner rows
+  const homeTotals: Record<string, XDASHMonthTotals> = {};
+  const partnerSums: Record<string, XDASHMonthTotals> = {};
+
+  for (const r of rows) {
+    const monthKey = String(r.date).slice(0, 7) + "-01";
+
+    if (String(r.partner_name ?? "") === MONTHLY_TOTAL_PARTNER) {
+      const cur = homeTotals[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
+      if ((r.partner_type ?? "").toLowerCase() === "demand") {
+        cur.mediaRevenue += Number(r.revenue ?? 0);
+      } else {
+        cur.mediaCost += Number(r.cost ?? 0);
+      }
+      homeTotals[monthKey] = cur;
+    } else {
+      const cur = partnerSums[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
+      if ((r.partner_type ?? "").toLowerCase() === "demand") {
+        cur.mediaRevenue += Number(r.revenue ?? 0);
+      } else {
+        cur.mediaCost += Number(r.cost ?? 0);
+      }
+      partnerSums[monthKey] = cur;
+    }
+  }
+
+  // Prefer Home total (accurate); fall back to partner sum
+  const result: Record<string, XDASHMonthTotals> = {};
+  const allMonths = new Set([...Object.keys(homeTotals), ...Object.keys(partnerSums)]);
+  for (const m of allMonths) {
+    const home = homeTotals[m];
+    const partners = partnerSums[m];
+    result[m] = home && (home.mediaRevenue > 0 || home.mediaCost > 0)
+      ? home
+      : partners ?? { mediaRevenue: 0, mediaCost: 0 };
+  }
+  return result;
+}
+
+/**
+ * Single cached source of truth for XDASH monthly totals.
+ * All dashboard components (Overview, Pacing, etc.) should use this
+ * instead of querying daily_partner_performance separately.
+ */
+export const getMonthlyXDASHTotals = unstable_cache(
+  _getMonthlyXDASHTotals,
+  ["xdash-monthly-totals"],
+  { revalidate: CACHE_TTL },
+);
+
+/** Returns per-month revenue and cost from Billing (monthly_goals) only.
+ *  XDASH data is NOT mixed in here — it is used separately by Pacing and Revenue vs. Goal. */
 async function _getTotalOverviewData(): Promise<MonthOverview[]> {
   return withRetry(async () => {
-    const [xdashTotals, { data: rows, error }] = await Promise.all([
-      _getMonthlyXDASHTotals(),
-      supabaseAdmin
-        .from("monthly_goals")
-        .select("month, media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
-        .in("month", OVERVIEW_MONTHS)
-        .order("month", { ascending: true }),
-    ]);
+    const { data: rows, error } = await supabaseAdmin
+      .from("monthly_goals")
+      .select("month, media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
+      .in("month", OVERVIEW_MONTHS)
+      .order("month", { ascending: true });
 
     if (error) throw new Error(`getTotalOverviewData: ${error.message}`);
 
@@ -317,13 +395,11 @@ async function _getTotalOverviewData(): Promise<MonthOverview[]> {
 
     return OVERVIEW_MONTHS.map((monthKey) => {
       const g = rowsByMonth.get(monthKey);
-      const xdash = xdashTotals.get(monthKey);
-      const hasXDASH = xdash && (xdash.mediaRevenue > 0 || xdash.mediaCost > 0);
       return {
         month: monthKey,
-        mediaRevenue: hasXDASH ? xdash!.mediaRevenue : Number(g?.media_revenue ?? 0),
+        mediaRevenue: Number(g?.media_revenue ?? 0),
         saasRevenue: Number(g?.saas_actual ?? 0),
-        mediaCost: hasXDASH ? xdash!.mediaCost : Number(g?.media_cost ?? 0),
+        mediaCost: Number(g?.media_cost ?? 0),
         techCost: Number(g?.tech_cost ?? 0),
         bsCost: Number(g?.bs_cost ?? 0),
       };
@@ -359,16 +435,11 @@ async function _getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> 
     const endDate = lastDayOfMonth <= yesterday ? lastDayOfMonth : yesterday;
     const lastDay = endDate.toISOString().slice(0, 10);
 
-    const { data: rows, error } = await supabaseAdmin
-      .from("daily_partner_performance")
-      .select("date, partner_type, revenue, cost")
-      .gte("date", firstDay)
-      .lte("date", lastDay);
-
-    if (error) throw new Error(`getDailyMovement: ${error.message}`);
+    const rows = await fetchAllDailyRows(firstDay, lastDay);
 
     const byDate = new Map<string, { revenue: number; cost: number }>();
-    for (const r of rows ?? []) {
+    for (const r of rows) {
+      if (String(r.partner_name ?? "") === MONTHLY_TOTAL_PARTNER) continue;
       const d = String(r.date).slice(0, 10);
       const rev = Number(r.revenue ?? 0);
       const cos = Number(r.cost ?? 0);

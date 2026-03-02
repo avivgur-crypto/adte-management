@@ -122,6 +122,7 @@ export default function RevenueGoalChart({
           <p className="mt-1 text-sm text-white/50">
             Monthly actual vs. finance goal by type
           </p>
+          <p className="mt-0.5 text-xs text-white/35">(from xdash)</p>
         </div>
         <div className="flex rounded-lg border border-white/[0.08] bg-black/30 p-0.5">
           {FILTER_OPTIONS.map((opt) => (

@@ -249,9 +249,12 @@ export default function PartnerDistributionCharts({
   return (
     <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-[25px] font-extrabold text-white">
-          Client Concentration
-        </h2>
+        <div>
+          <h2 className="text-[25px] font-extrabold text-white">
+            Client Concentration
+          </h2>
+          <p className="text-sm text-white/50">(from billing)</p>
+        </div>
         <div className="flex items-center gap-2">
           {aggregated.concentrationRisk && (
             <span className="inline-flex items-center rounded-full bg-white/10 px-2.5 py-0.5 text-xs font-medium text-white/90">
