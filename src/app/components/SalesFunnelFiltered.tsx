@@ -1,36 +1,45 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { getSalesFunnelMetricsAllTime } from "@/app/actions/sales";
-import SalesFunnel from "./SalesFunnel";
+import { useCallback, useEffect, useState } from "react";
+import { getSalesFunnelMetricsFromMonday } from "@/app/actions/sales-funnel-live";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
+import SalesFunnel from "./SalesFunnel";
 
-export default function SalesFunnelFiltered() {
-  const [data, setData] = useState<SalesFunnelMetrics | null>(null);
-  const [loading, setLoading] = useState(true);
+/** Refresh funnel from Monday every 5 min so it keeps updating live. */
+const FUNNEL_REFRESH_MS = 300_000;
+
+type Props = { initialData?: SalesFunnelMetrics | null };
+
+export default function SalesFunnelFiltered({ initialData = null }: Props) {
+  const [data, setData] = useState<SalesFunnelMetrics | null>(initialData ?? null);
+  const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState<string | null>(null);
+
+  const fetchFunnel = useCallback(() => {
+    setError(null);
+    return getSalesFunnelMetricsFromMonday()
+      .then((result) => setData(result ?? null))
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load funnel");
+        setData(null);
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getSalesFunnelMetricsAllTime()
-      .then((result) => {
-        if (!cancelled) setData(result ?? null);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load funnel");
-          setData(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    if (!initialData) {
+      setLoading(true);
+      fetchFunnel();
+    }
+    const interval = setInterval(() => {
+      if (!cancelled) fetchFunnel();
+    }, FUNNEL_REFRESH_MS);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
-  }, []);
+  }, [fetchFunnel, initialData]);
 
   if (loading) {
     return (

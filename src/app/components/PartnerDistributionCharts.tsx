@@ -114,6 +114,8 @@ function SideDonut({
                 cy="50%"
                 innerRadius="48%"
                 outerRadius="62%"
+                startAngle={0}
+                endAngle={360}
                 stroke="rgba(0,0,0,0.25)"
                 strokeWidth={1.5}
                 paddingAngle={2}

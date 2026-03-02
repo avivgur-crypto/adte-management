@@ -2,7 +2,7 @@
  * MTD Pacing Engine (N-1): uses data through YESTERDAY.
  * - effective_days_passed = current day - 1 (e.g. Feb 12 → 11)
  * - pace_target_ratio (pace_factor) = effective_days_passed / days_in_month (e.g. 11/28 ≈ 39.3%)
- * - Media actual = SUM(revenue) from daily_partner_performance (month start through yesterday)
+ * - Media actual = media_revenue from monthly_goals (synced from Master Billing Google Sheet)
  * - Projected = (Actual / effective_days_passed) * days_in_month
  */
 
@@ -150,55 +150,30 @@ export async function getPacingSummary(
       `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
   }
 
-  // Media revenue (MTD Actual for "Media (from Xdash)"): SUM(revenue) where partner_type IN ('demand', 'media')
-  // over full month range [monthStart, dataThroughDate]. Media cost: SUM(cost) where partner_type = 'supply'.
-  // Paginate to fetch all rows (PostgREST default limit 1000).
-  const PAGE_SIZE = 5000;
-
-  let mediaRevenue = 0;
-  let offset = 0;
-  while (true) {
-    const { data: revenueRows } = await supabase
+  // Goals from monthly_goals (Billing). Media actual from XDASH (daily_partner_performance) when present, else Billing.
+  const lastDayOfMonth = `${year}-${String(month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
+  const [goalsResult, xdashResult] = await Promise.all([
+    supabase
+      .from("monthly_goals")
+      .select("revenue_goal, profit_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost")
+      .eq("month", monthStart)
+      .maybeSingle(),
+    supabase
       .from("daily_partner_performance")
-      .select("revenue")
-      .in("partner_type", ["demand", "media"])
+      .select("partner_type, revenue, cost")
       .gte("date", monthStart)
-      .lte("date", dataThroughDate)
-      .range(offset, offset + PAGE_SIZE - 1);
-    if (!revenueRows?.length) break;
-    for (const row of revenueRows) {
-      mediaRevenue += Number(row.revenue ?? 0);
-    }
-    if (revenueRows.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+      .lte("date", lastDayOfMonth),
+  ]);
+
+  const goalsRow = goalsResult.data;
+  let mediaRevenue = Number(goalsRow?.media_revenue ?? 0);
+  if (xdashResult.data && xdashResult.data.length > 0) {
+    const xdashMediaRevenue = xdashResult.data
+      .filter((r) => (r.partner_type ?? "").toLowerCase() === "demand")
+      .reduce((s, r) => s + Number(r.revenue ?? 0), 0);
+    if (xdashMediaRevenue > 0) mediaRevenue = xdashMediaRevenue;
   }
-
-  let mediaCost = 0;
-  offset = 0;
-  while (true) {
-    const { data: costRows } = await supabase
-      .from("daily_partner_performance")
-      .select("cost")
-      .eq("partner_type", "supply")
-      .gte("date", monthStart)
-      .lte("date", dataThroughDate)
-      .range(offset, offset + PAGE_SIZE - 1);
-    if (!costRows?.length) break;
-    for (const row of costRows) {
-      mediaCost += Number(row.cost ?? 0);
-    }
-    if (costRows.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
-  }
-
-  const { data: goalsRow } = await supabase
-    .from("monthly_goals")
-    .select("revenue_goal, profit_goal, saas_goal, saas_actual")
-    .eq("month", monthStart)
-    .maybeSingle();
-
   const revenueGoal = Number(goalsRow?.revenue_goal ?? 0);
-  const profitGoal = Number(goalsRow?.profit_goal ?? 0);
   const saasGoal = Number(goalsRow?.saas_goal ?? 0);
   const saasActual = Number(goalsRow?.saas_actual ?? 0);
 

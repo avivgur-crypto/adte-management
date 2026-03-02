@@ -26,9 +26,11 @@ function RevenueCard({ data }: { data: MonthOverview[] }) {
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         Publisher Revenue
       </h2>
-      <p className="mb-4 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
-        {formatCurrency(totalRevenue)}
-      </p>
+      <div className="mb-4 flex min-h-[65px] items-center">
+        <p className="w-[230px] text-[43px] font-semibold tabular-nums text-white">
+          {formatCurrency(totalRevenue)}
+        </p>
+      </div>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 items-center text-sm">
         <span className="font-medium text-white/50">Media</span>
         <span className="text-right tabular-nums text-white/90">
@@ -61,9 +63,11 @@ function CostCard({ data }: { data: MonthOverview[] }) {
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         Total Cost
       </h2>
-      <p className="mb-4 text-4xl font-semibold tabular-nums text-white sm:text-5xl">
-        {formatCurrency(totalCost)}
-      </p>
+      <div className="mb-4 flex min-h-[65px] items-center">
+        <p className="w-[230px] text-[43px] font-semibold tabular-nums text-white">
+          {formatCurrency(totalCost)}
+        </p>
+      </div>
       <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 items-center text-sm">
         <span className="font-medium text-white/50">Media</span>
         <span className="text-right tabular-nums text-white/90">
@@ -77,6 +81,42 @@ function CostCard({ data }: { data: MonthOverview[] }) {
         <span className="text-right tabular-nums text-white/90">
           {formatCurrency(bsCost)}
         </span>
+      </div>
+    </div>
+  );
+}
+
+function ProfitCard({ data }: { data: MonthOverview[] }) {
+  const totalRevenue = useMemo(
+    () => data.reduce((s, d) => s + d.mediaRevenue + d.saasRevenue, 0),
+    [data]
+  );
+  const totalCost = useMemo(
+    () =>
+      data.reduce(
+        (s, d) => s + d.mediaCost + d.techCost + d.bsCost,
+        0
+      ),
+    [data]
+  );
+  const profit = totalRevenue - totalCost;
+
+  return (
+    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
+        Profit
+      </h2>
+      <div className="mb-4 flex min-h-[65px] items-center">
+        <p
+          className={`w-[230px] text-[43px] font-semibold tabular-nums ${
+            profit >= 0 ? "text-white" : "text-red-400"
+          }`}
+        >
+          {formatCurrency(profit)}
+        </p>
+      </div>
+      <div className="text-sm text-white/50">
+        Revenue − Cost
       </div>
     </div>
   );
@@ -111,9 +151,10 @@ export default function TotalOverview({
       <p className="mb-4 text-sm text-white/50">
         (from Billing)
       </p>
-      <div className="grid gap-6 sm:grid-cols-2">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         <RevenueCard data={filteredData} />
         <CostCard data={filteredData} />
+        <ProfitCard data={filteredData} />
       </div>
     </section>
   );

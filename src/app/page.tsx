@@ -4,15 +4,19 @@ import {
   type ActivityDailyRow,
 } from "@/app/actions/activity";
 import {
+  getDailyMovement,
   getFinancialPace,
   getPartnerConcentration,
   getTotalOverviewData,
 } from "@/app/actions/financials";
 import type { FinancialPaceWithTrend } from "@/app/actions/financials";
+import { getSalesFunnelMetricsFromMonday } from "@/app/actions/sales-funnel-live";
 import ActivitySummary from "@/app/components/ActivitySummary";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import DashboardTabs from "@/app/components/DashboardTabs";
+import DailyMovementChart from "@/app/components/DailyMovementChart";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
+import RevenueGoalChart from "@/app/components/RevenueGoalChart";
 import PartnerDistributionCharts from "@/app/components/PartnerDistributionCharts";
 import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
 import TotalOverview from "@/app/components/TotalOverview";
@@ -27,15 +31,20 @@ export default async function Home() {
   let paceByMonth: Record<string, FinancialPaceWithTrend> = {};
   let error: string | null = null;
 
-  const [concJan, concFeb, overviewResult, activityDataResult, signedDealsResult, ...paceResults] =
+  const [concJan, concFeb, overviewResult, activityDataResult, signedDealsResult, funnelResult, dailyJan, dailyFeb, ...paceResults] =
     await Promise.allSettled([
       getPartnerConcentration("2026-01-01"),
       getPartnerConcentration("2026-02-01"),
       getTotalOverviewData(),
       getActivityDataFromFunnel(),
       getSignedDealsCompanies(),
+      getSalesFunnelMetricsFromMonday(),
+      getDailyMovement("2026-01-01"),
+      getDailyMovement("2026-02-01"),
       ...PACING_MONTH_KEYS.map((m) => getFinancialPace([m])),
     ]);
+
+  const initialFunnelData = funnelResult.status === "fulfilled" ? funnelResult.value : null;
 
   const concentrationJan = concJan.status === "fulfilled" ? concJan.value : null;
   const concentrationFeb = concFeb.status === "fulfilled" ? concFeb.value : null;
@@ -48,6 +57,11 @@ export default async function Home() {
     if (p.status === "fulfilled" && PACING_MONTH_KEYS[i])
       paceByMonth[PACING_MONTH_KEYS[i]!] = p.value;
   });
+
+  const dailyByMonth: Record<string, Awaited<ReturnType<typeof getDailyMovement>>> = {};
+  if (dailyJan.status === "fulfilled") dailyByMonth["2026-01-01"] = dailyJan.value;
+  if (dailyFeb.status === "fulfilled") dailyByMonth["2026-02-01"] = dailyFeb.value;
+
   if (
     concJan.status === "rejected" ||
     concFeb.status === "rejected" ||
@@ -77,6 +91,16 @@ export default async function Home() {
             <DashboardErrorBoundary sectionName="Financial pacing">
               <FinancialPaceFiltered paceByMonth={paceByMonth} />
             </DashboardErrorBoundary>
+            <DashboardErrorBoundary sectionName="Revenue vs Goal chart">
+              <RevenueGoalChart paceByMonth={paceByMonth} />
+            </DashboardErrorBoundary>
+            <DashboardErrorBoundary sectionName="Daily progress">
+              <DailyMovementChart
+                dailyByMonth={dailyByMonth}
+                monthKeys={CONCENTRATION_MONTHS}
+                paceByMonth={paceByMonth}
+              />
+            </DashboardErrorBoundary>
           </div>
           <div className="stagger-children flex flex-col gap-8">
             <DashboardErrorBoundary sectionName="Client concentration">
@@ -88,7 +112,7 @@ export default async function Home() {
           </div>
           <div className="stagger-children flex flex-col gap-8">
             <DashboardErrorBoundary sectionName="Sales funnel">
-              <SalesFunnelFiltered />
+              <SalesFunnelFiltered initialData={initialFunnelData} />
             </DashboardErrorBoundary>
             <DashboardErrorBoundary sectionName="Activity summary">
               <ActivitySummary

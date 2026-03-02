@@ -11,8 +11,11 @@
     "fetch:monday": "tsx --env-file=.env.local src/scripts/fetch-monday.ts",
     "fetch:goals": "tsx --env-file=.env.local src/scripts/fetch-goals.ts",
     "fetch:billing": "tsx --env-file=.env.local src/scripts/fetch-billing.ts",
-"fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts",
-    "backfill:january": "tsx --env-file=.env.local src/scripts/backfill-january.ts"
+    "fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts",
+    "backfill:january": "tsx --env-file=.env.local src/scripts/backfill-january.ts",
+    "backfill:xdash-month": "tsx --env-file=.env.local scripts/backfill-xdash-month.ts",
+    "backfill:xdash-ytd": "tsx --env-file=.env.local scripts/backfill-xdash-year-to-date.ts",
+    "xdash:refresh-token": "tsx --env-file=.env.local src/lib/xdash-auth.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.95.3",
@@ -21,6 +24,7 @@
     "googleapis": "^171.4.0",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",
+    "playwright": "^1.58.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0"

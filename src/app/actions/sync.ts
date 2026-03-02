@@ -18,11 +18,12 @@ export async function triggerSyncViaCronApi(): Promise<TriggerSyncResult> {
 }
 
 async function runSyncInBackground(): Promise<void> {
+  const xdashDisabled = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
   try {
     await Promise.all([
       syncMondayData(),
       syncBillingData(),
-      syncXDASHData(),
+      ...(xdashDisabled ? [] : [syncXDASHData()]),
     ]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

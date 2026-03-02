@@ -6,7 +6,8 @@ import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
 import type { PacingSummary } from "@/lib/pacing";
 
-const CACHE_TTL = 60;
+/** Short TTL so Media (from XDASH home) updates soon after refresh. */
+const CACHE_TTL = 30;
 
 export type PacingTrend = "up" | "down" | "stable";
 
@@ -36,6 +37,9 @@ function comparePace(nowPercent: number | null, prevPercent: number | null): Pac
  * returns aggregated actual and goal sums; projected is null in that case.
  * When monthStarts is empty or omitted, uses current month only.
  */
+/** Pacing calls XDASH home API per month; allow time for slow/retried responses. */
+const PACING_TIMEOUT_MS = 90_000;
+
 async function _getFinancialPace(
   monthStarts?: string[]
 ): Promise<FinancialPaceWithTrend> {
@@ -125,7 +129,7 @@ async function _getFinancialPace(
       },
       isMultiMonth: true,
     };
-  });
+  }, { timeoutMs: PACING_TIMEOUT_MS });
 }
 
 export async function getFinancialPace(
@@ -269,14 +273,43 @@ const OVERVIEW_MONTHS = Array.from({ length: 12 }, (_, i) =>
   `${OVERVIEW_YEAR}-${String(i + 1).padStart(2, "0")}-01`
 );
 
-/** Returns per-month revenue and cost for Total Overview from Master Billing 2026 (monthly_goals). */
+/** Aggregate daily_partner_performance by month: mediaRevenue = sum(demand revenue), mediaCost = sum(supply cost). */
+async function _getMonthlyXDASHTotals(): Promise<Map<string, { mediaRevenue: number; mediaCost: number }>> {
+  const firstDay = `${OVERVIEW_YEAR}-01-01`;
+  const lastDay = `${OVERVIEW_YEAR}-12-31`;
+  const { data: rows, error } = await supabaseAdmin
+    .from("daily_partner_performance")
+    .select("date, partner_type, revenue, cost")
+    .gte("date", firstDay)
+    .lte("date", lastDay);
+
+  if (error) throw new Error(`getMonthlyXDASHTotals: ${error.message}`);
+
+  const byMonth = new Map<string, { mediaRevenue: number; mediaCost: number }>();
+  for (const r of rows ?? []) {
+    const monthKey = String(r.date).slice(0, 7) + "-01";
+    const cur = byMonth.get(monthKey) ?? { mediaRevenue: 0, mediaCost: 0 };
+    if ((r.partner_type ?? "").toLowerCase() === "demand") {
+      cur.mediaRevenue += Number(r.revenue ?? 0);
+    } else {
+      cur.mediaCost += Number(r.cost ?? 0);
+    }
+    byMonth.set(monthKey, cur);
+  }
+  return byMonth;
+}
+
+/** Returns per-month revenue and cost. Media from XDASH (daily_partner_performance) when present, else Billing (monthly_goals). */
 async function _getTotalOverviewData(): Promise<MonthOverview[]> {
   return withRetry(async () => {
-    const { data: rows, error } = await supabaseAdmin
-      .from("monthly_goals")
-      .select("month, media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
-      .in("month", OVERVIEW_MONTHS)
-      .order("month", { ascending: true });
+    const [xdashTotals, { data: rows, error }] = await Promise.all([
+      _getMonthlyXDASHTotals(),
+      supabaseAdmin
+        .from("monthly_goals")
+        .select("month, media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
+        .in("month", OVERVIEW_MONTHS)
+        .order("month", { ascending: true }),
+    ]);
 
     if (error) throw new Error(`getTotalOverviewData: ${error.message}`);
 
@@ -284,11 +317,13 @@ async function _getTotalOverviewData(): Promise<MonthOverview[]> {
 
     return OVERVIEW_MONTHS.map((monthKey) => {
       const g = rowsByMonth.get(monthKey);
+      const xdash = xdashTotals.get(monthKey);
+      const hasXDASH = xdash && (xdash.mediaRevenue > 0 || xdash.mediaCost > 0);
       return {
         month: monthKey,
-        mediaRevenue: Number(g?.media_revenue ?? 0),
+        mediaRevenue: hasXDASH ? xdash!.mediaRevenue : Number(g?.media_revenue ?? 0),
         saasRevenue: Number(g?.saas_actual ?? 0),
-        mediaCost: Number(g?.media_cost ?? 0),
+        mediaCost: hasXDASH ? xdash!.mediaCost : Number(g?.media_cost ?? 0),
         techCost: Number(g?.tech_cost ?? 0),
         bsCost: Number(g?.bs_cost ?? 0),
       };
@@ -301,3 +336,61 @@ export const getTotalOverviewData = unstable_cache(
   ["total-overview"],
   { revalidate: CACHE_TTL },
 );
+
+// ---------------------------------------------------------------------------
+// Daily movement (from XDASH daily_partner_performance — for daily chart)
+// ---------------------------------------------------------------------------
+
+export interface DailyMovementDay {
+  date: string;
+  revenue: number;
+  cost: number;
+}
+
+/** Returns per-day revenue (demand) and cost (supply) for a given month from daily_partner_performance. */
+async function _getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> {
+  return withRetry(async () => {
+    const [y, m] = monthKey.split("-").map(Number);
+    if (!y || !m) return [];
+    const firstDay = `${monthKey.slice(0, 7)}-01`;
+    const lastDayOfMonth = new Date(y, m, 0);
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const endDate = lastDayOfMonth <= yesterday ? lastDayOfMonth : yesterday;
+    const lastDay = endDate.toISOString().slice(0, 10);
+
+    const { data: rows, error } = await supabaseAdmin
+      .from("daily_partner_performance")
+      .select("date, partner_type, revenue, cost")
+      .gte("date", firstDay)
+      .lte("date", lastDay);
+
+    if (error) throw new Error(`getDailyMovement: ${error.message}`);
+
+    const byDate = new Map<string, { revenue: number; cost: number }>();
+    for (const r of rows ?? []) {
+      const d = String(r.date).slice(0, 10);
+      const rev = Number(r.revenue ?? 0);
+      const cos = Number(r.cost ?? 0);
+      const existing = byDate.get(d) ?? { revenue: 0, cost: 0 };
+      if ((r.partner_type ?? "").toLowerCase() === "demand") {
+        existing.revenue += rev;
+      } else {
+        existing.cost += cos;
+      }
+      byDate.set(d, existing);
+    }
+
+    return Array.from(byDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, { revenue, cost }]) => ({ date, revenue, cost }));
+  });
+}
+
+export async function getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> {
+  return unstable_cache(
+    () => _getDailyMovement(monthKey),
+    ["daily-movement", monthKey],
+    { revalidate: CACHE_TTL },
+  )();
+}

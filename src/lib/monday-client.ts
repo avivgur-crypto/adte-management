@@ -103,6 +103,13 @@ export const CREATION_LOG_COLUMN_IDS = {
 /** Contracts board: column with company name. */
 export const CONTRACTS_COMPANY_COLUMN_ID = "text_mkpw5mcs";
 
+/**
+ * Deals board: column that holds pipeline stage (Legal Negotiation, Waiting for sign, etc.).
+ * Set DEALS_STATUS_COLUMN_ID in .env.local so Ops Approved count is correct.
+ * Read at runtime so it always uses current env.
+ */
+export const DEALS_STATUS_COLUMN_ID = process.env.DEALS_STATUS_COLUMN_ID ?? "";
+
 const ITEMS_PAGE_LIMIT = 500;
 
 /**

@@ -1,20 +1,28 @@
 /**
  * XDASH sync: demand & supply partner data → daily_partner_performance.
  * Fetches BOTH demand (revenue) and supply (cost) partners so revenue and cost are captured.
- * Optimized: parallel fetches for all dates, single batch upsert.
+ *
+ * Uses small-batch sequential fetching to avoid overloading the backup server.
  */
 
 import {
   fetchDemandPartners,
   fetchSupplyPartners,
+  fetchReportForDate,
   mapDemandPartners,
   mapSupplyPartners,
+  useReportsForSync,
   type PartnerRow,
 } from "@/lib/xdash-client";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const TABLE = "daily_partner_performance";
 const BATCH_UPSERT_SIZE = 2000;
+
+/** Process one date at a time — the backup server is very weak. */
+const FETCH_BATCH_SIZE = 1;
+/** Delay between fetch batches to give the backup server breathing room. */
+const INTER_BATCH_DELAY_MS = 5000;
 
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
@@ -77,14 +85,16 @@ function rowToRecord(
   };
 }
 
-/** Fetch demand + supply for one date. */
+/** Fetch demand + supply for one date. Uses Reports API (one call) when XDASH_USE_REPORTS=true, else partners/demand + partners/supply. */
 async function fetchDay(
   date: string
 ): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }> {
-  const [demandRaw, supplyRaw] = await Promise.all([
-    fetchDemandPartners(date),
-    fetchSupplyPartners(date),
-  ]);
+  if (useReportsForSync()) {
+    const { demand, supply } = await fetchReportForDate(date);
+    return { date, demand, supply };
+  }
+  const demandRaw = await fetchDemandPartners(date);
+  const supplyRaw = await fetchSupplyPartners(date);
   return {
     date,
     demand: mapDemandPartners(demandRaw),
@@ -107,14 +117,59 @@ async function batchUpsert(records: Record<string, unknown>[]): Promise<number> 
   return total;
 }
 
+/**
+ * Process dates in small batches to avoid overwhelming the backup server.
+ * Each batch fetches FETCH_BATCH_SIZE dates, then waits INTER_BATCH_DELAY_MS.
+ */
+async function fetchDatesInBatches(
+  dates: string[]
+): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }[]> {
+  const results: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[] = [];
+  for (let i = 0; i < dates.length; i += FETCH_BATCH_SIZE) {
+    const batch = dates.slice(i, i + FETCH_BATCH_SIZE);
+    console.log(`[xdash-sync] Fetching batch ${Math.floor(i / FETCH_BATCH_SIZE) + 1} (${batch.join(", ")}) …`);
+    const batchResults = await Promise.all(batch.map((date) => fetchDay(date)));
+    results.push(...batchResults);
+    if (i + FETCH_BATCH_SIZE < dates.length) {
+      await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
+    }
+  }
+  return results;
+}
+
 export interface SyncXDASHResult {
   datesSynced: number;
   rowsUpserted: number;
 }
 
+/**
+ * Incremental sync — minimal API calls, no redundant fetches.
+ *
+ * XDASH data is daily granularity; a query for a date returns that day's totals.
+ *  - "Today" is the only date whose data is still growing → always fetch it.
+ *  - "Yesterday" was last fetched at ~18:00 UTC the day before (missing last 6h).
+ *    Finalize it once at the first cron run after midnight (hour < 6 UTC).
+ *  - Older dates never change → never re-fetch.
+ *
+ * With cron every 6h (00:00, 06:00, 12:00, 18:00 UTC):
+ *   00:00 → yesterday + today  (4 API calls — finalize yesterday)
+ *   06/12/18 → today only      (2 API calls each)
+ *   Total: 10 API calls/day, zero wasted overlap.
+ *
+ * Historical backfills: use syncXDASHDataForMonth() via the CLI script.
+ */
 export async function syncXDASHData(): Promise<SyncXDASHResult> {
-  const dates = datesFromMonthStartThroughYesterday();
-  const dayResults = await Promise.all(dates.map((date) => fetchDay(date)));
+  const now = new Date();
+  const today = formatLocalDate(now);
+  const dates = [today];
+
+  const hourUTC = now.getUTCHours();
+  if (hourUTC < 6) {
+    dates.unshift(formatLocalDate(getYesterday(now)));
+  }
+
+  console.log(`[xdash-sync] Incremental sync for: ${dates.join(", ")}`);
+  const dayResults = await fetchDatesInBatches(dates);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
     for (const r of demand) records.push(rowToRecord(date, "demand", r));
@@ -133,7 +188,7 @@ export async function syncXDASHDataForMonth(
   month: number
 ): Promise<SyncXDASHResult> {
   const dates = datesForMonth(year, month);
-  const dayResults = await Promise.all(dates.map((date) => fetchDay(date)));
+  const dayResults = await fetchDatesInBatches(dates);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
     for (const r of demand) records.push(rowToRecord(date, "demand", r));

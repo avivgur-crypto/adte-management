@@ -1,22 +1,40 @@
 /**
- * XDASH API Client
+ * XDASH Backup API Client
  *
- * Fetches financial data from the XDASH internal system:
- *   - Demand partners  → revenue
- *   - Supply partners  → cost
- *   - Ad-server overview (legacy)
+ * Fetches financial data from the XDASH **backup** system (weak/unstable).
+ * All requests are throttled to avoid overloading it.
  *
- * IMPORTANT: The auth token expires periodically. When it does, copy a fresh
- * token from your browser (DevTools > Network > copy as cURL) and update
- * XDASH_AUTH_TOKEN in your `.env.local` file.
+ *   - Partners overview: /partners/demand/overview + /partners/supply/overview (2 calls per date)
+ *   - Reports API: one call per date with metrics Revenue/Cost/Impressions — set XDASH_USE_REPORTS=true
+ *   - Ad-server overview (legacy): /home/overview/adServers
+ *
+ * IMPORTANT: The auth token expires periodically. Copy a fresh token from the backup site
+ * (DevTools > Network > auth-token cookie) and update XDASH_AUTH_TOKEN in `.env.local`.
  */
+
+// ============================================================================
+// KILL SWITCH — set XDASH_DISABLED=true in .env.local to block ALL API calls.
+// Remove or set to false once XDASH server issues are resolved.
+// ============================================================================
+const XDASH_DISABLED = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
+
+class XDashDisabledError extends Error {
+  constructor() {
+    super("[xdash-client] XDASH API calls are disabled (XDASH_DISABLED=true). No requests will be sent.");
+    this.name = "XDashDisabledError";
+  }
+}
+
+function assertNotDisabled() {
+  if (XDASH_DISABLED) throw new XDashDisabledError();
+}
 
 // ============================================================================
 // Configuration — credentials loaded from environment variables (.env.local)
 // ============================================================================
 const XDASH_AUTH_TOKEN = process.env.XDASH_AUTH_TOKEN ?? "";
 const XDASH_ORGANIZATION_ID = process.env.XDASH_ORGANIZATION_ID ?? "";
-const XDASH_API_BASE = "https://api.xdash.adte-system.com";
+const XDASH_API_BASE = "https://xdash-for-aviv-temp-txe5v.ondigitalocean.app";
 
 function assertEnvVars() {
   if (!XDASH_AUTH_TOKEN) {
@@ -88,23 +106,6 @@ export interface XDashApiResponse {
   };
 }
 
-/** Simplified financial summary for dashboard use */
-export interface FinancialSummary {
-  revenue: number;
-  cost: number;
-  profit: number;
-  netRevenue: number;
-  netCost: number;
-  impressions: number;
-  serviceCost: number;
-  adServers: Array<{
-    name: string;
-    revenue: number;
-    cost: number;
-    profit: number;
-  }>;
-}
-
 // ---------------------------------------------------------------------------
 // Partner-level types  (demand / supply endpoints) — based on actual API logs
 // ---------------------------------------------------------------------------
@@ -155,6 +156,127 @@ export interface PartnerRow {
 }
 
 // ============================================================================
+// Reports API — lighter than Home/Partners overview, one query per date
+// ============================================================================
+
+const XDASH_USE_REPORTS = (process.env.XDASH_USE_REPORTS ?? "false").toLowerCase() === "true";
+const XDASH_REPORT_PATH = process.env.XDASH_REPORT_PATH ?? "/report";
+
+/** Minimal report payload: one date, Revenue/Cost/Impressions, by Demand + Supply Partner */
+function buildReportPayload(date: string): string {
+  return JSON.stringify({
+    startDate: date,
+    endDate: date,
+    aggregation: "sum",
+    metrics: ["revenue", "cost", "impressions"],
+    dimensions: ["Demand Partner", "Supply Partner"],
+  });
+}
+
+/** Possible report row shape (backend may use different keys) */
+interface ReportRowLike {
+  revenue?: number;
+  cost?: number;
+  impressions?: number;
+  partnerName?: string;
+  name?: string;
+  "Demand Partner"?: string;
+  "Supply Partner"?: string;
+  demandPartner?: string;
+  supplyPartner?: string;
+  dimension?: string;
+  side?: string;
+  [key: string]: unknown;
+}
+
+function parseReportRowToPartnerRows(row: ReportRowLike): PartnerRow[] {
+  const revenue = parseCurrencyValue(row.revenue ?? row.Revenue);
+  const cost = parseCurrencyValue(row.cost ?? row.Cost);
+  const impressions = Number(row.impressions ?? row.Impressions ?? 0) || 0;
+  const name =
+    (row.partnerName ?? row.name ?? row["Demand Partner"] ?? row["Supply Partner"] ?? row.demandPartner ?? row.supplyPartner) as string | undefined;
+  const partnerName = typeof name === "string" ? name.trim() : "Unknown";
+
+  const out: PartnerRow[] = [];
+  if (revenue > 0) out.push({ name: partnerName, revenue, cost: 0, impressions });
+  if (cost > 0) out.push({ name: partnerName, revenue: 0, cost, impressions });
+  return out;
+}
+
+/** Extract array of rows from report response (tries common keys) */
+function getReportRows(data: unknown): ReportRowLike[] {
+  if (Array.isArray(data)) return data as ReportRowLike[];
+  const obj = data as Record<string, unknown>;
+  const arr = obj?.data ?? obj?.rows ?? obj?.result ?? obj?.reportData;
+  if (Array.isArray(arr)) return arr as ReportRowLike[];
+  const inner = obj?.data as Record<string, unknown> | undefined;
+  if (inner && typeof inner === "object" && Array.isArray(inner.rows)) {
+    return inner.rows as ReportRowLike[];
+  }
+  return [];
+}
+
+const REPORT_RETRY_ON_STATUS = [502, 503, 504];
+const REPORT_RETRY_ATTEMPTS = 2;
+const REPORT_RETRY_DELAY_MS = 8000;
+
+/**
+ * Fetch one day of partner data via the Reports API (lighter than partners/demand + partners/supply).
+ * Returns { demand, supply } so sync can use the same record format.
+ * If the backend uses a different path or body, set XDASH_REPORT_PATH and/or adapt buildReportPayload.
+ */
+export async function fetchReportForDate(
+  date: string
+): Promise<{ demand: PartnerRow[]; supply: PartnerRow[] }> {
+  assertNotDisabled();
+  assertEnvVars();
+
+  const url = `${XDASH_API_BASE}${XDASH_REPORT_PATH}`;
+  const body = buildReportPayload(date);
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
+    const response = await fetchWithRetry(url, {
+      method: "POST",
+      headers: buildHeaders(),
+      body,
+    });
+
+    if (response.ok) {
+      const raw = (await response.json()) as unknown;
+      const rows = getReportRows(raw);
+
+      const demand: PartnerRow[] = [];
+      const supply: PartnerRow[] = [];
+
+      for (const row of rows) {
+        const parsed = parseReportRowToPartnerRows(row);
+        for (const p of parsed) {
+          if (p.revenue > 0) demand.push(p);
+          else if (p.cost > 0) supply.push(p);
+        }
+      }
+
+      return { demand, supply };
+    }
+
+    const errorBody = await response.text();
+    lastError = new Error(`XDASH Report API error ${response.status}: ${response.statusText}\n${errorBody}`);
+    if (!REPORT_RETRY_ON_STATUS.includes(response.status) || attempt === REPORT_RETRY_ATTEMPTS) {
+      throw lastError;
+    }
+    console.warn(`[xdash-client] Report got ${response.status}, retrying in ${REPORT_RETRY_DELAY_MS / 1000}s …`);
+    await new Promise((r) => setTimeout(r, REPORT_RETRY_DELAY_MS));
+  }
+  throw lastError ?? new Error("XDASH report fetch failed");
+}
+
+/** True if sync should use Reports API instead of partners/demand and partners/supply. */
+export function useReportsForSync(): boolean {
+  return XDASH_USE_REPORTS;
+}
+
+// ============================================================================
 // Shared helpers
 // ============================================================================
 
@@ -184,10 +306,23 @@ function buildDatePayload(date: string): string {
   });
 }
 
-const RETRY_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 3000;
+const RETRY_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 5000;
 
-/** Fetch with retry on network errors (ETIMEDOUT, ECONNRESET, etc.). */
+// Throttle: minimum gap between consecutive API calls to protect the backup server.
+const THROTTLE_MS = 3000;
+let _lastRequestTime = 0;
+
+async function throttle(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - _lastRequestTime;
+  if (elapsed < THROTTLE_MS) {
+    await new Promise((r) => setTimeout(r, THROTTLE_MS - elapsed));
+  }
+  _lastRequestTime = Date.now();
+}
+
+/** Fetch with retry on network errors (ETIMEDOUT, ECONNRESET, etc.). Throttled to protect backup server. */
 async function fetchWithRetry(
   url: string,
   options: RequestInit
@@ -195,6 +330,7 @@ async function fetchWithRetry(
   let lastErr: unknown;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     try {
+      await throttle();
       const res = await fetch(url, options);
       return res;
     } catch (e) {
@@ -215,108 +351,219 @@ async function fetchWithRetry(
 // Core fetch function (legacy — ad-server overview)
 // ============================================================================
 
+const HOME_OVERVIEW_TIMEOUT_MS = 90_000;
+const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
+const HOME_OVERVIEW_RETRY_ATTEMPTS = 2;
+const HOME_OVERVIEW_RETRY_DELAY_MS = 5000;
+
 /**
- * Fetches the ad-server overview data from XDASH for a given date range.
- *
- * This replicates the exact headers, cookies, and payload captured from a
- * browser session so the server treats it as an authenticated request.
+ * Fetches the ad-server overview data from XDASH backup for a given date range.
+ * Retries on 502/503/504 (Bad Gateway / Unavailable).
  */
 export async function fetchAdServerOverview(
   dateRange: XDashDateRange
 ): Promise<XDashApiResponse> {
+  assertNotDisabled();
   assertEnvVars();
-  const url = `${XDASH_API_BASE}/home/overview/adServers`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: buildHeaders(),
-    body: JSON.stringify({
-      startDate: dateRange.startDate,
-      endDate: dateRange.endDate,
-      specificComparisonDate: dateRange.specificComparisonDate ?? null,
-    }),
+  const url = `${XDASH_API_BASE}/home/overview/adServers`;
+  const body = JSON.stringify({
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    specificComparisonDate: dateRange.specificComparisonDate ?? null,
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(
-      `XDASH API error ${response.status}: ${response.statusText}\n${errorBody}`
-    );
-  }
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= HOME_OVERVIEW_RETRY_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), HOME_OVERVIEW_TIMEOUT_MS);
+    try {
+      const response = await fetchWithRetry(url, {
+        method: "POST",
+        headers: buildHeaders(),
+        body,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-  const json: XDashApiResponse = await response.json();
-  return json;
+      if (response.ok) {
+        const json: XDashApiResponse = await response.json();
+        return json;
+      }
+
+      const errorBody = await response.text();
+      lastError = new Error(
+        `XDASH API error ${response.status}: ${response.statusText}\n${errorBody}`
+      );
+      if (!HOME_OVERVIEW_RETRY_ON_STATUS.includes(response.status) || attempt === HOME_OVERVIEW_RETRY_ATTEMPTS) {
+        throw lastError;
+      }
+    } catch (e) {
+      clearTimeout(timeoutId);
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (attempt === HOME_OVERVIEW_RETRY_ATTEMPTS) throw lastError;
+    }
+    await new Promise((r) => setTimeout(r, HOME_OVERVIEW_RETRY_DELAY_MS));
+  }
+  throw lastError ?? new Error("XDASH home overview failed");
 }
 
-// ============================================================================
-// Convenience: Fetch today's overview (legacy)
-// ============================================================================
+const REVENUE_KEYS = ["revenue", "netRevenue", "totalRevenue", "revenueAmount"];
 
-export async function fetchTodayOverview(): Promise<XDashApiResponse> {
-  const today = new Date().toISOString().split("T")[0];
-  return fetchAdServerOverview({
-    startDate: today,
-    endDate: today,
+function readRevenueFromTotals(totals: unknown): number {
+  if (totals == null) return 0;
+  const t = totals as Record<string, unknown>;
+  for (const key of REVENUE_KEYS) {
+    const v = t[key];
+    if (v !== undefined && v !== null) {
+      const n = parseCurrencyValue(v);
+      if (n > 0) return n;
+    }
+  }
+  return parseCurrencyValue(t.revenue ?? t.netRevenue);
+}
+
+/** Recursively find max revenue in object (single aggregate object). */
+function findRevenueInObject(obj: unknown, depth = 0): number {
+  if (depth > 10) return 0;
+  if (obj == null) return 0;
+  let best = readRevenueFromTotals(obj);
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      best = Math.max(best, findRevenueInObject(item, depth + 1));
+    }
+    return best;
+  }
+  if (typeof obj === "object") {
+    const rec = obj as Record<string, unknown>;
+    for (const key of ["totals", "selectedDates", "overviewTotals", "data", "selectedPeriod"]) {
+      best = Math.max(best, findRevenueInObject(rec[key], depth + 1));
+    }
+    for (const v of Object.values(rec)) {
+      best = Math.max(best, findRevenueInObject(v, depth + 1));
+    }
+  }
+  return best;
+}
+
+/** Sum all revenue values in tree (for responses that have only per-item revenue, no top-level totals). */
+function sumAllRevenueInObject(obj: unknown, depth = 0): number {
+  if (depth > 12) return 0;
+  if (obj == null) return 0;
+  let sum = 0;
+  const v = readRevenueFromTotals(obj);
+  if (v > 0) sum += v;
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      sum += sumAllRevenueInObject(item, depth + 1);
+    }
+    return sum;
+  }
+  if (typeof obj === "object") {
+    for (const val of Object.values(obj as Record<string, unknown>)) {
+      sum += sumAllRevenueInObject(val, depth + 1);
+    }
+  }
+  return sum;
+}
+
+/**
+ * Extract revenue from a raw XDASH home/overview response (for debugging and for getHomeRevenueForRange).
+ */
+export function extractRevenueFromHomeResponse(raw: unknown): number {
+  const data = raw as Record<string, unknown>;
+  const ot = data?.overviewTotals as Record<string, unknown> | undefined;
+  const sd = data?.selectedDates as Record<string, unknown> | undefined;
+
+  const candidates: unknown[] = [
+    ot?.selectedDates && (ot.selectedDates as Record<string, unknown>)?.totals,
+    ot?.totals,
+    sd?.totals,
+    data?.totals,
+    data?.data && (data.data as Record<string, unknown>)?.totals,
+  ].filter(Boolean);
+
+  for (const totals of candidates) {
+    const revenue = readRevenueFromTotals(totals);
+    if (revenue > 0) return revenue;
+  }
+
+  const fromMax = findRevenueInObject(data);
+  const fromSum = sumAllRevenueInObject(data);
+  return Math.max(fromMax, fromSum);
+}
+
+/**
+ * Revenue from XDASH backup home screen for a date range.
+ * Uses /home/overview/adServers — same source as the main dashboard, not "All Demand Partners".
+ */
+export async function getHomeRevenueForRange(
+  startDate: string,
+  endDate: string
+): Promise<number> {
+  assertNotDisabled();
+  const raw = await fetchAdServerOverview({
+    startDate,
+    endDate,
     specificComparisonDate: null,
   });
+  return extractRevenueFromHomeResponse(raw);
 }
 
 // ============================================================================
 // Partner endpoints — Demand & Supply
 // ============================================================================
 
-/**
- * Fetch demand (revenue) partners overview for a single date.
- *
- * Endpoint: POST /partners/demand/overview
- */
+/** Fetch demand (revenue) partners overview for a single date. */
 export async function fetchDemandPartners(
   date: string
 ): Promise<XDashPartnerApiResponse> {
-  assertEnvVars();
-  const url = `${XDASH_API_BASE}/partners/demand/overview`;
-
-  const response = await fetchWithRetry(url, {
-    method: "POST",
-    headers: buildHeaders(),
-    body: buildDatePayload(date),
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(
-      `XDASH Demand API error ${response.status}: ${response.statusText}\n${errorBody}`
-    );
-  }
-
-  return (await response.json()) as XDashPartnerApiResponse;
+  return _fetchPartners("demand", date);
 }
 
-/**
- * Fetch supply (cost) partners overview for a single date.
- *
- * Endpoint: POST /partners/supply/overview
- */
+/** Fetch supply (cost) partners overview for a single date. */
 export async function fetchSupplyPartners(
   date: string
 ): Promise<XDashPartnerApiResponse> {
+  return _fetchPartners("supply", date);
+}
+
+const PARTNER_RETRY_ON_STATUS = [502, 503, 504];
+const PARTNER_RETRY_ATTEMPTS = 2;
+const PARTNER_RETRY_DELAY_MS = 8000;
+
+async function _fetchPartners(
+  side: "demand" | "supply",
+  date: string
+): Promise<XDashPartnerApiResponse> {
+  assertNotDisabled();
   assertEnvVars();
-  const url = `${XDASH_API_BASE}/partners/supply/overview`;
+  const url = `${XDASH_API_BASE}/partners/${side}/overview`;
 
-  const response = await fetchWithRetry(url, {
-    method: "POST",
-    headers: buildHeaders(),
-    body: buildDatePayload(date),
-  });
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= PARTNER_RETRY_ATTEMPTS; attempt++) {
+    const response = await fetchWithRetry(url, {
+      method: "POST",
+      headers: buildHeaders(),
+      body: buildDatePayload(date),
+    });
 
-  if (!response.ok) {
+    if (response.ok) {
+      return (await response.json()) as XDashPartnerApiResponse;
+    }
+
     const errorBody = await response.text();
-    throw new Error(
-      `XDASH Supply API error ${response.status}: ${response.statusText}\n${errorBody}`
+    lastError = new Error(
+      `XDASH ${side} API error ${response.status}: ${response.statusText}\n${errorBody}`
     );
-  }
 
-  return (await response.json()) as XDashPartnerApiResponse;
+    if (!PARTNER_RETRY_ON_STATUS.includes(response.status) || attempt === PARTNER_RETRY_ATTEMPTS) {
+      throw lastError;
+    }
+    console.warn(`[xdash-client] Partners ${side} got ${response.status}, retrying in ${PARTNER_RETRY_DELAY_MS / 1000}s …`);
+    await new Promise((r) => setTimeout(r, PARTNER_RETRY_DELAY_MS));
+  }
+  throw lastError ?? new Error(`XDASH ${side} partners fetch failed`);
 }
 
 // ============================================================================
@@ -394,30 +641,3 @@ export function mapSupplyPartners(
   });
 }
 
-// ============================================================================
-// Helper: Extract a clean financial summary from the raw API response (legacy)
-// ============================================================================
-
-export function extractFinancialSummary(
-  response: XDashApiResponse,
-  period: keyof XDashApiResponse["overviewTotals"] = "selectedDates"
-): FinancialSummary {
-  const periodData = response.overviewTotals[period];
-  const { totals } = periodData;
-
-  return {
-    revenue: totals.revenue,
-    cost: totals.cost,
-    profit: totals.revenue - totals.cost,
-    netRevenue: totals.netRevenue,
-    netCost: totals.netCost,
-    impressions: totals.impressions,
-    serviceCost: totals.serviceCost,
-    adServers: periodData.adServers.map((server) => ({
-      name: server.adServer.name,
-      revenue: server.totals.revenue,
-      cost: server.totals.cost,
-      profit: server.totals.revenue - server.totals.cost,
-    })),
-  };
-}
