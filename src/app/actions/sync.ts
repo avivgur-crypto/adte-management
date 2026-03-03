@@ -2,6 +2,7 @@
 
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
+import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 import { syncXDASHData } from "@/lib/sync/xdash";
 
 export type TriggerSyncResult =
@@ -9,8 +10,8 @@ export type TriggerSyncResult =
   | { success: false; error: string };
 
 /**
- * Starts the full sync in the background and returns success immediately
- * so the UI does not wait for the entire process. Sync runs: Monday + Billing + XDASH in parallel.
+ * Starts the full sync in the background and returns success immediately.
+ * Runs: Monday + Billing + XDASH + Partner Pairs in parallel.
  */
 export async function triggerSyncViaCronApi(): Promise<TriggerSyncResult> {
   void runSyncInBackground();
@@ -25,6 +26,9 @@ async function runSyncInBackground(): Promise<void> {
       syncBillingData(),
       ...(xdashDisabled ? [] : [syncXDASHData()]),
     ]);
+    if (!xdashDisabled) {
+      await syncPartnerPairsData();
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[sync] Background sync error:", message);

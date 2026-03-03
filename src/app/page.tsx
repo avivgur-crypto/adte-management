@@ -3,10 +3,11 @@ import {
   getSignedDealsCompanies,
   type ActivityDailyRow,
 } from "@/app/actions/activity";
-import { getDependencyMappingData } from "@/app/actions/dependency-mapping";
+import { getAllDependencyPairs } from "@/app/actions/dependency-mapping";
+import type { PairEntry } from "@/lib/dependency-mapping-utils";
 import {
-  getDailyMovement,
-  getFinancialPace,
+  getAllDailyMovement,
+  getAllPaceByMonth,
   getMonthlyXDASHTotals,
   getPartnerConcentration,
   getTotalOverviewData,
@@ -17,7 +18,7 @@ import ActivitySummary from "@/app/components/ActivitySummary";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import DashboardTabs from "@/app/components/DashboardTabs";
 import DailyMovementChart from "@/app/components/DailyMovementChart";
-import DependencyMappingTable from "@/app/components/DependencyMappingTable";
+import PartnersFiltered from "@/app/components/PartnersFiltered";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import RevenueGoalChart from "@/app/components/RevenueGoalChart";
 import PartnerDistributionCharts from "@/app/components/PartnerDistributionCharts";
@@ -31,26 +32,33 @@ const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
 );
 
 export default async function Home() {
-  let paceByMonth: Record<string, FinancialPaceWithTrend> = {};
   let error: string | null = null;
 
-  const [concJan, concFeb, overviewResult, xdashTotalsResult, activityDataResult, signedDealsResult, funnelResult, dailyJan, dailyFeb, dependencyResult, ...paceResults] =
-    await Promise.allSettled([
-      getPartnerConcentration("2026-01-01"),
-      getPartnerConcentration("2026-02-01"),
-      getTotalOverviewData(),
-      getMonthlyXDASHTotals(),
-      getActivityDataFromFunnel(),
-      getSignedDealsCompanies(),
-      getSalesFunnelMetricsFromMonday(),
-      getDailyMovement("2026-01-01"),
-      getDailyMovement("2026-02-01"),
-      getDependencyMappingData(CONCENTRATION_MONTHS),
-      ...PACING_MONTH_KEYS.map((m) => getFinancialPace([m])),
-    ]);
+  const [
+    concJan,
+    concFeb,
+    overviewResult,
+    xdashTotalsResult,
+    activityDataResult,
+    signedDealsResult,
+    funnelResult,
+    paceResult,
+    dailyResult,
+    depPairsResult,
+  ] = await Promise.allSettled([
+    getPartnerConcentration("2026-01-01"),
+    getPartnerConcentration("2026-02-01"),
+    getTotalOverviewData(),
+    getMonthlyXDASHTotals(),
+    getActivityDataFromFunnel(),
+    getSignedDealsCompanies(),
+    getSalesFunnelMetricsFromMonday(),
+    getAllPaceByMonth(PACING_MONTH_KEYS),
+    getAllDailyMovement(),
+    getAllDependencyPairs(),
+  ]);
 
   const initialFunnelData = funnelResult.status === "fulfilled" ? funnelResult.value : null;
-
   const concentrationJan = concJan.status === "fulfilled" ? concJan.value : null;
   const concentrationFeb = concFeb.status === "fulfilled" ? concFeb.value : null;
   const overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
@@ -60,16 +68,13 @@ export default async function Home() {
     activityDataResult.status === "fulfilled" ? activityDataResult.value : [];
   const signedDealsCompanies =
     signedDealsResult.status === "fulfilled" ? signedDealsResult.value : [];
-  paceResults.forEach((p, i) => {
-    if (p.status === "fulfilled" && PACING_MONTH_KEYS[i])
-      paceByMonth[PACING_MONTH_KEYS[i]!] = p.value;
-  });
 
-  const dailyByMonth: Record<string, Awaited<ReturnType<typeof getDailyMovement>>> = {};
-  if (dailyJan.status === "fulfilled") dailyByMonth["2026-01-01"] = dailyJan.value;
-  if (dailyFeb.status === "fulfilled") dailyByMonth["2026-02-01"] = dailyFeb.value;
-  const dependencyData =
-    dependencyResult.status === "fulfilled" ? dependencyResult.value : null;
+  const paceByMonth: Record<string, FinancialPaceWithTrend> =
+    paceResult.status === "fulfilled" ? paceResult.value : {};
+  const dailyByMonth =
+    dailyResult.status === "fulfilled" ? dailyResult.value : {};
+  const pairsByMonth: Record<string, PairEntry[]> =
+    depPairsResult.status === "fulfilled" ? depPairsResult.value : {};
 
   if (
     concJan.status === "rejected" ||
@@ -120,8 +125,8 @@ export default async function Home() {
                 monthKeys={CONCENTRATION_MONTHS}
               />
             </DashboardErrorBoundary>
-            <DashboardErrorBoundary sectionName="Dependency mapping">
-              <DependencyMappingTable data={dependencyData} />
+            <DashboardErrorBoundary sectionName="Partner flow and Dependency mapping">
+              <PartnersFiltered pairsByMonth={pairsByMonth} />
             </DashboardErrorBoundary>
           </div>
           <div className="stagger-children flex flex-col gap-8">

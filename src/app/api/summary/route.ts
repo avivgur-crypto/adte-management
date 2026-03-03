@@ -10,9 +10,12 @@ export async function GET() {
     return NextResponse.json(summary);
   } catch (err) {
     console.error("Summary API error:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to load summary" },
-      { status: 500 }
-    );
+    const message =
+      process.env.NODE_ENV === "production"
+        ? "Failed to load summary"
+        : err instanceof Error
+          ? err.message
+          : "Failed to load summary";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

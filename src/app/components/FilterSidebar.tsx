@@ -1,8 +1,10 @@
 "use client";
 
-import { Filter, Funnel, LayoutDashboard, Loader2, RefreshCw, Users, X } from "lucide-react";
+import { Filter, Funnel, LayoutDashboard, Loader2, LogOut, RefreshCw, Users, X } from "lucide-react";
 import { triggerSyncViaCronApi } from "@/app/actions/sync";
-import { useState, useCallback, useEffect } from "react";
+import { logout } from "@/app/actions/auth";
+import { useAuth } from "@/app/context/AuthContext";
+import { useState, useCallback, useEffect, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   useFilter,
@@ -178,16 +180,13 @@ function FilterFormContent({
   );
 }
 
-const showSyncButton =
-  typeof process !== "undefined" &&
-  (process.env.NODE_ENV === "development" ||
-    process.env.NEXT_PUBLIC_SHOW_SYNC_BUTTON === "true");
-
 function DesktopSidebar() {
   const state = useFilter();
+  const { user } = useAuth();
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<"success" | "error" | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [loggingOut, startLogout] = useTransition();
 
   const handleSync = async () => {
     setSyncing(true);
@@ -206,6 +205,12 @@ function DesktopSidebar() {
     }
   };
 
+  const handleLogout = () => {
+    startLogout(async () => {
+      await logout();
+    });
+  };
+
   return (
     <aside
       className="fixed right-0 top-[150px] z-30 hidden flex-shrink-0 flex-col border-l border-white/10 bg-white/[0.06] shadow-2xl backdrop-blur-xl lg:flex"
@@ -218,7 +223,7 @@ function DesktopSidebar() {
         </h2>
         <FilterFormContent state={state} isMobile={false} />
       </div>
-      {showSyncButton && (
+      {user?.isAdmin && (
         <div className="border-t border-white/10 p-3">
           <button
             type="button"
@@ -250,13 +255,31 @@ function DesktopSidebar() {
           )}
         </div>
       )}
+      {user && (
+        <div className="border-t border-white/10 p-3">
+          <p className="mb-2 truncate text-xs text-zinc-500" title={user.email}>
+            {user.email}
+          </p>
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200 disabled:opacity-60"
+          >
+            <LogOut className="h-4 w-4 shrink-0" />
+            <span>{loggingOut ? "Signing out…" : "Sign out"}</span>
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
 
 function MobileFABAndSheet() {
   const globalState = useFilter();
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [loggingOut, startLogout] = useTransition();
   const [localMonths, setLocalMonths] = useState<Set<string>>(globalState.selectedMonths);
 
   useEffect(() => {
@@ -351,6 +374,23 @@ function MobileFABAndSheet() {
             Filters
           </h3>
           <FilterFormContent state={localState} isMobile onApply={apply} />
+          {user && (
+            <div className="mt-4 border-t border-white/10 pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  startLogout(async () => {
+                    await logout();
+                  });
+                }}
+                disabled={loggingOut}
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200 disabled:opacity-60"
+              >
+                <LogOut className="h-4 w-4 shrink-0" />
+                <span>{loggingOut ? "Signing out…" : "Sign out"}</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>,

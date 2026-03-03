@@ -4,10 +4,11 @@ import { unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
+import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 
-/** Short TTL so Media (from XDASH home) updates soon after refresh. */
-const CACHE_TTL = 30;
+/** 15 min TTL — data only changes on cron sync (every 3h). */
+const CACHE_TTL = 900;
 
 export type PacingTrend = "up" | "down" | "stable";
 
@@ -144,10 +145,134 @@ async function _getFinancialPace(
 export async function getFinancialPace(
   monthStarts?: string[]
 ): Promise<FinancialPaceWithTrend> {
-  const key = (monthStarts ?? []).sort().join(",") || "_current_";
+  const parsed = monthStartsSchema.safeParse(monthStarts);
+  const validMonths = parsed.success ? parsed.data : undefined;
+  const key = (validMonths ?? []).sort().join(",") || "_current_";
   return unstable_cache(
-    () => _getFinancialPace(monthStarts),
+    () => _getFinancialPace(validMonths),
     ["financial-pace", key],
+    { revalidate: CACHE_TTL },
+  )();
+}
+
+/**
+ * Bulk-fetch pacing for ALL months at once (single DB round-trip for goals).
+ * Returns Record<monthKey, FinancialPaceWithTrend>.
+ */
+async function _getAllPaceByMonth(
+  monthKeys: string[],
+): Promise<Record<string, FinancialPaceWithTrend>> {
+  const xdashTotals = await getMonthlyXDASHTotals();
+  const allGoals = await getAllMonthlyGoals();
+
+  const goalsMap = new Map<string, MonthlyGoalRow>();
+  for (const g of allGoals) {
+    goalsMap.set(String(g.month), g);
+  }
+
+  const now = new Date();
+  const result: Record<string, FinancialPaceWithTrend> = {};
+
+  for (const monthStart of monthKeys) {
+    const [yy, mm] = monthStart.split("-").map(Number);
+    const year = yy!;
+    const month = mm!;
+    const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const closed = (() => {
+      const cy = now.getFullYear();
+      const cm = now.getMonth() + 1;
+      return year < cy || (year === cy && month < cm);
+    })();
+
+    let effectiveDaysPassed: number;
+    let daysRemaining: number;
+    let paceTargetRatio: number;
+    let dataThroughDate: string;
+
+    if (closed) {
+      effectiveDaysPassed = daysInMonth;
+      daysRemaining = 0;
+      paceTargetRatio = 1;
+      dataThroughDate = `${monthKey}-${String(daysInMonth).padStart(2, "0")}`;
+    } else {
+      const sameMonth = now.getFullYear() === year && now.getMonth() + 1 === month;
+      const currentDay = now.getDate();
+      effectiveDaysPassed = sameMonth ? Math.max(0, currentDay - 1) : daysInMonth;
+      daysRemaining = sameMonth ? Math.max(0, daysInMonth - currentDay + 1) : 0;
+      paceTargetRatio = daysInMonth > 0 ? effectiveDaysPassed / daysInMonth : 0;
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      dataThroughDate = sameMonth
+        ? `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`
+        : `${monthKey}-${String(daysInMonth).padStart(2, "0")}`;
+    }
+
+    function buildSec(actual: number, goal: number): PacingSummary["total"] {
+      const targetMtd = goal * paceTargetRatio;
+      const projected = effectiveDaysPassed > 0 ? (actual / effectiveDaysPassed) * daysInMonth : 0;
+      const delta = actual - targetMtd;
+      const requiredDailyRunRate = daysRemaining > 0 ? Math.max(0, (goal - actual) / daysRemaining) : 0;
+      return {
+        actual, targetMtd, projected, goal,
+        pacePercent: targetMtd > 0 ? Math.round((actual / targetMtd) * 100) : null,
+        projectedVsGoalPercent: goal > 0 ? Math.round((projected / goal) * 100) : null,
+        delta, requiredDailyRunRate,
+      };
+    }
+
+    const goals = goalsMap.get(monthStart);
+    const xdash = xdashTotals[monthStart];
+    const billingMedia = Number(goals?.media_revenue ?? 0);
+    const mediaRevenue = (xdash?.mediaRevenue ?? 0) > 0 ? xdash!.mediaRevenue : billingMedia;
+    const revenueGoal = Number(goals?.revenue_goal ?? 0);
+    const saasGoal = Number(goals?.saas_goal ?? 0);
+    const saasActual = Number(goals?.saas_actual ?? 0);
+
+    const media = buildSec(mediaRevenue, revenueGoal);
+    const saas = buildSec(saasActual, saasGoal);
+    const total = buildSec(mediaRevenue + saasActual, revenueGoal + saasGoal);
+
+    const priorKey = priorMonthKey(monthStart);
+    const priorGoals = goalsMap.get(priorKey);
+    const priorXdash = xdashTotals[priorKey];
+    const priorMedia = (priorXdash?.mediaRevenue ?? 0) > 0 ? priorXdash!.mediaRevenue : Number(priorGoals?.media_revenue ?? 0);
+    const priorRevGoal = Number(priorGoals?.revenue_goal ?? 0);
+    const priorSaasGoal = Number(priorGoals?.saas_goal ?? 0);
+    const priorSaasActual = Number(priorGoals?.saas_actual ?? 0);
+    const pDIM = new Date(yy!, (mm ?? 1) - 1, 0).getDate() || 30;
+    const priorMedia2 = { pacePercent: pDIM > 0 && priorRevGoal > 0 ? Math.round((priorMedia / (priorRevGoal * 1)) * 100) : null };
+    const priorSaas2 = { pacePercent: pDIM > 0 && priorSaasGoal > 0 ? Math.round((priorSaasActual / (priorSaasGoal * 1)) * 100) : null };
+    const priorTotal2 = { pacePercent: pDIM > 0 && (priorRevGoal + priorSaasGoal) > 0 ? Math.round(((priorMedia + priorSaasActual) / ((priorRevGoal + priorSaasGoal) * 1)) * 100) : null };
+
+    result[monthStart] = {
+      month: monthKey,
+      daysInMonth,
+      effectiveDaysPassed,
+      daysRemaining,
+      paceTargetRatio,
+      dataThroughDate,
+      total,
+      media,
+      saas,
+      trend: {
+        total: comparePace(total.pacePercent, priorTotal2.pacePercent),
+        media: comparePace(media.pacePercent, priorMedia2.pacePercent),
+        saas: comparePace(saas.pacePercent, priorSaas2.pacePercent),
+      },
+    };
+  }
+
+  return result;
+}
+
+export async function getAllPaceByMonth(
+  monthKeys: string[],
+): Promise<Record<string, FinancialPaceWithTrend>> {
+  return unstable_cache(
+    () => _getAllPaceByMonth(monthKeys),
+    ["all-pace-by-month"],
     { revalidate: CACHE_TTL },
   )();
 }
@@ -257,9 +382,11 @@ async function _getPartnerConcentration(
 export async function getPartnerConcentration(
   month: string
 ): Promise<PartnerConcentrationResult | null> {
+  const parsed = monthKeySchema.safeParse(month);
+  if (!parsed.success) return null;
   return unstable_cache(
-    () => _getPartnerConcentration(month),
-    ["partner-concentration", month],
+    () => _getPartnerConcentration(parsed.data),
+    ["partner-concentration", parsed.data],
     { revalidate: CACHE_TTL },
   )();
 }
@@ -319,91 +446,131 @@ export interface XDASHMonthTotals {
 const MONTHLY_TOTAL_PARTNER = "__XDASH_MONTHLY_TOTAL__";
 
 /**
- * Aggregate daily_partner_performance by month.
- * Prefers the __XDASH_MONTHLY_TOTAL__ row (from Home API) when present,
- * otherwise falls back to summing per-partner rows.
- * This ensures dashboard totals match the XDASH Home screen exactly.
+ * Single DB read for daily_partner_performance. Returns BOTH:
+ *   - xdashTotals  (monthly aggregates, preferring __XDASH_MONTHLY_TOTAL__ rows)
+ *   - dailyByMonth (per-day revenue/cost breakdown by month)
+ *
+ * Previously these were two separate full-year queries; now one query feeds both.
  */
-async function _getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
+interface AllDailyData {
+  xdashTotals: Record<string, XDASHMonthTotals>;
+  dailyByMonth: Record<string, DailyMovementDay[]>;
+}
+
+async function _getAllDailyData(): Promise<AllDailyData> {
   const firstDay = `${OVERVIEW_YEAR}-01-01`;
   const lastDay = `${OVERVIEW_YEAR}-12-31`;
   const rows = await fetchAllDailyRows(firstDay, lastDay);
 
-  // Separate Home totals from per-partner rows
   const homeTotals: Record<string, XDASHMonthTotals> = {};
   const partnerSums: Record<string, XDASHMonthTotals> = {};
+  const byMonth = new Map<string, Map<string, { revenue: number; cost: number }>>();
 
   for (const r of rows) {
     const monthKey = String(r.date).slice(0, 7) + "-01";
+    const isDemand = (r.partner_type ?? "").toLowerCase() === "demand";
+    const rev = Number(r.revenue ?? 0);
+    const cos = Number(r.cost ?? 0);
 
     if (String(r.partner_name ?? "") === MONTHLY_TOTAL_PARTNER) {
       const cur = homeTotals[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
-      if ((r.partner_type ?? "").toLowerCase() === "demand") {
-        cur.mediaRevenue += Number(r.revenue ?? 0);
-      } else {
-        cur.mediaCost += Number(r.cost ?? 0);
-      }
+      if (isDemand) cur.mediaRevenue += rev; else cur.mediaCost += cos;
       homeTotals[monthKey] = cur;
     } else {
       const cur = partnerSums[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
-      if ((r.partner_type ?? "").toLowerCase() === "demand") {
-        cur.mediaRevenue += Number(r.revenue ?? 0);
-      } else {
-        cur.mediaCost += Number(r.cost ?? 0);
-      }
+      if (isDemand) cur.mediaRevenue += rev; else cur.mediaCost += cos;
       partnerSums[monthKey] = cur;
+
+      const d = String(r.date).slice(0, 10);
+      let month = byMonth.get(monthKey);
+      if (!month) { month = new Map(); byMonth.set(monthKey, month); }
+      const existing = month.get(d) ?? { revenue: 0, cost: 0 };
+      if (isDemand) existing.revenue += rev; else existing.cost += cos;
+      month.set(d, existing);
     }
   }
 
-  // Prefer Home total (accurate); fall back to partner sum
-  const result: Record<string, XDASHMonthTotals> = {};
+  const xdashTotals: Record<string, XDASHMonthTotals> = {};
   const allMonths = new Set([...Object.keys(homeTotals), ...Object.keys(partnerSums)]);
   for (const m of allMonths) {
     const home = homeTotals[m];
     const partners = partnerSums[m];
-    result[m] = home && (home.mediaRevenue > 0 || home.mediaCost > 0)
+    xdashTotals[m] = home && (home.mediaRevenue > 0 || home.mediaCost > 0)
       ? home
       : partners ?? { mediaRevenue: 0, mediaCost: 0 };
   }
-  return result;
+
+  const dailyByMonth: Record<string, DailyMovementDay[]> = {};
+  for (const [mk, dayMap] of byMonth) {
+    dailyByMonth[mk] = Array.from(dayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, { revenue, cost }]) => ({ date, revenue, cost }));
+  }
+
+  return { xdashTotals, dailyByMonth };
 }
 
-/**
- * Single cached source of truth for XDASH monthly totals.
- * All dashboard components (Overview, Pacing, etc.) should use this
- * instead of querying daily_partner_performance separately.
- */
-export const getMonthlyXDASHTotals = unstable_cache(
-  _getMonthlyXDASHTotals,
-  ["xdash-monthly-totals"],
+const getAllDailyData = unstable_cache(
+  _getAllDailyData,
+  ["all-daily-data"],
   { revalidate: CACHE_TTL },
 );
 
-/** Returns per-month revenue and cost from Billing (monthly_goals) only.
- *  XDASH data is NOT mixed in here — it is used separately by Pacing and Revenue vs. Goal. */
+export async function getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
+  const { xdashTotals } = await getAllDailyData();
+  return xdashTotals;
+}
+
+// ---------------------------------------------------------------------------
+// Shared monthly_goals fetch (used by Overview + Pacing)
+// ---------------------------------------------------------------------------
+
+const ALL_GOAL_MONTHS = [
+  `${OVERVIEW_YEAR - 1}-12-01`,
+  ...OVERVIEW_MONTHS,
+];
+
+interface MonthlyGoalRow {
+  month: string;
+  revenue_goal: number;
+  saas_goal: number;
+  saas_actual: number;
+  media_revenue: number;
+  media_cost: number;
+  tech_cost: number;
+  bs_cost: number;
+}
+
+async function _getAllMonthlyGoals(): Promise<MonthlyGoalRow[]> {
+  const { data: rows, error } = await supabaseAdmin
+    .from("monthly_goals")
+    .select("month, revenue_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost")
+    .in("month", ALL_GOAL_MONTHS)
+    .order("month", { ascending: true });
+  if (error) throw new Error(`getAllMonthlyGoals: ${error.message}`);
+  return (rows ?? []) as MonthlyGoalRow[];
+}
+
+const getAllMonthlyGoals = unstable_cache(
+  _getAllMonthlyGoals,
+  ["all-monthly-goals"],
+  { revalidate: CACHE_TTL },
+);
+
 async function _getTotalOverviewData(): Promise<MonthOverview[]> {
-  return withRetry(async () => {
-    const { data: rows, error } = await supabaseAdmin
-      .from("monthly_goals")
-      .select("month, media_revenue, saas_actual, media_cost, tech_cost, bs_cost")
-      .in("month", OVERVIEW_MONTHS)
-      .order("month", { ascending: true });
+  const allGoals = await getAllMonthlyGoals();
+  const rowsByMonth = new Map(allGoals.map((r) => [r.month, r]));
 
-    if (error) throw new Error(`getTotalOverviewData: ${error.message}`);
-
-    const rowsByMonth = new Map((rows ?? []).map((r) => [r.month, r]));
-
-    return OVERVIEW_MONTHS.map((monthKey) => {
-      const g = rowsByMonth.get(monthKey);
-      return {
-        month: monthKey,
-        mediaRevenue: Number(g?.media_revenue ?? 0),
-        saasRevenue: Number(g?.saas_actual ?? 0),
-        mediaCost: Number(g?.media_cost ?? 0),
-        techCost: Number(g?.tech_cost ?? 0),
-        bsCost: Number(g?.bs_cost ?? 0),
-      };
-    });
+  return OVERVIEW_MONTHS.map((monthKey) => {
+    const g = rowsByMonth.get(monthKey);
+    return {
+      month: monthKey,
+      mediaRevenue: Number(g?.media_revenue ?? 0),
+      saasRevenue: Number(g?.saas_actual ?? 0),
+      mediaCost: Number(g?.media_cost ?? 0),
+      techCost: Number(g?.tech_cost ?? 0),
+      bsCost: Number(g?.bs_cost ?? 0),
+    };
   });
 }
 
@@ -459,9 +626,16 @@ async function _getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> 
 }
 
 export async function getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> {
+  const parsed = monthKeySchema.safeParse(monthKey);
+  if (!parsed.success) return [];
   return unstable_cache(
-    () => _getDailyMovement(monthKey),
-    ["daily-movement", monthKey],
+    () => _getDailyMovement(parsed.data),
+    ["daily-movement", parsed.data],
     { revalidate: CACHE_TTL },
   )();
+}
+
+export async function getAllDailyMovement(): Promise<Record<string, DailyMovementDay[]>> {
+  const { dailyByMonth } = await getAllDailyData();
+  return dailyByMonth;
 }

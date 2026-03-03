@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { FilterProvider } from "@/app/context/FilterContext";
+import { AuthProvider } from "@/app/context/AuthContext";
 import DashboardShell from "./DashboardShell";
 
 export default function ConditionalShell({
@@ -14,8 +15,10 @@ export default function ConditionalShell({
     return <>{children}</>;
   }
   return (
-    <FilterProvider>
-      <DashboardShell>{children}</DashboardShell>
-    </FilterProvider>
+    <AuthProvider>
+      <FilterProvider>
+        <DashboardShell>{children}</DashboardShell>
+      </FilterProvider>
+    </AuthProvider>
   );
 }

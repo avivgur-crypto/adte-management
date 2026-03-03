@@ -36,7 +36,10 @@ async function _getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
       .lt("created_date", "2027-01-01")
       .order("created_date", { ascending: true });
 
-    if (error) throw new Error(`Activity data fetch failed: ${error.message}`);
+    if (error) {
+      console.error("[activity] fetch failed:", error.message);
+      throw new Error("Activity data fetch failed.");
+    }
     if (!rows?.length) return [];
 
     const byDate = new Map<string, { leads: number; deals: number }>();
@@ -85,7 +88,10 @@ async function _getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
       .not("company_name", "is", null)
       .order("created_date", { ascending: true });
 
-    if (error) throw new Error(`Signed deals companies fetch failed: ${error.message}`);
+    if (error) {
+      console.error("[activity] signed deals fetch failed:", error.message);
+      throw new Error("Signed deals data fetch failed.");
+    }
     if (!rows?.length) return [];
 
     return rows.map((row) => ({

@@ -13,11 +13,15 @@
     "fetch:billing": "tsx --env-file=.env.local src/scripts/fetch-billing.ts",
     "fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts",
     "backfill:january": "tsx --env-file=.env.local src/scripts/backfill-january.ts",
+    "backfill:pairs": "tsx --env-file=.env.local src/scripts/backfill-pairs.ts",
     "backfill:xdash-month": "tsx --env-file=.env.local scripts/backfill-xdash-month.ts",
     "backfill:xdash-ytd": "tsx --env-file=.env.local scripts/backfill-xdash-year-to-date.ts",
     "xdash:refresh-token": "tsx --env-file=.env.local src/lib/xdash-auth.ts"
   },
   "dependencies": {
+    "@nivo/core": "^0.99.0",
+    "@nivo/sankey": "^0.99.0",
+    "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.95.3",
     "@tremor/react": "^3.18.7",
     "google-auth-library": "^10.5.0",
@@ -27,7 +31,8 @@
     "playwright": "^1.58.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "recharts": "^3.7.0"
+    "recharts": "^3.7.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

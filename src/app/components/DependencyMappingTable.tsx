@@ -43,10 +43,13 @@ export default function DependencyMappingTable({
 }: {
   data: DependencyMappingResult | null;
 }) {
-  const displayRows = useMemo(() => data?.rows ?? [], [data]);
+  const displayRows = useMemo(
+    () => (Array.isArray(data?.rows) ? data.rows : []),
+    [data]
+  );
   const riskSet = useMemo(
-    () => new Set(data?.riskDemandPartners ?? []),
-    [data?.riskDemandPartners]
+    () => new Set(Array.isArray(data?.riskDemandPartners) ? data.riskDemandPartners : []),
+    [data]
   );
   const fromXdash = data?.fromXdash ?? false;
 
@@ -80,7 +83,7 @@ export default function DependencyMappingTable({
             Dependency Mapping
           </h2>
           <p className="mt-1 text-sm text-white/50">
-            Demand × Supply pairs (from database, synced from XDASH)
+            Demand × Supply pairs (from database, synced from XDASH). Top 20 by profit.
           </p>
         </div>
         {riskSet.size > 0 && (

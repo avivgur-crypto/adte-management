@@ -7,6 +7,7 @@
 import {
   fetchReportPairsForDateRange,
   fetchReportPairsDayByDay,
+  isReportApi404,
 } from "@/lib/xdash-client";
 import { supabaseAdmin } from "@/lib/supabase";
 
@@ -62,19 +63,52 @@ async function fetchPairsForDate(date: string): Promise<
     supply_tag: p.supplyPartner,
     revenue: p.revenue,
     cost: p.cost,
-    profit: p.revenue - p.cost,
+    profit: p.profit ?? (p.revenue - p.cost),
   }));
 }
 
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+type PairRecord = { demand_tag: string; supply_tag: string; revenue: number; cost: number; profit: number };
+
 /**
- * Batch upsert records into daily_partner_pairs. Minimizes DB round-trips.
+ * Deduplicate by (demand_tag, supply_tag), summing revenue/cost/profit for duplicates.
+ * Rounds to 4 decimal places.
+ */
+function aggregateRecords(records: PairRecord[]): PairRecord[] {
+  const map = new Map<string, PairRecord>();
+  for (const r of records) {
+    const key = `${r.demand_tag}\u0001${r.supply_tag}`;
+    const existing = map.get(key);
+    if (existing) {
+      existing.revenue += r.revenue;
+      existing.cost += r.cost;
+      existing.profit += r.profit;
+    } else {
+      map.set(key, { ...r });
+    }
+  }
+  for (const rec of map.values()) {
+    rec.revenue = round4(rec.revenue);
+    rec.cost = round4(rec.cost);
+    rec.profit = round4(rec.profit);
+  }
+  return Array.from(map.values());
+}
+
+/**
+ * Batch upsert records into daily_partner_pairs. Aggregates duplicates first to avoid
+ * "ON CONFLICT DO UPDATE command cannot affect row a second time".
  */
 async function batchUpsert(
   date: string,
-  records: Array<{ demand_tag: string; supply_tag: string; revenue: number; cost: number; profit: number }>
+  records: PairRecord[]
 ): Promise<number> {
-  if (records.length === 0) return 0;
-  const rows = records.map((r) => ({
+  const unique = aggregateRecords(records);
+  if (unique.length === 0) return 0;
+  const rows = unique.map((r) => ({
     date,
     demand_tag: r.demand_tag,
     supply_tag: r.supply_tag,
@@ -101,42 +135,59 @@ export interface SyncPartnerPairsResult {
 }
 
 /**
- * Incremental sync: only fetch from XDASH for dates that don't exist in Supabase.
- * Same date strategy as XDASH sync: today always; yesterday only when hour UTC < 6.
+ * Sync partner pairs for the current month.
+ *
+ * Strategy:
+ *  - Always re-sync today (partial day, data grows throughout the day).
+ *  - Sync any other day in the current month that has no rows yet (catch-up).
+ *  - On 404 from Report API: log and skip that date, but continue with others.
  */
 export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   const now = new Date();
   const today = formatLocalDate(now);
-  const datesToConsider = [today];
-  if (now.getUTCHours() < 6) {
-    datesToConsider.unshift(formatLocalDate(getYesterday(now)));
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+
+  const allDatesThisMonth = datesForMonth(y, m);
+  if (allDatesThisMonth.length === 0) {
+    return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
   }
 
-  const alreadySynced = await getDatesAlreadySynced(datesToConsider);
-  const toFetch = datesToConsider.filter((d) => !alreadySynced.has(d));
+  const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
+
+  const toFetch = allDatesThisMonth.filter((d) => {
+    if (d === today) return true;
+    return !alreadySynced.has(d);
+  });
+
   if (toFetch.length === 0) {
-    return { datesRequested: datesToConsider.length, datesSynced: 0, rowsUpserted: 0 };
+    return { datesRequested: allDatesThisMonth.length, datesSynced: 0, rowsUpserted: 0 };
   }
 
   let rowsUpserted = 0;
+  let datesSynced = 0;
   for (let i = 0; i < toFetch.length; i++) {
     const date = toFetch[i]!;
     try {
       const pairs = await fetchPairsForDate(date);
       const n = await batchUpsert(date, pairs);
       rowsUpserted += n;
-      if (i < toFetch.length - 1) {
-        await new Promise((r) => setTimeout(r, INTER_DATE_DELAY_MS));
-      }
+      datesSynced += 1;
     } catch (e) {
-      console.error(`[partner-pairs-sync] Failed for ${date}:`, e instanceof Error ? e.message : e);
-      // Continue with other dates
+      if (isReportApi404(e)) {
+        console.error(`[partner-pairs-sync] 404 for ${date}, skipping.`);
+      } else {
+        console.error(`[partner-pairs-sync] Failed for ${date}:`, e instanceof Error ? e.message : e);
+      }
+    }
+    if (i < toFetch.length - 1) {
+      await new Promise((r) => setTimeout(r, INTER_DATE_DELAY_MS));
     }
   }
 
   return {
-    datesRequested: datesToConsider.length,
-    datesSynced: toFetch.length,
+    datesRequested: allDatesThisMonth.length,
+    datesSynced,
     rowsUpserted,
   };
 }
@@ -176,12 +227,19 @@ export async function syncPartnerPairsDataForMonth(
     return { datesRequested: dates.length, datesSynced: 0, rowsUpserted: 0 };
   }
   let rowsUpserted = 0;
+  let datesSynced = 0;
   for (let i = 0; i < toFetch.length; i++) {
     const date = toFetch[i]!;
     try {
       const pairs = await fetchPairsForDate(date);
       rowsUpserted += await batchUpsert(date, pairs);
+      datesSynced += 1;
     } catch (e) {
+      if (isReportApi404(e)) {
+        console.error("[partner-pairs-sync]", e instanceof Error ? e.message : e);
+        console.error("[partner-pairs-sync] Stopping: Report API not available. Set XDASH_REPORT_PATH to the path from your XDASH Reports page (DevTools > Network).");
+        break;
+      }
       console.error(`[partner-pairs-sync] Failed for ${date}:`, e instanceof Error ? e.message : e);
     }
     if (i < toFetch.length - 1) {
@@ -190,7 +248,7 @@ export async function syncPartnerPairsDataForMonth(
   }
   return {
     datesRequested: dates.length,
-    datesSynced: toFetch.length,
+    datesSynced,
     rowsUpserted,
   };
 }

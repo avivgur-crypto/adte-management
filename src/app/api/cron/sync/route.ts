@@ -36,39 +36,55 @@ export async function GET(request: Request) {
 
   const xdashDisabled = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
 
-  const [mondayResult, billingResult, xdashResult, partnerPairsResult] = await Promise.allSettled([
+  // Phase 1: Monday + Billing + XDASH in parallel
+  const [mondayResult, billingResult, xdashResult] = await Promise.allSettled([
     syncMondayData(),
     syncBillingData(),
     xdashDisabled
       ? Promise.resolve({ datesSynced: 0, rowsUpserted: 0 })
       : syncXDASHData(),
-    xdashDisabled
-      ? Promise.resolve({ datesRequested: 0, datesSynced: 0, rowsUpserted: 0 })
-      : syncPartnerPairsData(),
   ]);
+
+  // Phase 2: Partner pairs AFTER XDASH (same table → deadlock if parallel)
+  const partnerPairsResult = await (async () => {
+    if (xdashDisabled) return { status: "fulfilled" as const, value: { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 } };
+    try {
+      const value = await syncPartnerPairsData();
+      return { status: "fulfilled" as const, value };
+    } catch (reason) {
+      return { status: "rejected" as const, reason };
+    }
+  })();
+
+  function maskReason(label: string, reason: unknown): string {
+    const raw = reason instanceof Error ? reason.message : String(reason);
+    console.error(`[cron-sync] ${label} failed:`, raw);
+    if (process.env.NODE_ENV === "production") return `${label}: sync failed`;
+    return `${label}: ${raw}`;
+  }
 
   if (mondayResult.status === "fulfilled") {
     summary.monday = mondayResult.value;
   } else {
-    summary.errors.push(`Monday: ${mondayResult.reason}`);
+    summary.errors.push(maskReason("Monday", mondayResult.reason));
   }
 
   if (billingResult.status === "fulfilled") {
     summary.billing = billingResult.value;
   } else {
-    summary.errors.push(`Billing: ${billingResult.reason}`);
+    summary.errors.push(maskReason("Billing", billingResult.reason));
   }
 
   if (xdashResult.status === "fulfilled") {
     summary.xdash = xdashResult.value;
   } else {
-    summary.errors.push(`XDASH: ${xdashResult.reason}`);
+    summary.errors.push(maskReason("XDASH", xdashResult.reason));
   }
 
   if (partnerPairsResult.status === "fulfilled") {
     summary.partnerPairs = partnerPairsResult.value;
   } else {
-    summary.errors.push(`Partner pairs: ${partnerPairsResult.reason}`);
+    summary.errors.push(maskReason("Partner pairs", partnerPairsResult.reason));
   }
 
   const ok = summary.errors.length === 0;

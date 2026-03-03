@@ -1,41 +1,67 @@
+import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE_NAME, hashPasswordEdge } from "@/lib/auth";
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname.startsWith("/api/")) {
+  // Cron route has its own bearer-token auth — let it through
+  if (pathname.startsWith("/api/cron/sync")) {
     return NextResponse.next();
   }
 
-  if (pathname === "/login") {
-    const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-    const envPassword = (process.env.DASHBOARD_PASSWORD ?? "").trim();
-    const expected = envPassword
-      ? await hashPasswordEdge(envPassword)
-      : "";
-    if (token && expected && token === expected) {
-      return NextResponse.redirect(new URL("/", request.url));
+  // Create a Supabase client wired to request / response cookies
+  let supabaseResponse = NextResponse.next({ request });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value),
+          );
+          supabaseResponse = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options),
+          );
+        },
+      },
+    },
+  );
+
+  // IMPORTANT: use getUser() (server-side verification), not getSession()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Already authenticated → bounce away from login page
+  if (user && pathname === "/login") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/";
+    return NextResponse.redirect(url);
+  }
+
+  if (!user) {
+    // API routes → 401
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    return NextResponse.next();
+    // Page routes (except login) → redirect to /login
+    if (pathname !== "/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      url.searchParams.set("from", pathname);
+      return NextResponse.redirect(url);
+    }
   }
 
-  const password = (process.env.DASHBOARD_PASSWORD ?? "").trim();
-  if (!password) {
-    return NextResponse.next();
-  }
-
-  const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
-  const expected = await hashPasswordEdge(password);
-  if (token === expected) {
-    return NextResponse.next();
-  }
-
-  const loginUrl = new URL("/login", request.url);
-  loginUrl.searchParams.set("from", pathname);
-  return NextResponse.redirect(loginUrl);
+  return supabaseResponse;
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

@@ -34,7 +34,7 @@ function assertNotDisabled() {
 // ============================================================================
 const XDASH_AUTH_TOKEN = process.env.XDASH_AUTH_TOKEN ?? "";
 const XDASH_ORGANIZATION_ID = process.env.XDASH_ORGANIZATION_ID ?? "";
-const XDASH_API_BASE = "https://xdash-for-aviv-temp-txe5v.ondigitalocean.app";
+const XDASH_API_BASE = process.env.XDASH_API_BASE ?? "https://xdash-for-aviv-temp-txe5v.ondigitalocean.app";
 
 function assertEnvVars() {
   if (!XDASH_AUTH_TOKEN) {
@@ -162,26 +162,64 @@ export interface PartnerRow {
 const XDASH_USE_REPORTS = (process.env.XDASH_USE_REPORTS ?? "false").toLowerCase() === "true";
 const XDASH_REPORT_PATH = process.env.XDASH_REPORT_PATH ?? "/report";
 
-/** Minimal report payload: one date, Revenue/Cost/Impressions, by Demand + Supply Partner */
+const REPORT_PATH_404_FALLBACKS = ["/reports", "/reports/run", "/api/report", "/api/reports"];
+
+/** Report payload shape required by XDASH API: dimensions camelCase, aggregationPeriod, metrics include profit. */
+const REPORT_DIMENSIONS = ["supplyTag", "demandTag"] as const;
+const REPORT_AGGREGATION_PERIOD = "sum";
+const REPORT_METRICS = ["revenue", "cost", "impressions", "profit"];
+
 function buildReportPayload(date: string): string {
   return JSON.stringify({
     startDate: date,
     endDate: date,
-    aggregation: "sum",
-    metrics: ["revenue", "cost", "impressions"],
-    dimensions: ["Demand Partner", "Supply Partner"],
+    aggregationPeriod: REPORT_AGGREGATION_PERIOD,
+    dimensions: [...REPORT_DIMENSIONS],
+    metrics: [...REPORT_METRICS],
   });
 }
 
-/** Possible report row shape (backend may use different keys) */
+/** Report payload for a date range (used by pair-level fetch). */
+function buildReportPayloadRange(startDate: string, endDate: string): string {
+  return JSON.stringify({
+    startDate,
+    endDate,
+    aggregationPeriod: REPORT_AGGREGATION_PERIOD,
+    dimensions: [...REPORT_DIMENSIONS],
+    metrics: [...REPORT_METRICS],
+  });
+}
+
+/**
+ * Report row shape — supports both nested and flat structures:
+ *   Nested: { dimensions: { demandTag: { name: "X" }, supplyTag: { name: "Y" } }, metrics: { revenue: 100 } }
+ *   Flat:   { demandTag: "X", supplyTag: "Y", revenue: 100 }
+ */
 interface ReportRowLike {
   revenue?: number;
   cost?: number;
   impressions?: number;
+  profit?: number;
   partnerName?: string;
   name?: string;
+  demandTag?: string | { name?: string; [k: string]: unknown };
+  supplyTag?: string | { name?: string; [k: string]: unknown };
+  dimensions?: {
+    demandTag?: { name?: string; [k: string]: unknown };
+    supplyTag?: { name?: string; [k: string]: unknown };
+    [k: string]: unknown;
+  };
+  metrics?: {
+    revenue?: number;
+    cost?: number;
+    impressions?: number;
+    profit?: number;
+    [k: string]: unknown;
+  };
   "Demand Partner"?: string;
   "Supply Partner"?: string;
+  "Demand Tag"?: string;
+  "Supply Tag"?: string;
   demandPartner?: string;
   supplyPartner?: string;
   dimension?: string;
@@ -189,17 +227,52 @@ interface ReportRowLike {
   [key: string]: unknown;
 }
 
+/** Resolve a tag value from nested (dimensions.demandTag.name) or flat (demandTag as string) or legacy keys. */
+function resolveDemandTag(row: ReportRowLike): string {
+  const nested = row.dimensions?.demandTag?.name;
+  if (nested) return nested.trim();
+  const flat = row.demandTag;
+  if (typeof flat === "string" && flat.trim()) return flat.trim();
+  if (typeof flat === "object" && flat?.name) return String(flat.name).trim();
+  const legacy =
+    row.demandPartner ?? row["Demand Partner"] ?? row["Demand Tag"];
+  if (typeof legacy === "string" && legacy.trim()) return legacy.trim();
+  return "";
+}
+
+function resolveSupplyTag(row: ReportRowLike): string {
+  const nested = row.dimensions?.supplyTag?.name;
+  if (nested) return nested.trim();
+  const flat = row.supplyTag;
+  if (typeof flat === "string" && flat.trim()) return flat.trim();
+  if (typeof flat === "object" && flat?.name) return String(flat.name).trim();
+  const legacy =
+    row.supplyPartner ?? row["Supply Partner"] ?? row["Supply Tag"];
+  if (typeof legacy === "string" && legacy.trim()) return legacy.trim();
+  return "";
+}
+
+/** Extract a numeric metric from nested (row.metrics.X) or flat (row.X), with currency parsing. */
+function resolveMetric(row: ReportRowLike, key: "revenue" | "cost" | "impressions" | "profit"): number {
+  const nested = row.metrics?.[key];
+  if (nested !== undefined && nested !== null) return parseCurrencyValue(nested);
+  const flat = (row as Record<string, unknown>)[key];
+  if (flat !== undefined && flat !== null) return parseCurrencyValue(flat);
+  const titleCase = key.charAt(0).toUpperCase() + key.slice(1);
+  const alt = (row as Record<string, unknown>)[titleCase];
+  if (alt !== undefined && alt !== null) return parseCurrencyValue(alt);
+  return 0;
+}
+
 function parseReportRowToPartnerRows(row: ReportRowLike): PartnerRow[] {
-  const revenue = parseCurrencyValue(row.revenue ?? row.Revenue);
-  const cost = parseCurrencyValue(row.cost ?? row.Cost);
-  const impressions = Number(row.impressions ?? row.Impressions ?? 0) || 0;
-  const name =
-    (row.partnerName ?? row.name ?? row["Demand Partner"] ?? row["Supply Partner"] ?? row.demandPartner ?? row.supplyPartner) as string | undefined;
-  const partnerName = typeof name === "string" ? name.trim() : "Unknown";
+  const revenue = resolveMetric(row, "revenue");
+  const cost = resolveMetric(row, "cost");
+  const impressions = resolveMetric(row, "impressions");
+  const name = resolveDemandTag(row) || resolveSupplyTag(row) || (row.partnerName as string) || (row.name as string) || "Unknown";
 
   const out: PartnerRow[] = [];
-  if (revenue > 0) out.push({ name: partnerName, revenue, cost: 0, impressions });
-  if (cost > 0) out.push({ name: partnerName, revenue: 0, cost, impressions });
+  if (revenue > 0) out.push({ name, revenue, cost: 0, impressions });
+  if (cost > 0) out.push({ name, revenue: 0, cost, impressions });
   return out;
 }
 
@@ -214,6 +287,15 @@ function getReportRows(data: unknown): ReportRowLike[] {
     return inner.rows as ReportRowLike[];
   }
   return [];
+}
+
+/** Pair-level row for Dependency Mapping (demand × supply per date). API may return profit; we compute if missing. */
+export interface ReportPairRow {
+  demandPartner: string;
+  supplyPartner: string;
+  revenue: number;
+  cost: number;
+  profit?: number;
 }
 
 const REPORT_RETRY_ON_STATUS = [502, 503, 504];
@@ -269,6 +351,134 @@ export async function fetchReportForDate(
     await new Promise((r) => setTimeout(r, REPORT_RETRY_DELAY_MS));
   }
   throw lastError ?? new Error("XDASH report fetch failed");
+}
+
+/**
+ * Fetch report for a date range and return pair-level rows (demand × supply).
+ * On 404, tries fallback paths from REPORT_PATH_404_FALLBACKS.
+ */
+export async function fetchReportPairsForDateRange(
+  startDate: string,
+  endDate: string
+): Promise<ReportPairRow[]> {
+  assertNotDisabled();
+  assertEnvVars();
+
+  const body = buildReportPayloadRange(startDate, endDate);
+  const pathsToTry = [
+    XDASH_REPORT_PATH,
+    ...REPORT_PATH_404_FALLBACKS.filter((p) => p !== XDASH_REPORT_PATH),
+  ];
+
+  let lastError: Error | null = null;
+
+  for (const path of pathsToTry) {
+    const url = `${XDASH_API_BASE}${path}`;
+
+    for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
+      const response = await fetchWithRetry(url, {
+        method: "POST",
+        headers: buildHeaders(),
+        body,
+      });
+
+      if (response.ok) {
+        const raw = (await response.json()) as unknown;
+        const rows = getReportRows(raw);
+        const pairs: ReportPairRow[] = [];
+
+        for (const row of rows) {
+          const demandPartner = resolveDemandTag(row);
+          const supplyPartner = resolveSupplyTag(row);
+          if (!demandPartner || !supplyPartner) continue;
+          const revenue = resolveMetric(row, "revenue");
+          const cost = resolveMetric(row, "cost");
+          if (revenue <= 0 && cost <= 0) continue;
+          const rawProfit = resolveMetric(row, "profit");
+          const profit = rawProfit !== 0 ? rawProfit : revenue - cost;
+          pairs.push({ demandPartner, supplyPartner, revenue, cost, profit });
+        }
+        return pairs;
+      }
+
+      const errorBody = await response.text();
+      lastError = new Error(
+        `XDASH Report API error ${response.status}: ${response.statusText}\n${errorBody}`
+      );
+
+      if (response.status === 404) {
+        break;
+      }
+      if (!REPORT_RETRY_ON_STATUS.includes(response.status) || attempt === REPORT_RETRY_ATTEMPTS) {
+        throw lastError;
+      }
+      await new Promise((r) => setTimeout(r, REPORT_RETRY_DELAY_MS));
+    }
+  }
+
+  const pathsTried = pathsToTry.join(", ");
+  const hint =
+    "To enable Dependency Mapping, find the Reports endpoint in your XDASH UI (DevTools > Network when running a report) and set XDASH_REPORT_PATH in .env.local.";
+  throw new Error(
+    `${lastError?.message ?? "XDASH report pairs fetch failed"} Tried paths: ${pathsTried}. ${hint}`
+  );
+}
+
+/** True when the error indicates the Report API endpoint was not found (caller can fail fast). */
+export function isReportApi404(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("404") || msg.includes("Not Found") || msg.includes("Cannot POST");
+}
+
+function datesBetween(startDate: string, endDate: string): string[] {
+  const out: string[] = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const cur = new Date(start);
+  while (cur <= end) {
+    const y = cur.getFullYear();
+    const m = String(cur.getMonth() + 1).padStart(2, "0");
+    const d = String(cur.getDate()).padStart(2, "0");
+    out.push(`${y}-${m}-${d}`);
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
+const PAIRS_DAY_BY_DAY_DELAY_MS = 2000;
+
+/**
+ * Fetch report pairs day-by-day and aggregate. Use when the API returns empty for a date range.
+ */
+export async function fetchReportPairsDayByDay(
+  startDate: string,
+  endDate: string
+): Promise<ReportPairRow[]> {
+  const days = datesBetween(startDate, endDate);
+  const pairSums = new Map<string, { revenue: number; cost: number }>();
+  const sep = "\u0001";
+
+  for (let i = 0; i < days.length; i++) {
+    const day = days[i]!;
+    const rows = await fetchReportPairsForDateRange(day, day);
+    for (const p of rows) {
+      const key = `${p.demandPartner}${sep}${p.supplyPartner}`;
+      const cur = pairSums.get(key) ?? { revenue: 0, cost: 0 };
+      cur.revenue += p.revenue;
+      cur.cost += p.cost;
+      pairSums.set(key, cur);
+    }
+    if (i < days.length - 1) {
+      await new Promise((r) => setTimeout(r, PAIRS_DAY_BY_DAY_DELAY_MS));
+    }
+  }
+
+  return Array.from(pairSums.entries()).map(([key, { revenue, cost }]) => {
+    const i = key.indexOf(sep);
+    const demandPartner = i >= 0 ? key.slice(0, i) : key;
+    const supplyPartner = i >= 0 ? key.slice(i + 1) : "Unknown";
+    return { demandPartner, supplyPartner, revenue, cost };
+  });
 }
 
 /** True if sync should use Reports API instead of partners/demand and partners/supply. */
