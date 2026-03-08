@@ -16,38 +16,48 @@ const NO_CACHE_HEADERS = {
 
 const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
+function jsonWithNoCache(body: object, status = 200) {
+  return NextResponse.json(body, { status, headers: NO_CACHE_HEADERS });
+}
+
 /**
- * Authenticate the request. Accepts either:
- *  1. Authorization: Bearer <CRON_SECRET>  (Vercel Cron injects this automatically)
- *  2. ?secret=<CRON_SECRET>                (for external services like cron-job.org)
- *
- * Returns true if authenticated, false otherwise.
- * If CRON_SECRET is not configured, auth is skipped (dev convenience).
+ * Extract the secret the caller provided (query param or Bearer header).
+ * Returns the raw string exactly as received (before trimming) for logging,
+ * plus the trimmed version for comparison.
  */
-function isAuthenticated(request: NextRequest): boolean {
-  const cronSecret = (process.env.CRON_SECRET ?? "").trim();
-  if (!cronSecret) return true; // no secret configured → allow (dev mode)
+function extractSecret(request: NextRequest): { raw: string; trimmed: string } {
+  const fromQuery = request.nextUrl.searchParams.get("secret") ?? "";
+  if (fromQuery) return { raw: fromQuery, trimmed: fromQuery.trim() };
 
-  const expected = cronSecret.toLowerCase();
+  const authHeader = request.headers.get("authorization") ?? "";
+  const bearer = authHeader.replace(/^Bearer\s+/i, "");
+  return { raw: bearer, trimmed: bearer.trim() };
+}
 
-  const authHeader = (request.headers.get("authorization") ?? "").trim();
-  const bearerToken = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7).trim().toLowerCase()
-    : "";
-  if (bearerToken && bearerToken === expected) return true;
+/**
+ * Authenticate and return a result object so the handler can return
+ * an explicit error message on failure.
+ */
+function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
+  const envRaw = process.env.CRON_SECRET ?? "";
+  const expected = envRaw.trim();
 
-  const querySecret = (request.nextUrl.searchParams.get("secret") ?? "").trim().toLowerCase();
+  if (!expected) return { ok: true, detail: "CRON_SECRET not configured — auth skipped" };
 
+  const { raw, trimmed: received } = extractSecret(request);
+
+  // Full transparency log — visible in Vercel Functions logs
+  console.log(`Auth check: received [${raw}] vs expected [${envRaw}]`);
   console.log(
-    "[auto-sync auth]",
-    `expected="${expected.slice(0, 3)}…"`,
-    `bearer="${bearerToken.slice(0, 3) || "(none)"}…"`,
-    `query="${querySecret.slice(0, 3) || "(none)"}…"`,
+    `Auth check (trimmed): received [${received}] (${received.length} chars) vs expected [${expected}] (${expected.length} chars)`,
   );
 
-  if (querySecret && querySecret === expected) return true;
+  if (received === expected) return { ok: true };
 
-  return false;
+  return {
+    ok: false,
+    detail: `Secret mismatch: received ${received.length} chars, expected ${expected.length} chars`,
+  };
 }
 
 function getTodayIsrael(): string {
@@ -133,16 +143,14 @@ async function stampLatestRow(): Promise<void> {
   else console.log("[auto-sync] Stamped created_at on partner row");
 }
 
-function jsonWithNoCache(body: object, status = 200) {
-  return NextResponse.json(body, { status, headers: NO_CACHE_HEADERS });
-}
-
 export async function GET(request: NextRequest) {
-  if (!isAuthenticated(request)) {
-    return jsonWithNoCache({ error: "Unauthorized" }, 401);
+  const auth = checkAuth(request);
+  if (!auth.ok) {
+    return jsonWithNoCache({ error: "Secret mismatch", detail: auth.detail }, 401);
   }
 
   const force = request.nextUrl.searchParams.get("force") === "true";
+  const full = request.nextUrl.searchParams.get("full") === "true";
   const serverNow = new Date();
 
   console.log(
@@ -152,6 +160,8 @@ export async function GET(request: NextRequest) {
     nowIsrael(),
     "| force:",
     force,
+    "| full:",
+    full,
   );
 
   try {
@@ -165,19 +175,12 @@ export async function GET(request: NextRequest) {
     const dataIsBehind = latestDataDate !== null && latestDataDate < todayIsrael;
 
     console.log(
-      "[auto-sync] Current Time (Server):",
-      serverNow.toISOString(),
-      "| Last Sync in DB:",
-      lastSync?.toISOString() ?? "none",
-      "| Difference:",
-      Math.round(ageMs / 60000),
-      "minutes",
-      "| latestDataDate:",
-      latestDataDate,
-      "| todayIsrael:",
-      todayIsrael,
-      "| dataIsBehind:",
-      dataIsBehind,
+      "[auto-sync]",
+      "lastSync:", lastSync?.toISOString() ?? "none",
+      "| age:", Math.round(ageMs / 60000), "min",
+      "| latestData:", latestDataDate,
+      "| today:", todayIsrael,
+      "| behind:", dataIsBehind,
     );
 
     if (!force && ageMs < STALE_THRESHOLD_MS && !dataIsBehind) {
@@ -191,36 +194,34 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    // ── XDASH / Home totals sync (always runs) ──
     console.log("[auto-sync] Starting XDASH sync…");
     const xdashResult = await syncXDASHDataLast3Days();
     console.log("[auto-sync] XDASH done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
 
+    // ── Partner pairs: SKIP when force=true (fast path for cron-job.org) ──
+    // Add ?full=true if you ever need partners on a forced call.
     let pairsResult = { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
-    try {
-      pairsResult = await syncPartnerPairsData();
-      console.log("[auto-sync] Pairs done:", pairsResult.datesSynced, "dates,", pairsResult.rowsUpserted, "rows");
-    } catch (e) {
-      console.error("[auto-sync] partner pairs failed:", e);
+    if (!force || full) {
+      try {
+        pairsResult = await syncPartnerPairsData();
+        console.log("[auto-sync] Pairs done:", pairsResult.datesSynced, "dates,", pairsResult.rowsUpserted, "rows");
+      } catch (e) {
+        console.error("[auto-sync] partner pairs failed:", e);
+      }
+    } else {
+      console.log("[auto-sync] Skipping partner pairs (force=true fast path)");
     }
 
-    try {
-      await stampLatestRow();
-    } catch (e) {
-      console.warn("[auto-sync] stamp failed (non-fatal):", e);
-    }
-
-    try {
-      revalidatePath("/");
-      console.log("[auto-sync] revalidatePath(/) called");
-    } catch (e) {
-      console.warn("[auto-sync] revalidatePath failed:", e);
-    }
+    try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
+    try { revalidatePath("/"); } catch (e) { console.warn("[auto-sync] revalidate failed:", e); }
 
     const syncedAt = new Date().toISOString();
     console.log("[auto-sync] Done, syncedAt:", syncedAt);
 
     return jsonWithNoCache({
       synced: true,
+      mode: force && !full ? "fast (home only)" : "full",
       xdash: xdashResult,
       partnerPairs: pairsResult,
       syncedAt,
