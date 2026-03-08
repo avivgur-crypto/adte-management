@@ -16,7 +16,6 @@ import {
 import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
 import { getSalesFunnelMetricsFromMonday } from "@/app/actions/sales-funnel-live";
 import ActivitySummary from "@/app/components/ActivitySummary";
-import AutoSync from "@/app/components/AutoSync";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import DashboardTabs from "@/app/components/DashboardTabs";
 import DailyMovementChart from "@/app/components/DailyMovementChart";
@@ -98,7 +97,6 @@ export default async function Home() {
 
   return (
     <div className="bg-adte-page">
-      <AutoSync />
       <main className="mx-auto max-w-5xl px-4 py-10">
         <LastSyncLine syncedAt={lastDataUpdate?.syncedAt ?? null} />
         {error && (

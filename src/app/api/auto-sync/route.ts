@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase";
-import { syncXDASHDataLast7Days, syncXDASHBackfill } from "@/lib/sync/xdash";
+import { syncXDASHDataLastNDays, syncXDASHBackfill } from "@/lib/sync/xdash";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 
 export const dynamic = "force-dynamic";
@@ -143,6 +143,8 @@ export async function GET(request: NextRequest) {
   const force = request.nextUrl.searchParams.get("force") === "true";
   const full = request.nextUrl.searchParams.get("full") === "true";
   const backfill = request.nextUrl.searchParams.get("backfill") === "true";
+  const daysParam = parseInt(request.nextUrl.searchParams.get("days") ?? "", 10);
+  const days = Number.isFinite(daysParam) && daysParam >= 1 ? daysParam : 2;
   const serverNow = new Date();
 
   console.log(
@@ -153,6 +155,7 @@ export async function GET(request: NextRequest) {
     "| force:", force,
     "| full:", full,
     "| backfill:", backfill,
+    "| days:", days,
   );
 
   try {
@@ -206,22 +209,20 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // ── XDASH: always re-fetch last 7 days (covers XDASH retroactive adjustments) ──
-    console.log("[auto-sync] Starting XDASH 7-day sync…");
-    const xdashResult = await syncXDASHDataLast7Days();
+    // ── XDASH: re-fetch last N days (default 2 = today + yesterday) ──
+    console.log(`[auto-sync] Starting XDASH ${days}-day sync…`);
+    const xdashResult = await syncXDASHDataLastNDays(days);
     console.log("[auto-sync] XDASH done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
 
-    // Partner pairs: skipped on force (fast path for cron-job.org)
+    // Partner pairs: only when ?full=true (heavy, not for cron)
     let pairsResult = { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
-    if (!force || full) {
+    if (full) {
       try {
         pairsResult = await syncPartnerPairsData();
         console.log("[auto-sync] Pairs done:", pairsResult.datesSynced, "dates,", pairsResult.rowsUpserted, "rows");
       } catch (e) {
         console.error("[auto-sync] partner pairs failed:", e);
       }
-    } else {
-      console.log("[auto-sync] Skipping partner pairs (force=true fast path)");
     }
 
     try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
@@ -232,7 +233,8 @@ export async function GET(request: NextRequest) {
 
     return jsonWithNoCache({
       synced: true,
-      mode: force && !full ? "fast (home + 7 days)" : "full (home + 7 days + partners)",
+      mode: `${days}-day home sync${full ? " + partners" : ""}`,
+      days,
       xdash: xdashResult,
       partnerPairs: pairsResult,
       syncedAt,

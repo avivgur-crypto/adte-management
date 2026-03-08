@@ -324,18 +324,19 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
 }
 
 /**
- * Auto-sync: always re-fetches the last 7 days (today through 6 days ago).
+ * Auto-sync: re-fetches the last N days (default 2 = today + yesterday).
  * Does NOT skip "already synced" dates — XDASH adjusts past-day numbers,
  * so we always overwrite with the latest values to prevent stale data.
+ * Pass a higher N (e.g. 7) via ?days=7 for a wider refresh window.
  */
-export async function syncXDASHDataLast7Days(): Promise<SyncXDASHResult> {
+export async function syncXDASHDataLastNDays(n = 2): Promise<SyncXDASHResult> {
   const syncedAt = new Date().toISOString();
-  const dates = lastNDaysIsrael(7);
+  const dates = lastNDaysIsrael(n);
   if (dates.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  console.log(`[xdash-sync] 7-day sync (always re-fetch): ${dates.join(", ")}`);
+  console.log(`[xdash-sync] ${n}-day sync (always re-fetch): ${dates.join(", ")}`);
   const dayResults = await fetchDatesInBatches(dates);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
