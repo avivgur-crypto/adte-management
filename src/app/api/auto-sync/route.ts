@@ -156,11 +156,12 @@ export async function GET(request: NextRequest) {
   );
 
   try {
-    // ── BACKFILL MODE: re-fetch everything from 2026-01-01 → today ──
+    // ── BACKFILL MODE: re-fetch a date range (defaults to 2026-01-01 → today) ──
     if (backfill) {
-      const endDate = getTodayIsrael();
-      console.log(`[auto-sync] BACKFILL MODE: ${BACKFILL_START} → ${endDate}`);
-      const xdashResult = await syncXDASHBackfill(BACKFILL_START, endDate);
+      const startDate = request.nextUrl.searchParams.get("start") ?? BACKFILL_START;
+      const endDate = request.nextUrl.searchParams.get("end") ?? getTodayIsrael();
+      console.log(`[auto-sync] BACKFILL MODE: ${startDate} → ${endDate}`);
+      const xdashResult = await syncXDASHBackfill(startDate, endDate);
       console.log("[auto-sync] Backfill done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
 
       try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
@@ -169,7 +170,7 @@ export async function GET(request: NextRequest) {
       return jsonWithNoCache({
         synced: true,
         mode: "backfill",
-        range: { start: BACKFILL_START, end: endDate },
+        range: { start: startDate, end: endDate },
         xdash: xdashResult,
         syncedAt: new Date().toISOString(),
       });
