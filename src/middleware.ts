@@ -4,8 +4,11 @@ import { type NextRequest, NextResponse } from "next/server";
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Cron route has its own bearer-token auth — let it through
-  if (pathname.startsWith("/api/cron/sync")) {
+  // These API routes handle their own auth (CRON_SECRET) — bypass Supabase session check
+  if (
+    pathname.startsWith("/api/cron/sync") ||
+    pathname.startsWith("/api/auto-sync")
+  ) {
     return NextResponse.next();
   }
 
