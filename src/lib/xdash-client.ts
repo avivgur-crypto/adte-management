@@ -622,20 +622,30 @@ export async function fetchAdServerOverview(
   throw lastError ?? new Error("XDASH home overview failed");
 }
 
-/** Lightweight: fetch Home API totals for a single date. Returns {revenue, cost, impressions}. */
+/**
+ * Fetch Home API totals for a single date. Returns {revenue, cost, impressions}.
+ * Reads from overviewTotals.selectedDates.totals — the exact "Total" shown
+ * on the XDASH Home dashboard. Falls back to netRevenue/netCost if the
+ * gross fields are zero (some XDASH configurations only populate net fields).
+ */
 export async function fetchHomeForDate(
   date: string
 ): Promise<{ revenue: number; cost: number; impressions: number }> {
   const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
   const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
   const totals = (sd?.selectedDates as Record<string, unknown> | undefined)?.totals as
-    | { revenue?: number; cost?: number; impressions?: number }
+    | XDashTotals
     | undefined;
-  return {
-    revenue: Number(totals?.revenue ?? 0),
-    cost: Number(totals?.cost ?? 0),
-    impressions: Number(totals?.impressions ?? 0),
-  };
+
+  const revenue = Number(totals?.revenue ?? 0) || Number(totals?.netRevenue ?? 0);
+  const cost = Number(totals?.cost ?? 0) || Number(totals?.netCost ?? 0);
+  const impressions = Number(totals?.impressions ?? 0);
+
+  console.log(
+    `[xdash-client] Home ${date}: revenue=$${revenue.toFixed(2)} cost=$${cost.toFixed(2)} imp=${impressions}`,
+  );
+
+  return { revenue, cost, impressions };
 }
 
 const REVENUE_KEYS = ["revenue", "netRevenue", "totalRevenue", "revenueAmount"];

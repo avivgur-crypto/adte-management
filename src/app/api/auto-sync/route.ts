@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase";
-import { syncXDASHDataLast3Days } from "@/lib/sync/xdash";
+import { syncXDASHDataLast7Days, syncXDASHBackfill } from "@/lib/sync/xdash";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 
 export const dynamic = "force-dynamic";
@@ -15,16 +15,12 @@ const NO_CACHE_HEADERS = {
 };
 
 const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+const BACKFILL_START = "2026-01-01";
 
 function jsonWithNoCache(body: object, status = 200) {
   return NextResponse.json(body, { status, headers: NO_CACHE_HEADERS });
 }
 
-/**
- * Extract the secret the caller provided (query param or Bearer header).
- * Returns the raw string exactly as received (before trimming) for logging,
- * plus the trimmed version for comparison.
- */
 function extractSecret(request: NextRequest): { raw: string; trimmed: string } {
   const fromQuery = request.nextUrl.searchParams.get("secret") ?? "";
   if (fromQuery) return { raw: fromQuery, trimmed: fromQuery.trim() };
@@ -34,10 +30,6 @@ function extractSecret(request: NextRequest): { raw: string; trimmed: string } {
   return { raw: bearer, trimmed: bearer.trim() };
 }
 
-/**
- * Authenticate and return a result object so the handler can return
- * an explicit error message on failure.
- */
 function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
   const envRaw = process.env.CRON_SECRET ?? "";
   const expected = envRaw.trim();
@@ -46,7 +38,6 @@ function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
 
   const { raw, trimmed: received } = extractSecret(request);
 
-  // Full transparency log — visible in Vercel Functions logs
   console.log(`Auth check: received [${raw}] vs expected [${envRaw}]`);
   console.log(
     `Auth check (trimmed): received [${received}] (${received.length} chars) vs expected [${expected}] (${expected.length} chars)`,
@@ -151,6 +142,7 @@ export async function GET(request: NextRequest) {
 
   const force = request.nextUrl.searchParams.get("force") === "true";
   const full = request.nextUrl.searchParams.get("full") === "true";
+  const backfill = request.nextUrl.searchParams.get("backfill") === "true";
   const serverNow = new Date();
 
   console.log(
@@ -158,13 +150,32 @@ export async function GET(request: NextRequest) {
     serverNow.toISOString(),
     "| Israel:",
     nowIsrael(),
-    "| force:",
-    force,
-    "| full:",
-    full,
+    "| force:", force,
+    "| full:", full,
+    "| backfill:", backfill,
   );
 
   try {
+    // ── BACKFILL MODE: re-fetch everything from 2026-01-01 → today ──
+    if (backfill) {
+      const endDate = getTodayIsrael();
+      console.log(`[auto-sync] BACKFILL MODE: ${BACKFILL_START} → ${endDate}`);
+      const xdashResult = await syncXDASHBackfill(BACKFILL_START, endDate);
+      console.log("[auto-sync] Backfill done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
+
+      try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
+      try { revalidatePath("/"); } catch (e) { console.warn("[auto-sync] revalidate failed:", e); }
+
+      return jsonWithNoCache({
+        synced: true,
+        mode: "backfill",
+        range: { start: BACKFILL_START, end: endDate },
+        xdash: xdashResult,
+        syncedAt: new Date().toISOString(),
+      });
+    }
+
+    // ── NORMAL MODE: staleness check ──
     const [lastSync, latestDataDate] = await Promise.all([
       getLastSyncTime(),
       getLatestDataDate(),
@@ -194,13 +205,12 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // ── XDASH / Home totals sync (always runs) ──
-    console.log("[auto-sync] Starting XDASH sync…");
-    const xdashResult = await syncXDASHDataLast3Days();
+    // ── XDASH: always re-fetch last 7 days (covers XDASH retroactive adjustments) ──
+    console.log("[auto-sync] Starting XDASH 7-day sync…");
+    const xdashResult = await syncXDASHDataLast7Days();
     console.log("[auto-sync] XDASH done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
 
-    // ── Partner pairs: SKIP when force=true (fast path for cron-job.org) ──
-    // Add ?full=true if you ever need partners on a forced call.
+    // Partner pairs: skipped on force (fast path for cron-job.org)
     let pairsResult = { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
     if (!force || full) {
       try {
@@ -221,7 +231,7 @@ export async function GET(request: NextRequest) {
 
     return jsonWithNoCache({
       synced: true,
-      mode: force && !full ? "fast (home only)" : "full",
+      mode: force && !full ? "fast (home + 7 days)" : "full (home + 7 days + partners)",
       xdash: xdashResult,
       partnerPairs: pairsResult,
       syncedAt,

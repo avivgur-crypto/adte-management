@@ -61,16 +61,28 @@ function datesFromMonthStartThroughToday(_now: Date): string[] {
   return out;
 }
 
-/** Last 3 days in Israel timezone: day-before, yesterday, today (for lightweight auto-sync). */
-function last3DaysIsrael(): string[] {
+/** Last N days in Israel timezone (including today). */
+function lastNDaysIsrael(n: number): string[] {
   const todayStr = getTodayIsrael();
   const [y, m, day] = todayStr.split("-").map(Number);
   const todayDate = new Date(y, m - 1, day);
   const out: string[] = [];
-  for (let offset = 2; offset >= 0; offset--) {
+  for (let offset = n - 1; offset >= 0; offset--) {
     const d = new Date(todayDate);
     d.setDate(d.getDate() - offset);
     out.push(formatLocalDate(d));
+  }
+  return out;
+}
+
+/** Generate all dates from startDate through endDate (inclusive, YYYY-MM-DD strings). */
+function dateRange(startDate: string, endDate: string): string[] {
+  const out: string[] = [];
+  const cur = new Date(startDate + "T00:00:00");
+  const end = new Date(endDate + "T00:00:00");
+  while (cur <= end) {
+    out.push(formatLocalDate(cur));
+    cur.setDate(cur.getDate() + 1);
   }
   return out;
 }
@@ -312,28 +324,19 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
 }
 
 /**
- * Lightweight sync for auto-sync (e.g. /api/auto-sync): only last 3 days (today, yesterday, day before).
- * Use this to stay within Vercel serverless time limits; full month sync remains for the nightly cron.
+ * Auto-sync: always re-fetches the last 7 days (today through 6 days ago).
+ * Does NOT skip "already synced" dates — XDASH adjusts past-day numbers,
+ * so we always overwrite with the latest values to prevent stale data.
  */
-export async function syncXDASHDataLast3Days(): Promise<SyncXDASHResult> {
-  const now = new Date();
-  const syncedAt = now.toISOString();
-  const today = getTodayIsrael();
-  const dates = last3DaysIsrael();
+export async function syncXDASHDataLast7Days(): Promise<SyncXDASHResult> {
+  const syncedAt = new Date().toISOString();
+  const dates = lastNDaysIsrael(7);
   if (dates.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  const alreadySynced = await getDatesAlreadySynced(dates);
-  const toFetch = dates.filter((d) => !alreadySynced.has(d) || d === today);
-  toFetch.sort();
-
-  if (toFetch.length === 0) {
-    return { datesSynced: 0, rowsUpserted: 0 };
-  }
-
-  console.log(`[xdash-sync] Last-3-days sync: ${toFetch.join(", ")}`);
-  const dayResults = await fetchDatesInBatches(toFetch);
+  console.log(`[xdash-sync] 7-day sync (always re-fetch): ${dates.join(", ")}`);
+  const dayResults = await fetchDatesInBatches(dates);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
     if (demand.length === 0 && supply.length === 0) {
@@ -346,9 +349,42 @@ export async function syncXDASHDataLast3Days(): Promise<SyncXDASHResult> {
   }
   const rowsUpserted = await batchUpsert(records);
 
-  // Fetch Home API totals per date → daily_home_totals
-  await syncHomeTotalsForDates(toFetch, syncedAt);
-  return { datesSynced: toFetch.length, rowsUpserted };
+  await syncHomeTotalsForDates(dates, syncedAt);
+  return { datesSynced: dates.length, rowsUpserted };
+}
+
+/**
+ * Full backfill: fetches ALL dates from startDate through endDate (inclusive)
+ * and upserts into both daily_partner_performance and daily_home_totals.
+ * No skipping — every date is re-fetched and overwritten.
+ * Use via ?backfill=true on auto-sync or the CLI script.
+ */
+export async function syncXDASHBackfill(
+  startDate: string,
+  endDate: string,
+): Promise<SyncXDASHResult> {
+  const syncedAt = new Date().toISOString();
+  const dates = dateRange(startDate, endDate);
+  if (dates.length === 0) {
+    return { datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  console.log(`[xdash-sync] BACKFILL ${startDate} → ${endDate} (${dates.length} days)`);
+  const dayResults = await fetchDatesInBatches(dates);
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    if (demand.length === 0 && supply.length === 0) {
+      console.warn(`[xdash-sync] Backfill: no data for ${date}`);
+    } else {
+      console.log(`[xdash-sync] Backfill ${date}: ${demand.length} demand + ${supply.length} supply`);
+    }
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
+  }
+  const rowsUpserted = await batchUpsert(records);
+
+  await syncHomeTotalsForDates(dates, syncedAt);
+  return { datesSynced: dates.length, rowsUpserted };
 }
 
 /**
