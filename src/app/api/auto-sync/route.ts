@@ -25,14 +25,27 @@ const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
  * If CRON_SECRET is not configured, auth is skipped (dev convenience).
  */
 function isAuthenticated(request: NextRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
+  const cronSecret = (process.env.CRON_SECRET ?? "").trim();
   if (!cronSecret) return true; // no secret configured → allow (dev mode)
 
-  const authHeader = request.headers.get("authorization");
-  if (authHeader === `Bearer ${cronSecret}`) return true;
+  const expected = cronSecret.toLowerCase();
 
-  const querySecret = request.nextUrl.searchParams.get("secret");
-  if (querySecret === cronSecret) return true;
+  const authHeader = (request.headers.get("authorization") ?? "").trim();
+  const bearerToken = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7).trim().toLowerCase()
+    : "";
+  if (bearerToken && bearerToken === expected) return true;
+
+  const querySecret = (request.nextUrl.searchParams.get("secret") ?? "").trim().toLowerCase();
+
+  console.log(
+    "[auto-sync auth]",
+    `expected="${expected.slice(0, 3)}…"`,
+    `bearer="${bearerToken.slice(0, 3) || "(none)"}…"`,
+    `query="${querySecret.slice(0, 3) || "(none)"}…"`,
+  );
+
+  if (querySecret && querySecret === expected) return true;
 
   return false;
 }
