@@ -245,7 +245,7 @@ export default function TotalOverview({
   xdashByMonth?: Record<string, XDASHMonthTotals>;
 }) {
   const { selectedMonths } = useFilter();
-  const [source, setSource] = useState<DataSource>("billing");
+  const [source, setSource] = useState<DataSource>("xdash");
 
   const filteredData = useMemo(() => {
     const billing = dataByMonth.filter((d) => selectedMonths.has(d.month));
@@ -277,7 +277,7 @@ export default function TotalOverview({
     <section className="mb-8">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-[25px] font-extrabold text-white">
-          Revenue vs. Cost
+          Revenue vs. <span className="highlight-brand">Cost</span>
         </h2>
         <SourceToggle value={source} onChange={setSource} />
       </div>

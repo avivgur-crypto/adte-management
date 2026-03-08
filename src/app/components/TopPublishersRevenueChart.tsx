@@ -133,8 +133,8 @@ export default function TopPublishersRevenueChart({
           Demand partners by revenue (selected months) · Total {formatCurrency(total)}
         </p>
       </div>
-      <div className="h-[380px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="h-[380px] min-h-[280px] min-w-0 w-full">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
           <BarChart
             data={barData}
             layout="vertical"
@@ -170,7 +170,7 @@ export default function TopPublishersRevenueChart({
                   </div>
                 );
               }}
-              formatter={(value: number) => [formatCurrency(value), "Revenue"]}
+              formatter={(value: number | undefined) => [formatCurrency(Number(value ?? 0)), "Revenue"]}
             />
             <Bar
               dataKey="revenue"

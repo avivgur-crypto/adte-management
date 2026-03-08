@@ -152,11 +152,9 @@ body {
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
-/* Green → cyan → blue ("simplicity" slide) */
+/* Green → cyan → blue ("simplicity" slide) — for key metrics / percentages */
 .highlight-brand-simplicity {
   display: inline-block;
-  width: 100px;
-  font-size: 25px;
   background: var(--adte-highlight-gradient-simplicity);
   color: #ffffff;
   padding: 0.15em 0.5em;

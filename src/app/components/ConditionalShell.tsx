@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { FilterProvider } from "@/app/context/FilterContext";
 import { AuthProvider } from "@/app/context/AuthContext";
+import { SyncStatusProvider } from "@/app/context/SyncStatusContext";
 import DashboardShell from "./DashboardShell";
 
 export default function ConditionalShell({
@@ -17,7 +18,9 @@ export default function ConditionalShell({
   return (
     <AuthProvider>
       <FilterProvider>
-        <DashboardShell>{children}</DashboardShell>
+        <SyncStatusProvider>
+          <DashboardShell>{children}</DashboardShell>
+        </SyncStatusProvider>
       </FilterProvider>
     </AuthProvider>
   );

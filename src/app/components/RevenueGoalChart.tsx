@@ -53,15 +53,16 @@ function CustomTooltip({
   filterLabel,
 }: {
   active?: boolean;
-  payload?: { dataKey: string; value: number; color: string }[];
-  label?: string;
+  payload?: unknown;
+  label?: string | number;
   filterLabel: string;
 }) {
-  if (!active || !payload?.length) return null;
+  const list = Array.isArray(payload) ? (payload as { dataKey: string; value: number; color: string }[]) : [];
+  if (!active || list.length === 0) return null;
   return (
     <div className="rounded-lg border border-white/10 bg-[#1a1a1a] px-3 py-2 shadow-xl">
       <p className="mb-1 text-xs font-semibold text-white">{label}</p>
-      {payload.map((entry) => (
+      {list.map((entry) => (
         <p key={entry.dataKey} className="text-xs" style={{ color: entry.color }}>
           {entry.dataKey === "actual" ? `${filterLabel} Actual` : `${filterLabel} Goal`}:{" "}
           <span className="font-semibold">{formatCurrency(entry.value)}</span>
@@ -117,7 +118,7 @@ export default function RevenueGoalChart({
       <div className="mb-2 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-[25px] font-extrabold text-white">
-            Revenue vs. Goal
+            Revenue vs. <span className="highlight-brand">Goal</span>
           </h2>
           <p className="mt-1 text-sm text-white/50">
             Monthly actual vs. finance goal by type
@@ -142,8 +143,8 @@ export default function RevenueGoalChart({
         </div>
       </div>
 
-      <div className="mb-4 h-[340px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="mb-4 h-[340px] min-h-[280px] min-w-0 w-full">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
           <ComposedChart
             data={chartData}
             margin={{ top: 8, right: 12, left: 0, bottom: 0 }}

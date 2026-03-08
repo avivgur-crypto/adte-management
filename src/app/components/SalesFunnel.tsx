@@ -117,7 +117,7 @@ export default function SalesFunnel({
       {/* Title — right-aligned */}
       <div className="mb-4 flex justify-end">
         <div className="text-right">
-          <h2 className="text-xl font-bold text-white md:text-2xl">
+          <h2 className="text-xl font-semibold text-white md:text-2xl">
             Sales <span className="highlight-brand">Funnel</span>
           </h2>
           <p className="mt-0.5 text-sm text-white/60">
@@ -233,22 +233,22 @@ export default function SalesFunnel({
             return (
               <div
                 key={stage.key}
-                className="absolute left-0 right-0 flex items-start justify-between gap-2"
+                className="absolute left-0 right-0 flex flex-col gap-0.5 md:flex-row md:items-start md:justify-between md:gap-2"
                 style={{ top: `${yPct}%`, transform: "translateY(-50%)" }}
               >
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-white md:text-xl">
+                  <div className="text-[13px] font-medium leading-tight text-white/95 md:text-xl md:font-medium">
                     {String(i + 1).padStart(2, "0")}. {stage.label}
                   </div>
-                  <div className="text-[11px] text-white/55 md:text-xs">
+                  <div className="hidden text-xs text-white/55 md:block">
                     {stage.description}
                   </div>
                 </div>
-                <div className="flex flex-shrink-0 flex-col items-end text-right">
-                  <div className="text-sm font-bold tabular-nums text-white md:text-base">
+                <div className="flex flex-shrink-0 items-center gap-1.5 md:flex-col md:items-end md:gap-0 md:text-right">
+                  <div className="text-[13px] font-medium tabular-nums leading-tight text-white/95 md:text-base">
                     {values[i]!.toLocaleString()}
                   </div>
-                  <div className="text-[11px] text-white/55 md:text-xs">
+                  <div className="hidden text-xs text-white/55 md:block">
                     {stage.label.toLowerCase()}
                   </div>
                 </div>
@@ -265,21 +265,21 @@ export default function SalesFunnel({
                 className="absolute left-0 right-0 flex items-center justify-end"
                 style={{ top: `${yPct}%`, transform: "translateY(-50%)" }}
               >
-                <div className="flex items-center gap-1.5 rounded-md border border-white/12 bg-white/[0.06] px-2.5 py-1">
+                <div className="flex items-center gap-1 rounded-md border border-white/12 bg-white/[0.06] px-1.5 py-0.5 md:gap-1.5 md:px-2.5 md:py-1">
                   <svg
-                    width="14"
-                    height="14"
+                    width="10"
+                    height="10"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
                     strokeWidth="2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="text-white/50"
+                    className="text-white/50 md:h-3.5 md:w-3.5"
                   >
                     <path d="M12 5v14M19 12l-7 7-7-7" />
                   </svg>
-                  <span className="text-xs font-semibold tabular-nums text-white/75">
+                  <span className="text-[10px] font-medium tabular-nums text-white/70 md:text-xs">
                     {pct != null ? `${pct}%` : "—"}
                   </span>
                 </div>
@@ -292,10 +292,10 @@ export default function SalesFunnel({
       {/* Win Rate */}
       <div className="mt-6 flex justify-end border-t border-white/5 pt-4">
         <div className="text-right">
-          <div className="text-xl font-semibold uppercase tracking-widest text-white/50">
+          <div className="text-sm font-medium uppercase tracking-wider text-white/45 md:text-base">
             Win Rate
           </div>
-          <div className="text-2xl font-bold tabular-nums text-white md:text-3xl">
+          <div className="mt-0.5 text-xl font-medium tabular-nums text-white/95 md:text-2xl">
             <span className="highlight-brand-simplicity">
               {data.overallWinRatePercent ?? "—"}%
             </span>

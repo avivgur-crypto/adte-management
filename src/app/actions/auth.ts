@@ -9,7 +9,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 // Types
 // ---------------------------------------------------------------------------
 
-export type LoginState = { error?: string };
+export type LoginState = { error?: string; redirectTo?: string };
 
 export type SessionUser = {
   id: string;
@@ -57,7 +57,8 @@ export async function login(
 
   const from = formData.get("from") as string | null;
   const safe = from && from.startsWith("/") && !from.startsWith("//") ? from : "/";
-  redirect(safe);
+  // Return redirect URL so client can navigate immediately; avoids hanging on server redirect.
+  return { redirectTo: safe };
 }
 
 /** Sign out and redirect to login page. */

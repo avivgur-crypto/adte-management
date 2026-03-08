@@ -1,6 +1,6 @@
 "use client";
 
-import { Filter, Funnel, LayoutDashboard, Loader2, LogOut, RefreshCw, Users, X } from "lucide-react";
+import { Funnel, LayoutDashboard, Loader2, LogOut, Menu, RefreshCw, Users } from "lucide-react";
 import { triggerSyncViaCronApi } from "@/app/actions/sync";
 import { logout } from "@/app/actions/auth";
 import { useAuth } from "@/app/context/AuthContext";
@@ -25,7 +25,7 @@ const MONTH_LABELS = [
 ];
 
 const SIDEBAR_WIDTH = 280;
-const FAB_SIZE = 56;
+const MOBILE_PANEL_WIDTH = 300;
 
 const QUARTER_KEYS: Record<number, string[]> = {
   1: ["2026-01-01", "2026-02-01", "2026-03-01"],
@@ -275,21 +275,35 @@ function DesktopSidebar() {
   );
 }
 
-function MobileFABAndSheet() {
+function MobileMenuPanel() {
   const globalState = useFilter();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [loggingOut, startLogout] = useTransition();
   const [localMonths, setLocalMonths] = useState<Set<string>>(globalState.selectedMonths);
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (open) setLocalMonths(new Set(globalState.selectedMonths));
   }, [open, globalState.selectedMonths]);
 
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
   const apply = useCallback(() => {
     globalState.setSelectedMonths(new Set(localMonths));
     setOpen(false);
   }, [globalState, localMonths]);
+
+  const toggle = useCallback(() => setOpen((o) => !o), []);
 
   const localState: FilterState = {
     ...globalState,
@@ -341,34 +355,31 @@ function MobileFABAndSheet() {
     isQuarterSelected: (q) => QUARTER_KEYS[q].every((k) => localMonths.has(k)),
   };
 
-  const sheet = open && typeof document !== "undefined" && createPortal(
+  const panel = mounted && createPortal(
     <div
-      className="fixed inset-0 z-50 flex flex-col justify-end lg:hidden"
-      aria-modal
+      className={`fixed inset-0 z-40 lg:hidden ${open ? "" : "pointer-events-none"}`}
+      aria-modal={open}
       role="dialog"
+      aria-hidden={!open}
     >
+      {/* Backdrop: smooth fade, tap to close */}
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className={`absolute inset-0 bg-black/40 backdrop-blur-[2px] transition-opacity duration-300 ease-out ${
+          open ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
         onClick={() => setOpen(false)}
+        aria-hidden
       />
+      {/* Panel: slide in from right */}
       <div
-        className="relative z-10 max-h-[85vh] overflow-hidden rounded-t-3xl border-t border-white/10 bg-zinc-900/95 shadow-2xl backdrop-blur-xl"
+        className="absolute right-0 top-0 h-full w-full max-w-[min(100vw,320px)] flex flex-col border-l border-white/10 bg-zinc-900/98 shadow-2xl backdrop-blur-xl transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]"
+        style={{
+          transform: open ? "translateX(0)" : "translateX(100%)",
+          willChange: "transform",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3.5">
-          <h2 className="text-sm font-semibold tracking-tight text-zinc-200">
-            Menu
-          </h2>
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            className="rounded-lg p-2 text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="flex flex-col overflow-y-auto p-4 pb-safe">
+        <div className="flex flex-1 flex-col overflow-y-auto p-4 pb-safe">
           <ScreenNav onNavigate={() => setOpen(false)} />
           <h3 className="mb-2.5 mt-2 text-sm font-semibold tracking-tight text-zinc-200">
             Filters
@@ -399,16 +410,17 @@ function MobileFABAndSheet() {
 
   return (
     <>
+      {/* Hamburger at top-right: toggle only (no X), always visible on mobile */}
       <button
         type="button"
-        onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-6 z-40 flex lg:hidden h-14 w-14 items-center justify-center rounded-full bg-white/10 text-zinc-200 shadow-lg backdrop-blur-xl hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-        style={{ width: FAB_SIZE, height: FAB_SIZE }}
-        aria-label="Open filters"
+        onClick={toggle}
+        className="fixed top-4 right-4 z-50 flex lg:hidden h-11 w-11 items-center justify-center rounded-xl bg-white/10 text-zinc-200 shadow-lg backdrop-blur-xl hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-colors"
+        aria-label={open ? "Close menu" : "Open menu"}
+        aria-expanded={open}
       >
-        <Filter className="h-6 w-6" />
+        <Menu className="h-5 w-5" />
       </button>
-      {sheet}
+      {panel}
     </>
   );
 }
@@ -417,7 +429,7 @@ export default function FilterSidebar() {
   return (
     <>
       <DesktopSidebar />
-      <MobileFABAndSheet />
+      <MobileMenuPanel />
     </>
   );
 }

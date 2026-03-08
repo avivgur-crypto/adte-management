@@ -7,4 +7,5 @@ ALTER TABLE daily_partner_pairs       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE monthly_goals             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE client_revenue_breakdown  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_funnel_metrics      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE daily_financials          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE monday_items_activity     ENABLE ROW LEVEL SECURITY;

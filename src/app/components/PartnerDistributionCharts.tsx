@@ -30,7 +30,7 @@ const COLORS = [
   "#d0ed57",
 ];
 
-const TOP_N = 10;
+const TOP_N = 20;
 const CONCENTRATION_THRESHOLD = 30;
 
 type Side = { total: number; partners: PartnerShare[] };
@@ -80,7 +80,7 @@ function SideDonut({
     }));
   }, [side.partners]);
 
-  const top5 = useMemo(() => side.partners.slice(0, 5), [side.partners]);
+  const displayPartners = useMemo(() => side.partners.slice(0, 20), [side.partners]);
   const total = Number(side.total);
 
   if (side.partners.length === 0) {
@@ -101,10 +101,10 @@ function SideDonut({
       </h3>
       <div className="flex min-w-0 flex-col gap-4">
         <p className="text-center text-base font-extrabold text-[var(--adte-blue)]">
-          Top 5 — {formatCurrency(side.total)} total
+          Top {displayPartners.length} — {formatCurrency(side.total)} total
         </p>
-        <div className="partner-donut-chart mx-auto h-52 w-52 shrink-0 overflow-hidden rounded-lg bg-transparent sm:h-60 sm:w-60 lg:h-72 lg:w-72">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="partner-donut-chart mx-auto h-52 min-h-[180px] w-52 min-w-[180px] shrink-0 overflow-hidden rounded-lg bg-transparent sm:h-60 sm:w-60 lg:h-72 lg:w-72">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
             <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
               <Pie
                 data={chartData}
@@ -153,8 +153,8 @@ function SideDonut({
             </PieChart>
           </ResponsiveContainer>
         </div>
-        <ul className="space-y-2 text-sm">
-          {top5.map((p, i) => {
+        <ul className="max-h-[240px] space-y-2 overflow-y-auto text-sm pr-1">
+          {displayPartners.map((p, i) => {
             const segmentColor = COLORS[i % COLORS.length];
             const isHighlighted = hoveredIndex === i;
             return (
@@ -224,7 +224,7 @@ export default function PartnerDistributionCharts({
     return (
       <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-4 text-lg font-semibold text-white">
-          Partner Distribution
+          Partner <span className="highlight-brand">Distribution</span>
         </h2>
         <p className="text-sm text-white/50">
           No concentration data. Run fetch:client-breakdown for Jan26 and Feb26.
@@ -237,7 +237,7 @@ export default function PartnerDistributionCharts({
     return (
       <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-4 text-lg font-semibold text-white">
-          Client Concentration
+          Client <span className="highlight-brand">Concentration</span>
         </h2>
         <p className="text-sm text-white/50">
           Select at least one month in the filter to view concentration data.
@@ -251,7 +251,7 @@ export default function PartnerDistributionCharts({
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-[25px] font-extrabold text-white">
-            Client Concentration
+            Client <span className="highlight-brand">Concentration</span>
           </h2>
           <p className="text-sm text-white/50">(from billing)</p>
         </div>

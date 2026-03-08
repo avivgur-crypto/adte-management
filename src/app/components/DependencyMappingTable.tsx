@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { DependencyMappingResult } from "@/app/actions/dependency-mapping";
 
 function formatCurrency(n: number): string {
@@ -60,7 +60,7 @@ export default function DependencyMappingTable({
     return (
       <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-1 text-[25px] font-extrabold text-white">
-          Dependency Mapping
+          Dependency <span className="highlight-brand">Mapping</span>
         </h2>
         <p className="mt-1 text-sm text-white/50">
           Demand × Supply pairs (from database, synced from XDASH)
@@ -80,7 +80,7 @@ export default function DependencyMappingTable({
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-[25px] font-extrabold text-white">
-            Dependency Mapping
+            Dependency <span className="highlight-brand">Mapping</span>
           </h2>
           <p className="mt-1 text-sm text-white/50">
             Demand × Supply pairs (from database, synced from XDASH). Top 20 by profit.
@@ -94,7 +94,8 @@ export default function DependencyMappingTable({
         )}
       </div>
 
-      <div className="overflow-x-auto">
+      {/* Desktop: full table */}
+      <div className="hidden md:block overflow-x-auto">
         <table className="w-full min-w-[640px] border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-white/10">
@@ -127,10 +128,9 @@ export default function DependencyMappingTable({
                 <td className="py-3 pr-4">
                   <span className="inline-flex items-center gap-1.5 font-medium text-white/90">
                     {riskSet.has(row.demandPartner) && (
-                      <RiskAlertIcon
-                        className="h-4 w-4 shrink-0 text-amber-400"
-                        title=">60% revenue from single supply"
-                      />
+                      <span title=">60% revenue from single supply">
+                        <RiskAlertIcon className="h-4 w-4 shrink-0 text-amber-400" />
+                      </span>
                     )}
                     <span className="truncate max-w-[200px]" title={row.demandPartner}>
                       {row.demandPartner}
@@ -169,6 +169,107 @@ export default function DependencyMappingTable({
           </tbody>
         </table>
       </div>
+
+      {/* Mobile: expandable card list */}
+      <MobileCardList rows={displayRows} riskSet={riskSet} />
+    </div>
+  );
+}
+
+function MobileCardList({
+  rows,
+  riskSet,
+}: {
+  rows: DependencyMappingResult["rows"];
+  riskSet: Set<string>;
+}) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+
+  const handleToggle = (i: number) => {
+    setExpandedIdx((prev) => (prev === i ? null : i));
+  };
+
+  return (
+    <div className="flex flex-col gap-2 md:hidden">
+      {rows.map((row, i) => {
+        const isOpen = expandedIdx === i;
+        return (
+          <div
+            key={`${row.demandPartner}-${row.supplyPartner}-${i}`}
+            className={`w-full rounded-xl border text-left transition-colors duration-200 ${
+              isOpen
+                ? "border-white/15 bg-white/[0.06]"
+                : "border-white/[0.06] bg-white/[0.02]"
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => handleToggle(i)}
+              className="flex w-full items-center gap-2 px-3 py-2.5 text-left active:bg-white/[0.04]"
+            >
+              {riskSet.has(row.demandPartner) && (
+                <RiskAlertIcon className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="truncate font-medium text-white/90">
+                    {row.demandPartner}
+                  </span>
+                  <span className="shrink-0 text-white/30">→</span>
+                  <span className="truncate text-white/60">
+                    {row.supplyPartner}
+                  </span>
+                </div>
+              </div>
+              <span
+                className={`shrink-0 text-xs font-medium tabular-nums ${
+                  row.profitMarginPercent >= 0 ? "text-emerald-300/80" : "text-red-300/80"
+                }`}
+              >
+                {formatPercent(row.profitMarginPercent)}
+              </span>
+              <svg
+                className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {isOpen && (
+              <div className="border-t border-white/[0.06] px-3 pb-3 pt-2 text-xs">
+                <div className="mb-2 space-y-0.5">
+                  <div className="text-white/90 break-words leading-relaxed">
+                    <span className="text-white/40">Demand: </span>{row.demandPartner}
+                  </div>
+                  <div className="text-white/70 break-words leading-relaxed">
+                    <span className="text-white/40">Supply: </span>{row.supplyPartner}
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-y-1.5 gap-x-2">
+                  <div>
+                    <div className="text-white/40">Revenue</div>
+                    <div className="font-medium tabular-nums text-white/90">{formatCurrency(row.revenue)}</div>
+                  </div>
+                  <div>
+                    <div className="text-white/40">Cost</div>
+                    <div className="font-medium tabular-nums text-white/90">{formatCurrency(row.cost)}</div>
+                  </div>
+                  <div>
+                    <div className="text-white/40">Profit</div>
+                    <div className={`font-medium tabular-nums ${row.profit >= 0 ? "text-emerald-300" : "text-red-300"}`}>
+                      {formatCurrency(row.profit)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useEffect, useActionState } from "react";
 import { login, type LoginState } from "@/app/actions/auth";
 
 interface LoginFormProps {
@@ -12,6 +12,13 @@ export default function LoginForm({ from }: LoginFormProps) {
     login,
     {},
   );
+
+  // Client-side redirect so "Signing in..." ends as soon as auth succeeds.
+  useEffect(() => {
+    if (state.redirectTo) {
+      window.location.href = state.redirectTo;
+    }
+  }, [state.redirectTo]);
 
   return (
     <form action={formAction} className="flex flex-col gap-4">

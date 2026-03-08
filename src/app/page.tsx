@@ -8,6 +8,7 @@ import type { PairEntry } from "@/lib/dependency-mapping-utils";
 import {
   getAllDailyMovement,
   getAllPaceByMonth,
+  getLastDataUpdate,
   getMonthlyXDASHTotals,
   getPartnerConcentration,
   getTotalOverviewData,
@@ -15,6 +16,7 @@ import {
 import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
 import { getSalesFunnelMetricsFromMonday } from "@/app/actions/sales-funnel-live";
 import ActivitySummary from "@/app/components/ActivitySummary";
+import AutoSync from "@/app/components/AutoSync";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import DashboardTabs from "@/app/components/DashboardTabs";
 import DailyMovementChart from "@/app/components/DailyMovementChart";
@@ -23,6 +25,7 @@ import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import RevenueGoalChart from "@/app/components/RevenueGoalChart";
 import PartnerDistributionCharts from "@/app/components/PartnerDistributionCharts";
 import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
+import LastSyncLine from "@/app/components/LastSyncLine";
 import TotalOverview from "@/app/components/TotalOverview";
 
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
@@ -45,6 +48,7 @@ export default async function Home() {
     paceResult,
     dailyResult,
     depPairsResult,
+    lastUpdateResult,
   ] = await Promise.allSettled([
     getPartnerConcentration("2026-01-01"),
     getPartnerConcentration("2026-02-01"),
@@ -56,6 +60,7 @@ export default async function Home() {
     getAllPaceByMonth(PACING_MONTH_KEYS),
     getAllDailyMovement(),
     getAllDependencyPairs(),
+    getLastDataUpdate(),
   ]);
 
   const initialFunnelData = funnelResult.status === "fulfilled" ? funnelResult.value : null;
@@ -75,6 +80,8 @@ export default async function Home() {
     dailyResult.status === "fulfilled" ? dailyResult.value : {};
   const pairsByMonth: Record<string, PairEntry[]> =
     depPairsResult.status === "fulfilled" ? depPairsResult.value : {};
+  const lastDataUpdate =
+    lastUpdateResult.status === "fulfilled" ? lastUpdateResult.value : null;
 
   if (
     concJan.status === "rejected" ||
@@ -91,7 +98,9 @@ export default async function Home() {
 
   return (
     <div className="bg-adte-page">
+      <AutoSync />
       <main className="mx-auto max-w-5xl px-4 py-10">
+        <LastSyncLine syncedAt={lastDataUpdate?.syncedAt ?? null} />
         {error && (
           <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
             {error}
@@ -113,7 +122,7 @@ export default async function Home() {
             <DashboardErrorBoundary sectionName="Daily progress">
               <DailyMovementChart
                 dailyByMonth={dailyByMonth}
-                monthKeys={CONCENTRATION_MONTHS}
+                monthKeys={PACING_MONTH_KEYS}
                 paceByMonth={paceByMonth}
               />
             </DashboardErrorBoundary>

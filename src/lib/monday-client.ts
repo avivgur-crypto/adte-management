@@ -24,6 +24,7 @@ async function graphql<T = unknown>(query: string, variables?: Record<string, un
     headers: {
       "Content-Type": "application/json",
       Authorization: MONDAY_API_TOKEN,
+      "API-Version": "2025-10",
     },
     body: JSON.stringify({ query, variables }),
   });
@@ -189,17 +190,16 @@ export async function fetchBoardItems(
 
 /**
  * Get Status column text for an item (for Deals board).
- * Looks for a column with type "color" or "status" or title containing "status".
+ * Prefers a column whose id starts with "status_", then falls back to
+ * any column of type "color"/"status", then any id containing "status".
  */
 export function getItemStatus(item: MondayItem): string | null {
   const cols = item.column_values ?? [];
-  const statusCol = cols.find(
-    (c) =>
-      c.type === "color" ||
-      c.type === "status" ||
-      (c.id && c.id.toLowerCase().includes("status"))
-  );
-  return statusCol?.text ?? statusCol?.value ?? null;
+  const preferred =
+    cols.find((c) => c.id.startsWith("status_") && (c.type === "color" || c.type === "status")) ??
+    cols.find((c) => c.type === "color" || c.type === "status") ??
+    cols.find((c) => c.id && c.id.toLowerCase().includes("status"));
+  return preferred?.text ?? preferred?.value ?? null;
 }
 
 /**

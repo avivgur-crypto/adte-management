@@ -15,6 +15,7 @@ import {
   fetchSupplyPartners,
   fetchReportForDate,
   fetchAdServerOverview,
+  fetchHomeForDate,
   mapDemandPartners,
   mapSupplyPartners,
   useReportsForSync,
@@ -24,6 +25,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 
 const TABLE = "daily_partner_performance";
 const BATCH_UPSERT_SIZE = 2000;
+const TIMEZONE_ISRAEL = "Asia/Jerusalem";
 
 /** Process one date at a time — the backup server is very weak. */
 const FETCH_BATCH_SIZE = 1;
@@ -37,26 +39,58 @@ function formatLocalDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Today's date in Israel (YYYY-MM-DD). Use this so sync aligns with XDASH dashboard. */
+function getTodayIsrael(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: TIMEZONE_ISRAEL });
+}
+
 function getYesterday(now: Date): Date {
   const d = new Date(now);
   d.setDate(d.getDate() - 1);
   return d;
 }
 
-function datesFromMonthStartThroughYesterday(): string[] {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const firstOfMonth = new Date(year, month, 1);
-  const yesterday = getYesterday(now);
-  if (firstOfMonth > yesterday) return [];
+/** Dates from 1st of current month through today in Israel timezone. */
+function datesFromMonthStartThroughToday(_now: Date): string[] {
+  const todayStr = getTodayIsrael();
+  const [y, m, d] = todayStr.split("-").map(Number);
   const out: string[] = [];
-  const cur = new Date(firstOfMonth);
-  while (cur <= yesterday) {
-    out.push(formatLocalDate(cur));
-    cur.setDate(cur.getDate() + 1);
+  for (let day = 1; day <= d; day++) {
+    out.push(`${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`);
   }
   return out;
+}
+
+/** Last 3 days in Israel timezone: day-before, yesterday, today (for lightweight auto-sync). */
+function last3DaysIsrael(): string[] {
+  const todayStr = getTodayIsrael();
+  const [y, m, day] = todayStr.split("-").map(Number);
+  const todayDate = new Date(y, m - 1, day);
+  const out: string[] = [];
+  for (let offset = 2; offset >= 0; offset--) {
+    const d = new Date(todayDate);
+    d.setDate(d.getDate() - offset);
+    out.push(formatLocalDate(d));
+  }
+  return out;
+}
+
+/**
+ * Return the set of dates that already have at least one row in daily_partner_performance.
+ */
+async function getDatesAlreadySynced(dates: string[]): Promise<Set<string>> {
+  if (dates.length === 0) return new Set();
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select("date")
+    .in("date", dates);
+  if (error) throw new Error(`XDASH date check failed: ${error.message}`);
+  const set = new Set<string>();
+  for (const row of data ?? []) {
+    const d = row?.date;
+    if (d) set.add(typeof d === "string" ? d.slice(0, 10) : String(d).slice(0, 10));
+  }
+  return set;
 }
 
 /** Dates from 1st through last day of the given month, or through yesterday if that month is the current month. */
@@ -79,7 +113,8 @@ function datesForMonth(year: number, month: number): string[] {
 function rowToRecord(
   date: string,
   partnerType: "demand" | "supply",
-  r: PartnerRow
+  r: PartnerRow,
+  syncedAt: string,
 ): Record<string, unknown> {
   return {
     date,
@@ -88,16 +123,27 @@ function rowToRecord(
     revenue: r.revenue,
     cost: r.cost,
     impressions: r.impressions,
+    created_at: syncedAt,
   };
 }
 
-/** Fetch demand + supply for one date. Uses Reports API (one call) when XDASH_USE_REPORTS=true, else partners/demand + partners/supply. */
+/**
+ * Fetch demand + supply for one date.
+ * For today: always use /partners/demand|supply/overview (real-time intraday data).
+ * For past dates: uses Reports API when XDASH_USE_REPORTS=true (lighter, one call).
+ */
 async function fetchDay(
   date: string
 ): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }> {
-  if (useReportsForSync()) {
+  const isToday = date === getTodayIsrael();
+
+  if (useReportsForSync() && !isToday) {
     const { demand, supply } = await fetchReportForDate(date);
     return { date, demand, supply };
+  }
+
+  if (isToday) {
+    console.log(`[xdash-sync] Using Partners endpoints for today (${date}) — live intraday data`);
   }
   const demandRaw = await fetchDemandPartners(date);
   const supplyRaw = await fetchSupplyPartners(date);
@@ -108,12 +154,42 @@ async function fetchDay(
   };
 }
 
-/** Perform batch upsert in chunks to stay under payload limits. */
+/** Deduplicate by (date, partner_name, partner_type), summing revenue/cost/impressions. */
+function aggregateRecords(records: Record<string, unknown>[]): Record<string, unknown>[] {
+  const map = new Map<string, { date: string; partner_name: string; partner_type: string; revenue: number; cost: number; impressions: number; created_at: string }>();
+  for (const r of records) {
+    const key = `${String(r.date)}\u0001${String(r.partner_name)}\u0001${String(r.partner_type)}`;
+    const rev = Number(r.revenue ?? 0);
+    const cost = Number(r.cost ?? 0);
+    const imp = Number(r.impressions ?? 0);
+    const ca = String(r.created_at ?? new Date().toISOString());
+    const existing = map.get(key);
+    if (existing) {
+      existing.revenue += rev;
+      existing.cost += cost;
+      existing.impressions += imp;
+    } else {
+      map.set(key, {
+        date: String(r.date),
+        partner_name: String(r.partner_name),
+        partner_type: String(r.partner_type),
+        revenue: rev,
+        cost,
+        impressions: imp,
+        created_at: ca,
+      });
+    }
+  }
+  return Array.from(map.values());
+}
+
+/** Perform batch upsert in chunks to stay under payload limits. Deduplicates first to avoid ON CONFLICT row twice. */
 async function batchUpsert(records: Record<string, unknown>[]): Promise<number> {
   if (records.length === 0) return 0;
+  const unique = aggregateRecords(records);
   let total = 0;
-  for (let i = 0; i < records.length; i += BATCH_UPSERT_SIZE) {
-    const chunk = records.slice(i, i + BATCH_UPSERT_SIZE);
+  for (let i = 0; i < unique.length; i += BATCH_UPSERT_SIZE) {
+    const chunk = unique.slice(i, i + BATCH_UPSERT_SIZE);
     const { error } = await supabaseAdmin
       .from(TABLE)
       .upsert(chunk, { onConflict: "date,partner_name,partner_type" });
@@ -143,47 +219,46 @@ async function fetchDatesInBatches(
   return results;
 }
 
-const MONTHLY_TOTAL_PARTNER = "__XDASH_MONTHLY_TOTAL__";
+const HOME_TABLE = "daily_home_totals";
 
 /**
- * Fetch the Home API total for a month and upsert as a special row.
- * Uses date = first day of month so _getMonthlyXDASHTotals can pick it up.
- * ONE API call per month — lightweight compared to per-day fetching.
+ * For each date, fetch the Home API totals (revenue/cost/impressions) and
+ * upsert into daily_home_totals. This is the source of truth for Financial
+ * dashboard cards, Daily Progress chart, and Pacing.
+ * Processes sequentially with delays to protect the backup server.
  */
-async function syncMonthlyTotal(year: number, month: number): Promise<void> {
-  const firstDay = `${year}-${String(month).padStart(2, "0")}-01`;
-  const lastDay = new Date(year, month, 0);
-  const endDate = `${year}-${String(month).padStart(2, "0")}-${String(lastDay.getDate()).padStart(2, "0")}`;
-
-  console.log(`[xdash-sync] Fetching Home total for ${firstDay} → ${endDate} …`);
-  try {
-    const raw = await fetchAdServerOverview({ startDate: firstDay, endDate });
-    const sd = (raw as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
-    const totals = (sd?.selectedDates as Record<string, unknown> | undefined)?.totals as
-      | { revenue?: number; cost?: number; impressions?: number }
-      | undefined;
-
-    if (!totals) {
-      console.warn("[xdash-sync] No totals in Home response for", firstDay);
-      return;
+async function syncHomeTotalsForDates(dates: string[], syncedAt: string): Promise<number> {
+  if (dates.length === 0) return 0;
+  let written = 0;
+  for (let i = 0; i < dates.length; i++) {
+    const date = dates[i]!;
+    try {
+      console.log(`[xdash-sync] Fetching Home totals for ${date}…`);
+      const { revenue, cost, impressions } = await fetchHomeForDate(date);
+      if (revenue === 0 && cost === 0 && impressions === 0) {
+        console.warn(`[xdash-sync] Home returned zeros for ${date} — skipping upsert`);
+        continue;
+      }
+      const { error } = await supabaseAdmin
+        .from(HOME_TABLE)
+        .upsert(
+          { date, revenue, cost, impressions, created_at: syncedAt },
+          { onConflict: "date" },
+        );
+      if (error) {
+        console.error(`[xdash-sync] Home upsert failed for ${date}:`, error.message);
+      } else {
+        console.log(`[xdash-sync] Home totals ${date}: revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}`);
+        written++;
+      }
+    } catch (e) {
+      console.warn(`[xdash-sync] Home fetch failed for ${date} (non-fatal):`, e instanceof Error ? e.message : e);
     }
-
-    const revenue = Number(totals.revenue ?? 0);
-    const cost = Number(totals.cost ?? 0);
-    const impressions = Number(totals.impressions ?? 0);
-
-    const records = [
-      { date: firstDay, partner_name: MONTHLY_TOTAL_PARTNER, partner_type: "demand", revenue, cost: 0, impressions },
-      { date: firstDay, partner_name: MONTHLY_TOTAL_PARTNER, partner_type: "supply", revenue: 0, cost, impressions: 0 },
-    ];
-    const { error } = await supabaseAdmin
-      .from(TABLE)
-      .upsert(records, { onConflict: "date,partner_name,partner_type" });
-    if (error) console.error("[xdash-sync] Monthly total upsert error:", error.message);
-    else console.log(`[xdash-sync] Monthly total saved: revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}`);
-  } catch (e) {
-    console.warn("[xdash-sync] Home total fetch failed (non-fatal):", e instanceof Error ? e.message : e);
+    if (i < dates.length - 1) {
+      await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
+    }
   }
+  return written;
 }
 
 export interface SyncXDASHResult {
@@ -192,44 +267,88 @@ export interface SyncXDASHResult {
 }
 
 /**
- * Incremental sync — minimal API calls, no redundant fetches.
+ * Incremental sync with catch-up so every day from the 1st is synced, daily and in order.
  *
- * XDASH data is daily granularity; a query for a date returns that day's totals.
- *  - "Today" is the only date whose data is still growing → always fetch it.
- *  - "Yesterday" was last fetched at ~18:00 UTC the day before (missing last 6h).
- *    Finalize it once at the first cron run after midnight (hour < 6 UTC).
- *  - Older dates never change → never re-fetch.
- *
- * With cron every 6h (00:00, 06:00, 12:00, 18:00 UTC):
- *   00:00 → yesterday + today  (4 API calls — finalize yesterday)
- *   06/12/18 → today only      (2 API calls each)
- *   Total: 10 API calls/day, zero wasted overlap.
+ *  - Fetches all dates from 1st of current month through today that are missing in the DB.
+ *  - Always re-fetches today (data grows throughout the day).
+ *  - Ensures March 1, March 2, etc. are never skipped (e.g. if cron missed a run).
  *
  * Historical backfills: use syncXDASHDataForMonth() via the CLI script.
  */
 export async function syncXDASHData(): Promise<SyncXDASHResult> {
   const now = new Date();
-  const today = formatLocalDate(now);
-  const dates = [today];
-
-  const hourUTC = now.getUTCHours();
-  if (hourUTC < 6) {
-    dates.unshift(formatLocalDate(getYesterday(now)));
+  const syncedAt = now.toISOString();
+  const today = getTodayIsrael();
+  const allDatesThisMonth = datesFromMonthStartThroughToday(now);
+  if (allDatesThisMonth.length === 0) {
+    return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  console.log(`[xdash-sync] Incremental sync for: ${dates.join(", ")}`);
-  const dayResults = await fetchDatesInBatches(dates);
+  const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
+  const toFetch = allDatesThisMonth.filter((d) => !alreadySynced.has(d) || d === today);
+  toFetch.sort();
+
+  if (toFetch.length === 0) {
+    return { datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  console.log(`[xdash-sync] Sync (catch-up + today): ${toFetch.join(", ")}`);
+  const dayResults = await fetchDatesInBatches(toFetch);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
-    for (const r of demand) records.push(rowToRecord(date, "demand", r));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r));
+    if (demand.length === 0 && supply.length === 0) {
+      console.warn(`[xdash-sync] No data returned for ${date} — XDASH may not have this date yet`);
+    } else {
+      console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
+    }
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
   const rowsUpserted = await batchUpsert(records);
 
-  // Refresh the monthly total from the Home API (one lightweight call)
-  await syncMonthlyTotal(now.getFullYear(), now.getMonth() + 1);
+  // Fetch Home API totals per date → daily_home_totals (source of truth for Financial screen)
+  await syncHomeTotalsForDates(toFetch, syncedAt);
+  return { datesSynced: toFetch.length, rowsUpserted };
+}
 
-  return { datesSynced: dates.length, rowsUpserted };
+/**
+ * Lightweight sync for auto-sync (e.g. /api/auto-sync): only last 3 days (today, yesterday, day before).
+ * Use this to stay within Vercel serverless time limits; full month sync remains for the nightly cron.
+ */
+export async function syncXDASHDataLast3Days(): Promise<SyncXDASHResult> {
+  const now = new Date();
+  const syncedAt = now.toISOString();
+  const today = getTodayIsrael();
+  const dates = last3DaysIsrael();
+  if (dates.length === 0) {
+    return { datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  const alreadySynced = await getDatesAlreadySynced(dates);
+  const toFetch = dates.filter((d) => !alreadySynced.has(d) || d === today);
+  toFetch.sort();
+
+  if (toFetch.length === 0) {
+    return { datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  console.log(`[xdash-sync] Last-3-days sync: ${toFetch.join(", ")}`);
+  const dayResults = await fetchDatesInBatches(toFetch);
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    if (demand.length === 0 && supply.length === 0) {
+      console.warn(`[xdash-sync] No data returned for ${date}`);
+    } else {
+      console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
+    }
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
+  }
+  const rowsUpserted = await batchUpsert(records);
+
+  // Fetch Home API totals per date → daily_home_totals
+  await syncHomeTotalsForDates(toFetch, syncedAt);
+  return { datesSynced: toFetch.length, rowsUpserted };
 }
 
 /**
@@ -240,19 +359,18 @@ export async function syncXDASHDataForMonth(
   year: number,
   month: number
 ): Promise<SyncXDASHResult> {
+  const syncedAt = new Date().toISOString();
   const dates = datesForMonth(year, month);
   const dayResults = await fetchDatesInBatches(dates);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
-    for (const r of demand) records.push(rowToRecord(date, "demand", r));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r));
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
   const rowsUpserted = await batchUpsert(records);
 
-  // Refresh the monthly total from the Home API (one call)
-  await syncMonthlyTotal(year, month);
+  // Fetch Home API totals per date → daily_home_totals
+  await syncHomeTotalsForDates(dates, syncedAt);
 
   return { datesSynced: dates.length, rowsUpserted };
 }
-
-export { MONTHLY_TOTAL_PARTNER };

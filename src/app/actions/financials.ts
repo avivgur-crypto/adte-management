@@ -312,7 +312,7 @@ export interface PartnerConcentrationResult {
   concentrationRisk: boolean;
 }
 
-const TOP_N = 10;
+const TOP_N = 20;
 const CONCENTRATION_THRESHOLD_PERCENT = 30;
 
 /** Fetches concentration for a month; top 10 per type, rest as "Others"; % share. */
@@ -409,27 +409,36 @@ const OVERVIEW_MONTHS = Array.from({ length: 12 }, (_, i) =>
   `${OVERVIEW_YEAR}-${String(i + 1).padStart(2, "0")}-01`
 );
 
-interface DailyRow {
-  date: string;
-  partner_name: string;
-  partner_type: string;
-  revenue: number;
-  cost: number;
+export interface XDASHMonthTotals {
+  mediaRevenue: number;
+  mediaCost: number;
 }
 
-/** Paginate through all rows — Supabase default limit is 1000. */
-async function fetchAllDailyRows(firstDay: string, lastDay: string): Promise<DailyRow[]> {
+// ---------------------------------------------------------------------------
+// Home-based data (daily_home_totals) — source of truth for Financial screen
+// ---------------------------------------------------------------------------
+
+interface HomeRow {
+  date: string;
+  revenue: number;
+  cost: number;
+  impressions: number;
+}
+
+async function fetchAllHomeRows(): Promise<HomeRow[]> {
   const PAGE = 1000;
-  const all: DailyRow[] = [];
+  const all: HomeRow[] = [];
   let offset = 0;
+  const firstDay = `${OVERVIEW_YEAR}-01-01`;
+  const lastDay = `${OVERVIEW_YEAR}-12-31`;
   while (true) {
     const { data, error } = await supabaseAdmin
-      .from("daily_partner_performance")
-      .select("date, partner_name, partner_type, revenue, cost")
+      .from("daily_home_totals")
+      .select("date, revenue, cost, impressions")
       .gte("date", firstDay)
       .lte("date", lastDay)
       .range(offset, offset + PAGE - 1);
-    if (error) throw new Error(`fetchAllDailyRows: ${error.message}`);
+    if (error) throw new Error(`fetchAllHomeRows: ${error.message}`);
     if (!data || data.length === 0) break;
     all.push(...data);
     if (data.length < PAGE) break;
@@ -438,86 +447,47 @@ async function fetchAllDailyRows(firstDay: string, lastDay: string): Promise<Dai
   return all;
 }
 
-export interface XDASHMonthTotals {
-  mediaRevenue: number;
-  mediaCost: number;
-}
-
-const MONTHLY_TOTAL_PARTNER = "__XDASH_MONTHLY_TOTAL__";
-
-/**
- * Single DB read for daily_partner_performance. Returns BOTH:
- *   - xdashTotals  (monthly aggregates, preferring __XDASH_MONTHLY_TOTAL__ rows)
- *   - dailyByMonth (per-day revenue/cost breakdown by month)
- *
- * Previously these were two separate full-year queries; now one query feeds both.
- */
-interface AllDailyData {
+interface AllHomeData {
   xdashTotals: Record<string, XDASHMonthTotals>;
   dailyByMonth: Record<string, DailyMovementDay[]>;
 }
 
-async function _getAllDailyData(): Promise<AllDailyData> {
-  const firstDay = `${OVERVIEW_YEAR}-01-01`;
-  const lastDay = `${OVERVIEW_YEAR}-12-31`;
-  const rows = await fetchAllDailyRows(firstDay, lastDay);
-
-  const homeTotals: Record<string, XDASHMonthTotals> = {};
-  const partnerSums: Record<string, XDASHMonthTotals> = {};
-  const byMonth = new Map<string, Map<string, { revenue: number; cost: number }>>();
+async function _getAllHomeData(): Promise<AllHomeData> {
+  const rows = await fetchAllHomeRows();
+  const monthSums: Record<string, XDASHMonthTotals> = {};
+  const byMonth = new Map<string, DailyMovementDay[]>();
 
   for (const r of rows) {
     const monthKey = String(r.date).slice(0, 7) + "-01";
-    const isDemand = (r.partner_type ?? "").toLowerCase() === "demand";
     const rev = Number(r.revenue ?? 0);
     const cos = Number(r.cost ?? 0);
 
-    if (String(r.partner_name ?? "") === MONTHLY_TOTAL_PARTNER) {
-      const cur = homeTotals[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
-      if (isDemand) cur.mediaRevenue += rev; else cur.mediaCost += cos;
-      homeTotals[monthKey] = cur;
-    } else {
-      const cur = partnerSums[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
-      if (isDemand) cur.mediaRevenue += rev; else cur.mediaCost += cos;
-      partnerSums[monthKey] = cur;
+    const cur = monthSums[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
+    cur.mediaRevenue += rev;
+    cur.mediaCost += cos;
+    monthSums[monthKey] = cur;
 
-      const d = String(r.date).slice(0, 10);
-      let month = byMonth.get(monthKey);
-      if (!month) { month = new Map(); byMonth.set(monthKey, month); }
-      const existing = month.get(d) ?? { revenue: 0, cost: 0 };
-      if (isDemand) existing.revenue += rev; else existing.cost += cos;
-      month.set(d, existing);
-    }
-  }
-
-  const xdashTotals: Record<string, XDASHMonthTotals> = {};
-  const allMonths = new Set([...Object.keys(homeTotals), ...Object.keys(partnerSums)]);
-  for (const m of allMonths) {
-    const home = homeTotals[m];
-    const partners = partnerSums[m];
-    xdashTotals[m] = home && (home.mediaRevenue > 0 || home.mediaCost > 0)
-      ? home
-      : partners ?? { mediaRevenue: 0, mediaCost: 0 };
+    let dayList = byMonth.get(monthKey);
+    if (!dayList) { dayList = []; byMonth.set(monthKey, dayList); }
+    dayList.push({ date: String(r.date).slice(0, 10), revenue: rev, cost: cos });
   }
 
   const dailyByMonth: Record<string, DailyMovementDay[]> = {};
-  for (const [mk, dayMap] of byMonth) {
-    dailyByMonth[mk] = Array.from(dayMap.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, { revenue, cost }]) => ({ date, revenue, cost }));
+  for (const [mk, days] of byMonth) {
+    dailyByMonth[mk] = days.sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  return { xdashTotals, dailyByMonth };
+  return { xdashTotals: monthSums, dailyByMonth };
 }
 
-const getAllDailyData = unstable_cache(
-  _getAllDailyData,
-  ["all-daily-data"],
+const getAllHomeData = unstable_cache(
+  _getAllHomeData,
+  ["all-home-data"],
   { revalidate: CACHE_TTL },
 );
 
 export async function getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
-  const { xdashTotals } = await getAllDailyData();
+  const { xdashTotals } = await getAllHomeData();
   return xdashTotals;
 }
 
@@ -591,51 +561,47 @@ export interface DailyMovementDay {
 }
 
 /** Returns per-day revenue (demand) and cost (supply) for a given month from daily_partner_performance. */
-async function _getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> {
-  return withRetry(async () => {
-    const [y, m] = monthKey.split("-").map(Number);
-    if (!y || !m) return [];
-    const firstDay = `${monthKey.slice(0, 7)}-01`;
-    const lastDayOfMonth = new Date(y, m, 0);
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const endDate = lastDayOfMonth <= yesterday ? lastDayOfMonth : yesterday;
-    const lastDay = endDate.toISOString().slice(0, 10);
-
-    const rows = await fetchAllDailyRows(firstDay, lastDay);
-
-    const byDate = new Map<string, { revenue: number; cost: number }>();
-    for (const r of rows) {
-      if (String(r.partner_name ?? "") === MONTHLY_TOTAL_PARTNER) continue;
-      const d = String(r.date).slice(0, 10);
-      const rev = Number(r.revenue ?? 0);
-      const cos = Number(r.cost ?? 0);
-      const existing = byDate.get(d) ?? { revenue: 0, cost: 0 };
-      if ((r.partner_type ?? "").toLowerCase() === "demand") {
-        existing.revenue += rev;
-      } else {
-        existing.cost += cos;
-      }
-      byDate.set(d, existing);
-    }
-
-    return Array.from(byDate.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, { revenue, cost }]) => ({ date, revenue, cost }));
-  });
-}
-
+/** @deprecated — use getAllDailyMovement() which reads from daily_home_totals */
 export async function getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> {
   const parsed = monthKeySchema.safeParse(monthKey);
   if (!parsed.success) return [];
   return unstable_cache(
-    () => _getDailyMovement(parsed.data),
+    async () => {
+      const all = await getAllDailyMovement();
+      return all[parsed.data] ?? [];
+    },
     ["daily-movement", parsed.data],
     { revalidate: CACHE_TTL },
   )();
 }
 
 export async function getAllDailyMovement(): Promise<Record<string, DailyMovementDay[]>> {
-  const { dailyByMonth } = await getAllDailyData();
+  const { dailyByMonth } = await getAllHomeData();
   return dailyByMonth;
+}
+
+/** Returns { date, syncedAt } of the most recent data row. Checks daily_home_totals first, falls back to partner data. */
+export async function getLastDataUpdate(): Promise<{ date: string; syncedAt: string } | null> {
+  return unstable_cache(
+    async () => {
+      const { data: homeRow } = await supabaseAdmin
+        .from("daily_home_totals")
+        .select("date, created_at")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+      if (homeRow) return { date: homeRow.date, syncedAt: homeRow.created_at };
+
+      const { data } = await supabaseAdmin
+        .from("daily_partner_performance")
+        .select("date, created_at")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+      if (!data) return null;
+      return { date: data.date, syncedAt: data.created_at };
+    },
+    ["last-data-update"],
+    { revalidate: 60 },
+  )();
 }

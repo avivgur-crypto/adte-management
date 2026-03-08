@@ -541,7 +541,11 @@ async function fetchWithRetry(
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     try {
       await throttle();
-      const res = await fetch(url, options);
+      const res = await fetch(url, {
+        ...options,
+        cache: "no-store",
+        next: { revalidate: 0 },
+      } as RequestInit);
       return res;
     } catch (e) {
       lastErr = e;
@@ -616,6 +620,22 @@ export async function fetchAdServerOverview(
     await new Promise((r) => setTimeout(r, HOME_OVERVIEW_RETRY_DELAY_MS));
   }
   throw lastError ?? new Error("XDASH home overview failed");
+}
+
+/** Lightweight: fetch Home API totals for a single date. Returns {revenue, cost, impressions}. */
+export async function fetchHomeForDate(
+  date: string
+): Promise<{ revenue: number; cost: number; impressions: number }> {
+  const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
+  const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
+  const totals = (sd?.selectedDates as Record<string, unknown> | undefined)?.totals as
+    | { revenue?: number; cost?: number; impressions?: number }
+    | undefined;
+  return {
+    revenue: Number(totals?.revenue ?? 0),
+    cost: Number(totals?.cost ?? 0),
+    impressions: Number(totals?.impressions ?? 0),
+  };
 }
 
 const REVENUE_KEYS = ["revenue", "netRevenue", "totalRevenue", "revenueAmount"];

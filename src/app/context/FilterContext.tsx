@@ -14,6 +14,16 @@ const MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
   `${YEAR}-${String(i + 1).padStart(2, "0")}-01`
 );
 
+/** Current month key (YYYY-MM-01) for default filter, clamped to app year. */
+function getCurrentMonthKey(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  if (y < YEAR) return `${YEAR}-01-01`;
+  if (y > YEAR) return `${YEAR}-12-01`;
+  return `${YEAR}-${String(m).padStart(2, "0")}-01`;
+}
+
 const QUARTER_MONTHS: Record<number, number[]> = {
   1: [1, 2, 3],
   2: [4, 5, 6],
@@ -75,8 +85,12 @@ const defaultState: FilterState = {
 const FilterContext = createContext<FilterState>(defaultState);
 
 export function FilterProvider({ children }: { children: ReactNode }) {
-  const [activeScreen, setActiveScreen] = useState<AppScreen>("financial");
-  const [selectedMonths, setSelectedMonths] = useState<Set<string>>(() => new Set(MONTH_KEYS));
+  const [activeScreen, _setActiveScreen] = useState<AppScreen>("financial");
+  const setActiveScreen = useCallback((screen: AppScreen) => {
+    _setActiveScreen(screen);
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, []);
+  const [selectedMonths, setSelectedMonths] = useState<Set<string>>(() => new Set([getCurrentMonthKey()]));
 
   const selectMonth = useCallback((key: string) => {
     setSelectedMonths((prev) => new Set(prev).add(key));

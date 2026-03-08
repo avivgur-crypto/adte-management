@@ -148,17 +148,17 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   const y = now.getFullYear();
   const m = now.getMonth() + 1;
 
-  const allDatesThisMonth = datesForMonth(y, m);
+  let allDatesThisMonth = datesForMonth(y, m);
+  const isCurrentMonth = y === now.getFullYear() && m === now.getMonth() + 1;
+  if (isCurrentMonth && (allDatesThisMonth.length === 0 || allDatesThisMonth[allDatesThisMonth.length - 1] !== today)) {
+    allDatesThisMonth = [...allDatesThisMonth, today];
+  }
   if (allDatesThisMonth.length === 0) {
     return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
   }
 
   const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
-
-  const toFetch = allDatesThisMonth.filter((d) => {
-    if (d === today) return true;
-    return !alreadySynced.has(d);
-  });
+  const toFetch = allDatesThisMonth.filter((d) => d === today || !alreadySynced.has(d));
 
   if (toFetch.length === 0) {
     return { datesRequested: allDatesThisMonth.length, datesSynced: 0, rowsUpserted: 0 };
