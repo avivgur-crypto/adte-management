@@ -49,18 +49,22 @@ function CustomTooltip({
   return (
     <div className="rounded-lg border border-white/10 bg-[#1a1a1a] px-3 py-2 shadow-xl">
       <p className="mb-1 text-xs font-semibold text-white">{dateLabel}</p>
-      {payload.map((entry) => (
-        <p key={entry.dataKey} className="text-xs" style={{ color: entry.color }}>
-          {entry.dataKey === "revenue" ? "Revenue" : "Cost"}:{" "}
-          <span className="font-semibold">{formatCurrency(entry.value)}</span>
-        </p>
-      ))}
+      {payload.map((entry) => {
+        const label =
+          entry.dataKey === "revenue" ? "Revenue" : entry.dataKey === "cost" ? "Cost" : "Profit";
+        return (
+          <p key={entry.dataKey} className="text-xs" style={{ color: entry.color }}>
+            {label}: <span className="font-semibold">{formatCurrency(entry.value)}</span>
+          </p>
+        );
+      })}
     </div>
   );
 }
 
 const REVENUE_COLOR = "#2dd4bf";
 const COST_COLOR = "#f472b6";
+const PROFIT_COLOR = "#a78bfa";
 
 export default function DailyMovementChart({
   dailyByMonth,
@@ -78,11 +82,11 @@ export default function DailyMovementChart({
       selectedMonths.size > 0
         ? monthKeys.filter((k) => selectedMonths.has(k))
         : monthKeys;
-    const all: { date: string; revenue: number; cost: number }[] = [];
+    const all: { date: string; revenue: number; cost: number; profit: number }[] = [];
     for (const key of keys) {
       const days = dailyByMonth[key] ?? [];
       for (const d of days) {
-        all.push({ date: d.date, revenue: d.revenue, cost: d.cost });
+        all.push({ date: d.date, revenue: d.revenue, cost: d.cost, profit: d.revenue - d.cost });
       }
     }
     all.sort((a, b) => a.date.localeCompare(b.date));
@@ -114,6 +118,7 @@ export default function DailyMovementChart({
     for (const d of chartData) {
       if (d.revenue > max) max = d.revenue;
       if (d.cost > max) max = d.cost;
+      if (d.profit > max) max = d.profit;
     }
     return max;
   }, [chartData]);
@@ -193,7 +198,7 @@ export default function DailyMovementChart({
               wrapperStyle={{ paddingBottom: 12 }}
               formatter={(value: string) => (
                 <span className="text-xs text-white/70">
-                  {value === "revenue" ? "Revenue" : "Cost"}
+                  {value === "revenue" ? "Revenue" : value === "cost" ? "Cost" : "Profit"}
                 </span>
               )}
             />
@@ -210,6 +215,13 @@ export default function DailyMovementChart({
               radius={[4, 4, 0, 0]}
               barSize={24}
               name="cost"
+            />
+            <Bar
+              dataKey="profit"
+              fill={PROFIT_COLOR}
+              radius={[4, 4, 0, 0]}
+              barSize={24}
+              name="profit"
             />
           </ComposedChart>
         </ResponsiveContainer>
