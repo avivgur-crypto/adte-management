@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans, Geist_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/react";
 import ConditionalShell from "@/app/components/ConditionalShell";
 import "./globals.css";
 
@@ -45,6 +46,7 @@ export default function RootLayout({
         className={`${plusJakarta.variable} ${geistMono.variable} font-sans antialiased`}
       >
         <ConditionalShell>{children}</ConditionalShell>
+        <Analytics />
       </body>
     </html>
   );
