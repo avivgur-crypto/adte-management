@@ -159,18 +159,15 @@ export default function DailyMovementChart({
 
   return (
     <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-[25px] font-extrabold text-white">
-            Daily <span className="highlight-brand">progress</span>
-          </h2>
-          <p className="mt-1 text-sm text-white/50">
-            Daily revenue, cost &amp; profit from partner performance
-          </p>
-        </div>
-
-        {/* Toggle buttons */}
-        <div className="flex flex-shrink-0 gap-2">
+      <div className="mb-4">
+        <h2 className="text-[25px] font-extrabold text-white">
+          Daily <span className="highlight-brand">progress</span>
+        </h2>
+        <p className="mt-1 text-sm text-white/50">
+          xdash data
+        </p>
+        {/* Toggle buttons — own row, wrap on narrow screens */}
+        <div className="mt-3 flex flex-wrap gap-2">
           {SERIES.map((s) => {
             const isOn = visible.has(s.key);
             return (
@@ -178,7 +175,7 @@ export default function DailyMovementChart({
                 key={s.key}
                 type="button"
                 onClick={() => toggle(s.key)}
-                className="flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all"
+                className="flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-all"
                 style={{
                   borderColor: isOn ? s.color : "rgba(255,255,255,0.12)",
                   background: isOn ? `${s.color}18` : "transparent",
@@ -186,7 +183,7 @@ export default function DailyMovementChart({
                 }}
               >
                 <span
-                  className="inline-block h-2.5 w-2.5 rounded-sm transition-opacity"
+                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm transition-opacity"
                   style={{
                     backgroundColor: s.color,
                     opacity: isOn ? 1 : 0.25,

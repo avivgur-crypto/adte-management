@@ -13,15 +13,6 @@ function formatCurrency(n: number): string {
   }).format(n);
 }
 
-function formatDataThroughDate(iso: string): string {
-  const d = new Date(iso + "T12:00:00");
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(d);
-}
-
 function TrendIcon({ trend }: { trend: PacingTrend }) {
   if (trend === "up") return <span className="ml-0.5 text-emerald-600 dark:text-emerald-400" aria-hidden>↑</span>;
   if (trend === "down") return <span className="ml-0.5 text-red-600 dark:text-red-400" aria-hidden>↓</span>;
@@ -195,7 +186,7 @@ function FinancialPaceCard({
         <SectionBlock title="SaaS (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
       </div>
       <p className="mt-4 text-[15px] text-white/50">
-        Based on data up to {formatDataThroughDate(summary.dataThroughDate)}.
+        Live data from xdash, updated automatically.
       </p>
     </div>
   );
