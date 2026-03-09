@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   ComposedChart,
   Bar,
@@ -8,7 +8,6 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
 } from "recharts";
 import { useFilter } from "@/app/context/FilterContext";
@@ -29,9 +28,8 @@ function formatShortDate(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-/** Compact axis label to avoid overlap (e.g. "Jan 15" → "15/1"). */
 function formatAxisDate(iso: string): string {
-  const [y, m, d] = iso.split("-");
+  const [, m, d] = iso.split("-");
   return `${Number(d)}/${Number(m)}`;
 }
 
@@ -62,9 +60,13 @@ function CustomTooltip({
   );
 }
 
-const REVENUE_COLOR = "#2dd4bf";
-const COST_COLOR = "#f472b6";
-const PROFIT_COLOR = "#a78bfa";
+const SERIES = [
+  { key: "revenue", label: "Revenue", color: "#2dd4bf" },
+  { key: "cost", label: "Cost", color: "#f472b6" },
+  { key: "profit", label: "Profit", color: "#a78bfa" },
+] as const;
+
+type SeriesKey = (typeof SERIES)[number]["key"];
 
 export default function DailyMovementChart({
   dailyByMonth,
@@ -76,6 +78,21 @@ export default function DailyMovementChart({
   paceByMonth: Record<string, FinancialPaceWithTrend>;
 }) {
   const { selectedMonths } = useFilter();
+  const [visible, setVisible] = useState<Set<SeriesKey>>(
+    new Set(["revenue", "cost", "profit"]),
+  );
+
+  const toggle = (key: SeriesKey) => {
+    setVisible((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        if (next.size > 1) next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
 
   const chartData = useMemo(() => {
     const keys =
@@ -97,7 +114,6 @@ export default function DailyMovementChart({
     }));
   }, [dailyByMonth, monthKeys, selectedMonths]);
 
-  /** X-axis: few ticks (5–6 when many points) + compact labels to avoid overlap. */
   const xAxisTicks = useMemo(() => {
     const n = chartData.length;
     if (n <= 0) return [];
@@ -116,12 +132,12 @@ export default function DailyMovementChart({
   const maxValue = useMemo(() => {
     let max = 0;
     for (const d of chartData) {
-      if (d.revenue > max) max = d.revenue;
-      if (d.cost > max) max = d.cost;
-      if (d.profit > max) max = d.profit;
+      if (visible.has("revenue") && d.revenue > max) max = d.revenue;
+      if (visible.has("cost") && d.cost > max) max = d.cost;
+      if (visible.has("profit") && d.profit > max) max = d.profit;
     }
     return max;
-  }, [chartData]);
+  }, [chartData, visible]);
 
   const yDomain: [number, number] = [
     0,
@@ -143,13 +159,44 @@ export default function DailyMovementChart({
 
   return (
     <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <div className="mb-4">
-        <h2 className="text-[25px] font-extrabold text-white">
-          Daily <span className="highlight-brand">progress</span>
-        </h2>
-        <p className="mt-1 text-sm text-white/50">
-          Daily revenue and cost from partner performance
-        </p>
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-[25px] font-extrabold text-white">
+            Daily <span className="highlight-brand">progress</span>
+          </h2>
+          <p className="mt-1 text-sm text-white/50">
+            Daily revenue, cost &amp; profit from partner performance
+          </p>
+        </div>
+
+        {/* Toggle buttons */}
+        <div className="flex flex-shrink-0 gap-2">
+          {SERIES.map((s) => {
+            const isOn = visible.has(s.key);
+            return (
+              <button
+                key={s.key}
+                type="button"
+                onClick={() => toggle(s.key)}
+                className="flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all"
+                style={{
+                  borderColor: isOn ? s.color : "rgba(255,255,255,0.12)",
+                  background: isOn ? `${s.color}18` : "transparent",
+                  color: isOn ? s.color : "rgba(255,255,255,0.35)",
+                }}
+              >
+                <span
+                  className="inline-block h-2.5 w-2.5 rounded-sm transition-opacity"
+                  style={{
+                    backgroundColor: s.color,
+                    opacity: isOn ? 1 : 0.25,
+                  }}
+                />
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="h-[340px] min-h-[280px] min-w-0 w-full">
@@ -191,38 +238,18 @@ export default function DailyMovementChart({
               content={<CustomTooltip />}
               cursor={{ fill: "rgba(255,255,255,0.04)" }}
             />
-            <Legend
-              verticalAlign="top"
-              align="center"
-              iconType="square"
-              wrapperStyle={{ paddingBottom: 12 }}
-              formatter={(value: string) => (
-                <span className="text-xs text-white/70">
-                  {value === "revenue" ? "Revenue" : value === "cost" ? "Cost" : "Profit"}
-                </span>
-              )}
-            />
-            <Bar
-              dataKey="revenue"
-              fill={REVENUE_COLOR}
-              radius={[4, 4, 0, 0]}
-              barSize={24}
-              name="revenue"
-            />
-            <Bar
-              dataKey="cost"
-              fill={COST_COLOR}
-              radius={[4, 4, 0, 0]}
-              barSize={24}
-              name="cost"
-            />
-            <Bar
-              dataKey="profit"
-              fill={PROFIT_COLOR}
-              radius={[4, 4, 0, 0]}
-              barSize={24}
-              name="profit"
-            />
+            {SERIES.map((s) =>
+              visible.has(s.key) ? (
+                <Bar
+                  key={s.key}
+                  dataKey={s.key}
+                  fill={s.color}
+                  radius={[4, 4, 0, 0]}
+                  barSize={24}
+                  name={s.key}
+                />
+              ) : null,
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
