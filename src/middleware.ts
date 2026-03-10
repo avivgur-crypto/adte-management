@@ -4,15 +4,16 @@ import { type NextRequest, NextResponse } from "next/server";
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // These API routes handle their own auth (CRON_SECRET) — bypass Supabase session check
+  // API routes with their own auth — bypass completely
   if (
     pathname.startsWith("/api/cron/sync") ||
-    pathname.startsWith("/api/auto-sync")
+    pathname.startsWith("/api/auto-sync") ||
+    pathname.startsWith("/api/last-sync") ||
+    pathname.startsWith("/api/funnel-report")
   ) {
     return NextResponse.next();
   }
 
-  // Create a Supabase client wired to request / response cookies
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -36,12 +37,13 @@ export async function middleware(request: NextRequest) {
     },
   );
 
-  // IMPORTANT: use getUser() (server-side verification), not getSession()
+  // Use getSession() — reads JWT from cookies locally (no network call).
+  // Much faster than getUser() which verifies with Supabase server on every request.
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
 
-  // Already authenticated → bounce away from login page
   if (user && pathname === "/login") {
     const url = request.nextUrl.clone();
     url.pathname = "/";
@@ -49,11 +51,9 @@ export async function middleware(request: NextRequest) {
   }
 
   if (!user) {
-    // API routes → 401
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    // Page routes (except login) → redirect to /login
     if (pathname !== "/login") {
       const url = request.nextUrl.clone();
       url.pathname = "/login";
@@ -66,5 +66,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon\\.ico|favicon\\.png|icon-.*\\.png|apple-touch-icon\\.png|manifest\\.json).*)",
+  ],
 };

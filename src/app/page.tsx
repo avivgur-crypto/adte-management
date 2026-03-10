@@ -29,7 +29,7 @@ import LastSyncLine from "@/app/components/LastSyncLine";
 import TotalOverview from "@/app/components/TotalOverview";
 import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 30;
 
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
 const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
