@@ -28,16 +28,20 @@ export default function LastSyncLine({ syncedAt: serverSyncedAt }: { syncedAt: s
   const isSyncing = syncStatus?.isSyncing ?? false;
   const contextSyncedAt = syncStatus?.lastSyncedAt ?? null;
 
-  // Client-side truth: fetch the real timestamp from DB on mount
   const [clientSyncedAt, setClientSyncedAt] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/last-sync?t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d: { syncedAt: string | null }) => {
-        if (d.syncedAt) setClientSyncedAt(d.syncedAt);
-      })
-      .catch(() => {});
+    const fetchSync = () =>
+      fetch(`/api/last-sync?t=${Date.now()}`, { cache: "no-store" })
+        .then((r) => r.json())
+        .then((d: { syncedAt: string | null }) => {
+          if (d.syncedAt) setClientSyncedAt(d.syncedAt);
+        })
+        .catch(() => {});
+
+    fetchSync();
+    const interval = setInterval(fetchSync, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   // Priority: context (just-synced) > client fetch (on mount) > server prop (ISR)
