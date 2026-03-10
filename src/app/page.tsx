@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import {
   getActivityDataFromFunnel,
   getSignedDealsCompanies,
@@ -26,16 +27,27 @@ import PartnerDistributionCharts from "@/app/components/PartnerDistributionChart
 import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
 import LastSyncLine from "@/app/components/LastSyncLine";
 import TotalOverview from "@/app/components/TotalOverview";
+import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard";
 
 export const dynamic = "force-dynamic";
 
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
-
 const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
   `2026-${String(i + 1).padStart(2, "0")}-01`
 );
 
-export default async function Home() {
+function DashboardSkeleton() {
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="h-5 w-48 animate-pulse rounded bg-white/10" />
+      <SkeletonCard lines={3} />
+      <SkeletonPacingGrid />
+      <SkeletonCard lines={2} />
+    </div>
+  );
+}
+
+async function DashboardContent() {
   let error: string | null = null;
 
   const [
@@ -98,58 +110,68 @@ export default async function Home() {
   if (concentrationFeb) dataByMonth["2026-02-01"] = concentrationFeb;
 
   return (
+    <>
+      <LastSyncLine syncedAt={lastDataUpdate?.syncedAt ?? null} />
+      {error && (
+        <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
+          {error}
+        </div>
+      )}
+      <DashboardTabs>
+        <div className="stagger-children flex flex-col gap-8">
+          <DashboardErrorBoundary sectionName="Total overview">
+            {overview.length > 0 && (
+              <TotalOverview dataByMonth={overview} xdashByMonth={xdashTotals} />
+            )}
+          </DashboardErrorBoundary>
+          <DashboardErrorBoundary sectionName="Financial pacing">
+            <FinancialPaceFiltered paceByMonth={paceByMonth} />
+          </DashboardErrorBoundary>
+          <DashboardErrorBoundary sectionName="Revenue vs Goal chart">
+            <RevenueGoalChart paceByMonth={paceByMonth} />
+          </DashboardErrorBoundary>
+          <DashboardErrorBoundary sectionName="Daily progress">
+            <DailyMovementChart
+              dailyByMonth={dailyByMonth}
+              monthKeys={PACING_MONTH_KEYS}
+              paceByMonth={paceByMonth}
+            />
+          </DashboardErrorBoundary>
+        </div>
+        <div className="stagger-children flex flex-col gap-8">
+          <DashboardErrorBoundary sectionName="Client concentration">
+            <PartnerDistributionCharts
+              dataByMonth={dataByMonth}
+              monthKeys={CONCENTRATION_MONTHS}
+            />
+          </DashboardErrorBoundary>
+          <DashboardErrorBoundary sectionName="Partner flow and Dependency mapping">
+            <PartnersFiltered pairsByMonth={pairsByMonth} />
+          </DashboardErrorBoundary>
+        </div>
+        <div className="stagger-children flex flex-col gap-8">
+          <DashboardErrorBoundary sectionName="Sales funnel">
+            <SalesFunnelFiltered initialData={initialFunnelData} />
+          </DashboardErrorBoundary>
+          <DashboardErrorBoundary sectionName="Activity summary">
+            <ActivitySummary
+              activityData={activityData}
+              signedDealsCompanies={signedDealsCompanies}
+            />
+          </DashboardErrorBoundary>
+        </div>
+      </DashboardTabs>
+    </>
+  );
+}
+
+export default function Home() {
+  return (
     <div className="bg-adte-page">
       <main className="mx-auto max-w-5xl px-4 py-10">
-        <LastSyncLine syncedAt={lastDataUpdate?.syncedAt ?? null} />
-        {error && (
-          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
-            {error}
-          </div>
-        )}
-        <DashboardTabs>
-          <div className="stagger-children flex flex-col gap-8">
-            <DashboardErrorBoundary sectionName="Total overview">
-              {overview.length > 0 && (
-                <TotalOverview dataByMonth={overview} xdashByMonth={xdashTotals} />
-              )}
-            </DashboardErrorBoundary>
-            <DashboardErrorBoundary sectionName="Financial pacing">
-              <FinancialPaceFiltered paceByMonth={paceByMonth} />
-            </DashboardErrorBoundary>
-            <DashboardErrorBoundary sectionName="Revenue vs Goal chart">
-              <RevenueGoalChart paceByMonth={paceByMonth} />
-            </DashboardErrorBoundary>
-            <DashboardErrorBoundary sectionName="Daily progress">
-              <DailyMovementChart
-                dailyByMonth={dailyByMonth}
-                monthKeys={PACING_MONTH_KEYS}
-                paceByMonth={paceByMonth}
-              />
-            </DashboardErrorBoundary>
-          </div>
-          <div className="stagger-children flex flex-col gap-8">
-            <DashboardErrorBoundary sectionName="Client concentration">
-              <PartnerDistributionCharts
-                dataByMonth={dataByMonth}
-                monthKeys={CONCENTRATION_MONTHS}
-              />
-            </DashboardErrorBoundary>
-            <DashboardErrorBoundary sectionName="Partner flow and Dependency mapping">
-              <PartnersFiltered pairsByMonth={pairsByMonth} />
-            </DashboardErrorBoundary>
-          </div>
-          <div className="stagger-children flex flex-col gap-8">
-            <DashboardErrorBoundary sectionName="Sales funnel">
-              <SalesFunnelFiltered initialData={initialFunnelData} />
-            </DashboardErrorBoundary>
-            <DashboardErrorBoundary sectionName="Activity summary">
-              <ActivitySummary
-                activityData={activityData}
-                signedDealsCompanies={signedDealsCompanies}
-              />
-            </DashboardErrorBoundary>
-          </div>
-        </DashboardTabs>
+        <Suspense fallback={<DashboardSkeleton />}>
+          <DashboardContent />
+        </Suspense>
       </main>
     </div>
   );
