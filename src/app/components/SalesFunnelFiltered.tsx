@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getSalesFunnelMetricsFromMonday } from "@/app/actions/sales-funnel-live";
+import { getSalesFunnelFromCache } from "@/app/actions/sales-funnel-live";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
 import SalesFunnel from "./SalesFunnel";
 
@@ -17,7 +17,7 @@ export default function SalesFunnelFiltered({ initialData = null }: Props) {
 
   const fetchFunnel = useCallback(() => {
     setError(null);
-    return getSalesFunnelMetricsFromMonday()
+    return getSalesFunnelFromCache()
       .then((result) => setData(result ?? null))
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load funnel");

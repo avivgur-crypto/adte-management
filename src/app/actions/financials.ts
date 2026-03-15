@@ -1,5 +1,6 @@
 "use server";
 
+import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
@@ -7,8 +8,8 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 
-/** 15 min TTL — data only changes on cron sync (every 3h). */
-const CACHE_TTL = 900;
+/** 5-min TTL — data only changes on cron sync (every 30 min). */
+const CACHE_TTL = 300;
 
 export type PacingTrend = "up" | "down" | "stable";
 
@@ -415,80 +416,31 @@ export interface XDASHMonthTotals {
 }
 
 // ---------------------------------------------------------------------------
-// Home-based data (daily_home_totals) — source of truth for Financial screen
+// Monthly home totals — SQL view does the SUM (returns ~12 rows, not ~365)
 // ---------------------------------------------------------------------------
 
-interface HomeRow {
-  date: string;
-  revenue: number;
-  cost: number;
-  impressions: number;
-}
-
-async function fetchAllHomeRows(): Promise<HomeRow[]> {
-  const PAGE = 1000;
-  const all: HomeRow[] = [];
-  let offset = 0;
-  const firstDay = `${OVERVIEW_YEAR}-01-01`;
-  const lastDay = `${OVERVIEW_YEAR}-12-31`;
-  while (true) {
-    const { data, error } = await supabaseAdmin
-      .from("daily_home_totals")
-      .select("date, revenue, cost, impressions")
-      .gte("date", firstDay)
-      .lte("date", lastDay)
-      .range(offset, offset + PAGE - 1);
-    if (error) throw new Error(`fetchAllHomeRows: ${error.message}`);
-    if (!data || data.length === 0) break;
-    all.push(...data);
-    if (data.length < PAGE) break;
-    offset += PAGE;
+async function _fetchMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
+  const { data, error } = await supabaseAdmin
+    .from("v_monthly_home_totals")
+    .select("month, revenue, cost");
+  if (error) throw new Error(`fetchMonthlyXDASHTotals: ${error.message}`);
+  const result: Record<string, XDASHMonthTotals> = {};
+  for (const row of data ?? []) {
+    const monthKey = String(row.month).slice(0, 10);
+    result[monthKey] = {
+      mediaRevenue: Number(row.revenue ?? 0),
+      mediaCost: Number(row.cost ?? 0),
+    };
   }
-  return all;
+  return result;
 }
 
-interface AllHomeData {
-  xdashTotals: Record<string, XDASHMonthTotals>;
-  dailyByMonth: Record<string, DailyMovementDay[]>;
-}
-
-async function _getAllHomeData(): Promise<AllHomeData> {
-  const rows = await fetchAllHomeRows();
-  const monthSums: Record<string, XDASHMonthTotals> = {};
-  const byMonth = new Map<string, DailyMovementDay[]>();
-
-  for (const r of rows) {
-    const monthKey = String(r.date).slice(0, 7) + "-01";
-    const rev = Number(r.revenue ?? 0);
-    const cos = Number(r.cost ?? 0);
-
-    const cur = monthSums[monthKey] ?? { mediaRevenue: 0, mediaCost: 0 };
-    cur.mediaRevenue += rev;
-    cur.mediaCost += cos;
-    monthSums[monthKey] = cur;
-
-    let dayList = byMonth.get(monthKey);
-    if (!dayList) { dayList = []; byMonth.set(monthKey, dayList); }
-    dayList.push({ date: String(r.date).slice(0, 10), revenue: rev, cost: cos });
-  }
-
-  const dailyByMonth: Record<string, DailyMovementDay[]> = {};
-  for (const [mk, days] of byMonth) {
-    dailyByMonth[mk] = days.sort((a, b) => a.date.localeCompare(b.date));
-  }
-
-  return { xdashTotals: monthSums, dailyByMonth };
-}
-
-const getAllHomeData = unstable_cache(
-  _getAllHomeData,
-  ["all-home-data"],
-  { revalidate: CACHE_TTL },
+const _cachedMonthlyXDASHTotals = cache(
+  unstable_cache(_fetchMonthlyXDASHTotals, ["monthly-xdash-totals"], { revalidate: CACHE_TTL }),
 );
 
 export async function getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
-  const { xdashTotals } = await getAllHomeData();
-  return xdashTotals;
+  return _cachedMonthlyXDASHTotals();
 }
 
 // ---------------------------------------------------------------------------
@@ -521,10 +473,8 @@ async function _getAllMonthlyGoals(): Promise<MonthlyGoalRow[]> {
   return (rows ?? []) as MonthlyGoalRow[];
 }
 
-const getAllMonthlyGoals = unstable_cache(
-  _getAllMonthlyGoals,
-  ["all-monthly-goals"],
-  { revalidate: CACHE_TTL },
+const getAllMonthlyGoals = cache(
+  unstable_cache(_getAllMonthlyGoals, ["all-monthly-goals"], { revalidate: CACHE_TTL }),
 );
 
 async function _getTotalOverviewData(): Promise<MonthOverview[]> {
@@ -544,10 +494,8 @@ async function _getTotalOverviewData(): Promise<MonthOverview[]> {
   });
 }
 
-export const getTotalOverviewData = unstable_cache(
-  _getTotalOverviewData,
-  ["total-overview"],
-  { revalidate: CACHE_TTL },
+export const getTotalOverviewData = cache(
+  unstable_cache(_getTotalOverviewData, ["total-overview"], { revalidate: CACHE_TTL }),
 );
 
 // ---------------------------------------------------------------------------
@@ -560,48 +508,63 @@ export interface DailyMovementDay {
   cost: number;
 }
 
-/** Returns per-day revenue (demand) and cost (supply) for a given month from daily_partner_performance. */
-/** @deprecated — use getAllDailyMovement() which reads from daily_home_totals */
+// ---------------------------------------------------------------------------
+// Daily movement — simple SELECT from daily_home_totals (≤365 rows/year)
+// ---------------------------------------------------------------------------
+
+async function _fetchAllDailyByMonth(): Promise<Record<string, DailyMovementDay[]>> {
+  const { data, error } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("date, revenue, cost")
+    .gte("date", `${OVERVIEW_YEAR}-01-01`)
+    .lte("date", `${OVERVIEW_YEAR}-12-31`)
+    .order("date", { ascending: true });
+  if (error) throw new Error(`fetchDailyByMonth: ${error.message}`);
+  const byMonth: Record<string, DailyMovementDay[]> = {};
+  for (const row of data ?? []) {
+    const monthKey = String(row.date).slice(0, 7) + "-01";
+    if (!byMonth[monthKey]) byMonth[monthKey] = [];
+    byMonth[monthKey]!.push({
+      date: String(row.date).slice(0, 10),
+      revenue: Number(row.revenue ?? 0),
+      cost: Number(row.cost ?? 0),
+    });
+  }
+  return byMonth;
+}
+
+const _cachedDailyByMonth = cache(
+  unstable_cache(_fetchAllDailyByMonth, ["all-daily-movement"], { revalidate: CACHE_TTL }),
+);
+
+export async function getAllDailyMovement(): Promise<Record<string, DailyMovementDay[]>> {
+  return _cachedDailyByMonth();
+}
+
+/** @deprecated — use getAllDailyMovement() */
 export async function getDailyMovement(monthKey: string): Promise<DailyMovementDay[]> {
   const parsed = monthKeySchema.safeParse(monthKey);
   if (!parsed.success) return [];
-  return unstable_cache(
-    async () => {
-      const all = await getAllDailyMovement();
-      return all[parsed.data] ?? [];
-    },
-    ["daily-movement", parsed.data],
-    { revalidate: CACHE_TTL },
-  )();
+  const all = await getAllDailyMovement();
+  return all[parsed.data] ?? [];
 }
 
-export async function getAllDailyMovement(): Promise<Record<string, DailyMovementDay[]>> {
-  const { dailyByMonth } = await getAllHomeData();
-  return dailyByMonth;
-}
-
-/** Returns { date, syncedAt } of the most recent data row. Checks daily_home_totals first, falls back to partner data. */
+/** Returns { date, syncedAt } of the most recent data row. No cache — always fresh. */
 export async function getLastDataUpdate(): Promise<{ date: string; syncedAt: string } | null> {
-  return unstable_cache(
-    async () => {
-      const { data: homeRow } = await supabaseAdmin
-        .from("daily_home_totals")
-        .select("date, created_at")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
-      if (homeRow) return { date: homeRow.date, syncedAt: homeRow.created_at };
+  const { data: homeRow } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("date, created_at")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .single();
+  if (homeRow) return { date: homeRow.date, syncedAt: homeRow.created_at };
 
-      const { data } = await supabaseAdmin
-        .from("daily_partner_performance")
-        .select("date, created_at")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
-      if (!data) return null;
-      return { date: data.date, syncedAt: data.created_at };
-    },
-    ["last-data-update"],
-    { revalidate: 60 },
-  )();
+  const { data } = await supabaseAdmin
+    .from("daily_partner_performance")
+    .select("date, created_at")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .single();
+  if (!data) return null;
+  return { date: data.date, syncedAt: data.created_at };
 }

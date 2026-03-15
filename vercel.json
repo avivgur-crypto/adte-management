@@ -5,7 +5,7 @@
       "schedule": "0 0 * * *"
     },
     {
-      "path": "/api/auto-sync?force=true",
+      "path": "/api/auto-sync?force=true&source=cron",
       "schedule": "0 0 * * *"
     }
   ]

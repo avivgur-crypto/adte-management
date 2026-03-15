@@ -10,11 +10,15 @@ import {
   type MondayItem,
 } from "@/lib/monday-client";
 import { withRetry } from "@/lib/resilience";
+import { supabaseAdmin } from "@/lib/supabase";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
 
 const LEADS_BOARD_ID = MONDAY_BOARD_IDS.leads;
 const DEALS_BOARD_ID = MONDAY_BOARD_IDS.deals;
 const CONTRACTS_BOARD_ID = MONDAY_BOARD_IDS.contracts;
+
+/** 5-min TTL for the Supabase-cached funnel read. */
+const CACHE_TTL = 300;
 
 /**
  * Stage 3 (Ops Approved): a deal matches if its status text contains any of
@@ -144,3 +148,34 @@ export async function getMonthlyFunnelMetrics(
     timeoutMs: FUNNEL_TIMEOUT_MS,
   });
 }
+
+/* ── Fast cached read from Supabase (written by cron via syncFunnelToSupabase) ── */
+
+async function _getSalesFunnelFromCache(): Promise<SalesFunnelMetrics | null> {
+  const { data, error } = await supabaseAdmin
+    .from("cached_funnel_metrics")
+    .select("*")
+    .eq("id", "latest")
+    .maybeSingle();
+
+  if (error || !data) return null;
+
+  return {
+    totalLeads: data.total_leads,
+    qualifiedLeads: data.qualified_leads,
+    opsApprovedLeads: data.ops_approved,
+    wonDeals: data.won_deals,
+    leadToQualifiedPercent: data.lead_to_qualified_pct != null ? Number(data.lead_to_qualified_pct) : null,
+    qualifiedToOpsPercent: data.qualified_to_ops_pct != null ? Number(data.qualified_to_ops_pct) : null,
+    opsToWonPercent: data.ops_to_won_pct != null ? Number(data.ops_to_won_pct) : null,
+    overallWinRatePercent: data.win_rate_pct != null ? Number(data.win_rate_pct) : null,
+    month: data.month_label ?? "All time",
+    months: [],
+  };
+}
+
+export const getSalesFunnelFromCache = unstable_cache(
+  _getSalesFunnelFromCache,
+  ["funnel-from-cache"],
+  { revalidate: CACHE_TTL },
+);

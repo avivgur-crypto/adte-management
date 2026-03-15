@@ -4,7 +4,8 @@ import { unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
 import { supabaseAdmin } from "@/lib/supabase";
 
-const CACHE_TTL = 60;
+/** 5-min TTL — data only changes on cron sync (every 30 min). */
+const CACHE_TTL = 300;
 
 const ACTIVITY_TABLE = "monday_items_activity";
 const LEADS_BOARD_ID = "7832231403";
