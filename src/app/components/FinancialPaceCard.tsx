@@ -182,8 +182,11 @@ function FinancialPaceCard({
       </div>
       <div className="grid gap-4 sm:grid-cols-3">
         <SectionBlock title="Total revenue" section={summary.total} trend={summary.trend.total} isMultiMonth={summary.isMultiMonth} />
-        <SectionBlock title="Media (from Xdash)" section={summary.media} trend={summary.trend.media} isMultiMonth={summary.isMultiMonth} />
-        <SectionBlock title="SaaS (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
+        <SectionBlock title="Media Revenue (from Xdash)" section={summary.media} trend={summary.trend.media} isMultiMonth={summary.isMultiMonth} />
+        <SectionBlock title="SaaS Revenue (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
+      </div>
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <SectionBlock title="Net Profit pace" section={summary.profit} trend={summary.trend.profit} isMultiMonth={summary.isMultiMonth} />
       </div>
       <p className="mt-4 text-[15px] text-white/50">
         Live data from xdash, updated automatically.

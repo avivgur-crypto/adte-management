@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local XDASH home-totals backup (financial data; do not commit)
+xdash_backup_2026.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

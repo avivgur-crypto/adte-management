@@ -177,21 +177,18 @@ function CostCard({
   );
 }
 
-function ProfitCard({ data }: { data: MonthOverview[] }) {
-  const totalRevenue = useMemo(
-    () => data.reduce((s, d) => s + d.mediaRevenue + d.saasRevenue, 0),
-    [data],
-  );
-  const totalCost = useMemo(
-    () => data.reduce((s, d) => s + d.mediaCost + d.techCost + d.bsCost, 0),
-    [data],
-  );
-  const profit = totalRevenue - totalCost;
-
+function ProfitCard({
+  profit,
+  source,
+}: {
+  profit: number;
+  source: DataSource;
+}) {
+  const isBilling = source === "billing";
   return (
     <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
-        Profit
+        {isBilling ? "Profit" : "Net Profit"}
       </h2>
       <div className="mb-4 flex min-h-[65px] items-center">
         <AnimatedCurrency
@@ -201,7 +198,9 @@ function ProfitCard({ data }: { data: MonthOverview[] }) {
           }`}
         />
       </div>
-      <div className="text-sm text-white/50">Revenue − Cost</div>
+      <div className="text-sm text-white/50">
+        {isBilling ? "Revenue − Cost" : "From XDASH (synced)"}
+      </div>
     </div>
   );
 }
@@ -247,20 +246,38 @@ export default function TotalOverview({
   const { selectedMonths } = useFilter();
   const [source, setSource] = useState<DataSource>("xdash");
 
-  const filteredData = useMemo(() => {
+  const { filteredData, profitValue } = useMemo(() => {
     const billing = dataByMonth.filter((d) => selectedMonths.has(d.month));
-    if (source === "billing" || !xdashByMonth) return billing;
 
-    return billing.map((d) => {
+    // Billing profit: total revenue − total cost (all buckets)
+    const billingProfit = billing.reduce(
+      (s, d) => s + d.mediaRevenue + d.saasRevenue - d.mediaCost - d.techCost - d.bsCost,
+      0,
+    );
+
+    // XDASH profit: sum of synced netRevenue − netCost per month
+    const xdashProfit = xdashByMonth
+      ? billing.reduce((s, d) => s + (xdashByMonth[d.month]?.mediaProfit ?? 0), 0)
+      : billingProfit;
+
+    const profit = source === "billing" ? billingProfit : xdashProfit;
+
+    if (source === "billing" || !xdashByMonth) {
+      return { filteredData: billing, profitValue: profit };
+    }
+
+    const mapped = billing.map((d) => {
       const xdash = xdashByMonth[d.month];
-      if (!xdash || (xdash.mediaRevenue === 0 && xdash.mediaCost === 0))
+      if (!xdash || (xdash.mediaRevenue === 0 && xdash.mediaCost === 0)) {
         return d;
+      }
       return {
         ...d,
         mediaRevenue: xdash.mediaRevenue,
         mediaCost: xdash.mediaCost,
       };
     });
+    return { filteredData: mapped, profitValue: profit };
   }, [dataByMonth, selectedMonths, source, xdashByMonth]);
 
   if (filteredData.length === 0) {
@@ -284,7 +301,7 @@ export default function TotalOverview({
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         <RevenueCard data={filteredData} source={source} />
         <CostCard data={filteredData} source={source} />
-        <ProfitCard data={filteredData} />
+        <ProfitCard profit={profitValue} source={source} />
       </div>
     </section>
   );

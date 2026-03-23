@@ -131,25 +131,25 @@ function normalizeType(value: string | number | undefined): string {
 }
 
 /**
- * Demand sheet: sum all rows per month. Stop at first empty row in Column A (do not iterate all 990).
- * Column C: .toLowerCase().trim() to match 'media' or 'saas'. Currency: replace(/[^0-9.-]+/g, '') on Column H.
+ * Demand sheet: iterate ALL rows (skip blanks, don't break on them).
+ * Sums Column H for every row whose type matches media or saas, across all entities.
  */
 function processDemandRows(
   rows: string[][]
-): { byMonth: Map<string, MonthBreakdown>; rowsPerMonth: Map<string, number> } {
+): { byMonth: Map<string, MonthBreakdown>; rowsPerMonth: Map<string, number>; skippedTypes: Map<string, number> } {
   const byMonth = new Map<string, MonthBreakdown>();
   const rowsPerMonth = new Map<string, number>();
+  const skippedTypes = new Map<string, number>();
+
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
-    if (!row[COL_DATE] || String(row[COL_DATE]).trim() === "") break;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
-    console.log("Processing:", row[0], row[2], row[7]);
     try {
       const type = normalizeType(row[COL_TYPE]);
       const monthKey = parseMonthKey(row[COL_DATE]);
       if (!monthKey) continue;
       const amount = parseCurrency(row[COL_AMOUNT]);
-      if (Number.isNaN(amount)) continue;
+      if (Number.isNaN(amount) || amount === 0) continue;
       const cur = byMonth.get(monthKey) ?? {
         media_revenue: 0,
         saas_actual: 0,
@@ -159,40 +159,40 @@ function processDemandRows(
       };
       if (type === TYPE_MEDIA) {
         cur.media_revenue += amount;
-        console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
       } else if (type === TYPE_SAAS) {
         cur.saas_actual += amount;
-        console.log(`[billing sync] Demand row ${i + 1} matched: month=${monthKey} type=${TYPE_SAAS} amount=${amount}`);
-      } else continue;
+      } else {
+        skippedTypes.set(type, (skippedTypes.get(type) ?? 0) + 1);
+        continue;
+      }
       byMonth.set(monthKey, cur);
       rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
     } catch (err) {
       console.error(`[billing sync] Demand row ${i + 1} error:`, err);
     }
   }
-  return { byMonth, rowsPerMonth };
+  return { byMonth, rowsPerMonth, skippedTypes };
 }
 
 /**
- * Supply sheet: same row validation. Stop at first empty row in Column A (do not iterate all 990).
- * Column C: .toLowerCase().trim(). Column H: parseCurrency (replace /[^0-9.-]+/g, '').
+ * Supply sheet: iterate ALL rows (skip blanks, don't break on them).
+ * Sums Column H for matching cost types across all entities.
  */
 function processSupplyRows(
   rows: string[][],
   byMonth: Map<string, MonthBreakdown>,
-  supplyRowsPerMonth: Map<string, number>
+  supplyRowsPerMonth: Map<string, number>,
+  skippedTypes: Map<string, number>,
 ): void {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] ?? [];
-    if (!row[COL_DATE] || String(row[COL_DATE]).trim() === "") break;
     if (isEmptyOrHeaderRow(row, COL_DATE)) continue;
-    console.log("Processing:", row[0], row[2], row[7]);
     try {
       const type = normalizeType(row[COL_TYPE]);
       const monthKey = parseMonthKey(row[COL_DATE]);
       if (!monthKey) continue;
       const amount = parseCurrency(row[COL_AMOUNT]);
-      if (Number.isNaN(amount)) continue;
+      if (Number.isNaN(amount) || amount === 0) continue;
       const cur = byMonth.get(monthKey) ?? {
         media_revenue: 0,
         saas_actual: 0,
@@ -200,16 +200,16 @@ function processSupplyRows(
         tech_cost: 0,
         bs_cost: 0,
       };
-    if (type === TYPE_MEDIA) {
-      cur.media_cost += amount;
-        console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_MEDIA} amount=${amount}`);
+      if (type === TYPE_MEDIA) {
+        cur.media_cost += amount;
       } else if (type === TYPE_TECH_PROVIDER) {
         cur.tech_cost += amount;
-        console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_TECH_PROVIDER} amount=${amount}`);
       } else if (type === TYPE_BRAND_SAFETY_VENDOR) {
         cur.bs_cost += amount;
-        console.log(`[billing sync] Supply row ${i + 1} matched: month=${monthKey} type=${TYPE_BRAND_SAFETY_VENDOR} amount=${amount}`);
-      } else continue;
+      } else {
+        skippedTypes.set(type, (skippedTypes.get(type) ?? 0) + 1);
+        continue;
+      }
       byMonth.set(monthKey, cur);
       supplyRowsPerMonth.set(monthKey, (supplyRowsPerMonth.get(monthKey) ?? 0) + 1);
     } catch (err) {
@@ -223,23 +223,38 @@ export interface SyncBillingResult {
 }
 
 export async function syncBillingData(): Promise<SyncBillingResult> {
-  console.log("[billing sync] Fetching Demand and Supply sheets (exact tab names: Demand, Supply)");
+  console.log("[billing sync] Fetching Demand and Supply sheets…");
   const [demandRows, supplyRows] = await Promise.all([
     getSheetValues(BILLING_SHEET_ID, RANGE_DEMAND),
     getSheetValues(BILLING_SHEET_ID, RANGE_SUPPLY),
   ]);
-  console.log(`[billing sync] Demand rows: ${demandRows.length}, Supply rows: ${supplyRows.length}`);
+  console.log(`[billing sync] Raw rows: Demand=${demandRows.length}, Supply=${supplyRows.length}`);
 
-  const { byMonth, rowsPerMonth: demandRowsPerMonth } = processDemandRows(demandRows);
+  const { byMonth, rowsPerMonth: demandRowsPerMonth, skippedTypes: demandSkipped } =
+    processDemandRows(demandRows);
+
   const supplyRowsPerMonth = new Map<string, number>();
-  processSupplyRows(supplyRows, byMonth, supplyRowsPerMonth);
+  const supplySkipped = new Map<string, number>();
+  processSupplyRows(supplyRows, byMonth, supplyRowsPerMonth, supplySkipped);
 
+  // Log skipped types so we can see if important data is being missed
+  if (demandSkipped.size > 0) {
+    console.log("[billing sync] Demand skipped types:", Object.fromEntries(demandSkipped));
+  }
+  if (supplySkipped.size > 0) {
+    console.log("[billing sync] Supply skipped types:", Object.fromEntries(supplySkipped));
+  }
+
+  // Per-month summary with final totals — compare these against the sheet
   const months = [...byMonth.keys()].sort();
   for (const month of months) {
-    const demandCount = demandRowsPerMonth.get(month) ?? 0;
-    const supplyCount = supplyRowsPerMonth.get(month) ?? 0;
+    const b = byMonth.get(month)!;
+    const dCount = demandRowsPerMonth.get(month) ?? 0;
+    const sCount = supplyRowsPerMonth.get(month) ?? 0;
     console.log(
-      `[billing sync] Month ${month}: ${demandCount} demand row(s), ${supplyCount} supply row(s) processed`
+      `[billing sync] ${month}: ${dCount} demand + ${sCount} supply rows` +
+      ` | revenue=$${b.media_revenue.toFixed(2)} saas=$${b.saas_actual.toFixed(2)}` +
+      ` | cost=$${b.media_cost.toFixed(2)} tech=$${b.tech_cost.toFixed(2)} bs=$${b.bs_cost.toFixed(2)}`,
     );
   }
 
@@ -251,12 +266,15 @@ export async function syncBillingData(): Promise<SyncBillingResult> {
     tech_cost: breakdown.tech_cost,
     bs_cost: breakdown.bs_cost,
   }));
+
   if (batch.length > 0) {
+    console.log(`[billing sync] Upserting ${batch.length} month(s) into ${TABLE}…`);
     const { error } = await supabaseAdmin
       .from(TABLE)
       .upsert(batch, { onConflict: "month" });
     if (error) throw new Error(`Supabase billing upsert failed: ${error.message}`);
   }
 
+  console.log(`[billing sync] Done: ${byMonth.size} month(s) updated`);
   return { monthsUpdated: byMonth.size };
 }

@@ -1,331 +1,370 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { revalidatePath } from "next/cache";
+import { after } from "next/server";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase";
-import { syncXDASHDataLastNDays, syncXDASHBackfill } from "@/lib/sync/xdash";
-import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
+import {
+  syncXDASHDataLastNDays,
+  syncXDASHDataForDates,
+  syncXDASHBackfill,
+} from "@/lib/sync/xdash";
+import {
+  syncPartnerPairsData,
+  syncPartnerPairsForDate,
+} from "@/lib/sync/partner-pairs";
 import { syncFunnelToSupabase } from "@/lib/sync/funnel";
+import { syncBillingData } from "@/lib/sync/billing";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 60;
 export const runtime = "nodejs";
 
-const NO_CACHE_HEADERS = {
+/* ===================================================================
+ *  Helpers
+ * =================================================================== */
+
+const NO_CACHE = {
   "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
   Pragma: "no-cache",
   Expires: "0",
-};
+} as const;
 
-const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
-const BACKFILL_START = "2026-01-01";
+const FINANCIAL_TAG = "financial-data";
 
-function jsonWithNoCache(body: object, status = 200) {
-  return NextResponse.json(body, { status, headers: NO_CACHE_HEADERS });
+function bustCaches() {
+  try { revalidateTag(FINANCIAL_TAG, { expire: 0 }); } catch { /* non-fatal */ }
+  try { revalidatePath("/"); } catch { /* non-fatal */ }
 }
 
-function extractSecret(request: NextRequest): { raw: string; trimmed: string } {
-  const fromQuery = request.nextUrl.searchParams.get("secret") ?? "";
-  if (fromQuery) return { raw: fromQuery, trimmed: fromQuery.trim() };
-
-  const authHeader = request.headers.get("authorization") ?? "";
-  const bearer = authHeader.replace(/^Bearer\s+/i, "");
-  return { raw: bearer, trimmed: bearer.trim() };
+function respond(body: object, status = 200) {
+  return NextResponse.json(body, { status, headers: NO_CACHE });
 }
 
-function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
-  const envRaw = process.env.CRON_SECRET ?? "";
-  const expected = envRaw.trim();
-
-  if (!expected) return { ok: true, detail: "CRON_SECRET not configured — auth skipped" };
-
-  const { trimmed: received } = extractSecret(request);
-
-  console.log(`[auto-sync] Auth debug — URL: ${request.nextUrl.pathname}${request.nextUrl.search}`);
-  console.log(`[auto-sync] Auth debug — searchParams keys: [${[...request.nextUrl.searchParams.keys()].join(", ")}]`);
-  console.log(`[auto-sync] Auth debug — Authorization header present: ${!!request.headers.get("authorization")}`);
-  console.log(
-    `[auto-sync] Auth check: received (${received.length} chars) vs expected (${expected.length} chars)`,
-  );
-
-  if (received === expected) return { ok: true };
-
-  return {
-    ok: false,
-    detail: `Secret mismatch: received ${received.length} chars, expected ${expected.length} chars. URL: ${request.nextUrl.pathname}${request.nextUrl.search}`,
-  };
-}
-
-function getTodayIsrael(): string {
+function todayIL(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
-function nowIsrael(): string {
-  return new Date().toLocaleString("en-US", { timeZone: "Asia/Jerusalem" });
+function yesterdayIL(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
-async function getLastSyncTime(): Promise<Date | null> {
-  const { data: homeRow } = await supabaseAdmin
-    .from("daily_home_totals")
-    .select("created_at")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-  if (homeRow?.created_at) return new Date(homeRow.created_at);
-
-  const { data } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .select("created_at")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-  return data?.created_at ? new Date(data.created_at) : null;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function validDate(s: string): boolean {
+  return DATE_RE.test(s) && !Number.isNaN(new Date(s + "T12:00:00Z").getTime());
 }
 
-async function getLatestDataDate(): Promise<string | null> {
-  const { data: homeRow } = await supabaseAdmin
-    .from("daily_home_totals")
-    .select("date")
-    .order("date", { ascending: false })
-    .limit(1)
-    .single();
-  if (homeRow?.date) return String(homeRow.date).slice(0, 10);
-
-  const { data } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .select("date")
-    .order("date", { ascending: false })
-    .limit(1)
-    .single();
-  return data?.date ? String(data.date).slice(0, 10) : null;
+/**
+ * Same CRON_SECRET everywhere. Prefer ?secret= (cron-job.org); fall back to
+ * Authorization: Bearer (Vercel Cron sends this automatically when CRON_SECRET is set).
+ */
+function getReceivedSecret(request: NextRequest): string {
+  const q = request.nextUrl.searchParams.get("secret");
+  if (q != null && String(q).trim() !== "") return String(q).trim();
+  const auth = request.headers.get("authorization") ?? "";
+  return auth.replace(/^Bearer\s+/i, "").trim();
 }
 
-async function stampLatestRow(): Promise<void> {
+function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
+  const expected = (process.env.CRON_SECRET ?? "").trim();
+  if (!expected) return { ok: true };
+  const received = getReceivedSecret(request);
+  if (received === expected) return { ok: true };
+  console.log(
+    `[auto-sync] auth fail: received ${received.length} chars, expected ${expected.length}`,
+  );
+  return {
+    ok: false,
+    detail: `Secret mismatch (${received.length} vs ${expected.length} chars)`,
+  };
+}
+
+/* ===================================================================
+ *  Per-step result type
+ * =================================================================== */
+
+type Status = "success" | "failed" | "skipped";
+interface StepResult {
+  status: Status;
+  error?: string;
+  [k: string]: unknown;
+}
+const SKIP: StepResult = Object.freeze({ status: "skipped" });
+
+async function runXdash(days: number, startTime?: number, force?: boolean): Promise<StepResult> {
+  try {
+    const r = await syncXDASHDataLastNDays(days, {
+      startTime: startTime ?? Date.now(),
+      timeBudgetMs: 45_000,
+      force,
+    });
+    return { status: "success", datesSynced: r.datesSynced, rowsUpserted: r.rowsUpserted };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[sync] xdash failed:", msg);
+    return { status: "failed", error: msg };
+  }
+}
+
+async function runPairs(dates?: string[]): Promise<StepResult> {
+  try {
+    const targets = dates ?? [yesterdayIL(), todayIL()];
+    console.log(`[sync] runPairs: fetching ${targets.length} date(s): ${targets.join(", ")}`);
+    let total = 0;
+    for (const d of targets) {
+      const r = await syncPartnerPairsForDate(d);
+      console.log(`[sync] pairs ${d}: ${r.rowsUpserted} rows upserted`);
+      total += r.rowsUpserted;
+    }
+    return { status: "success", dates: targets, rowsUpserted: total };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[sync] pairs failed:", msg);
+    return { status: "failed", error: msg };
+  }
+}
+
+async function runFullPairs(): Promise<StepResult> {
+  try {
+    const r = await syncPartnerPairsData();
+    return { status: "success", datesSynced: r.datesSynced, rowsUpserted: r.rowsUpserted };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[sync] full-pairs failed:", msg);
+    return { status: "failed", error: msg };
+  }
+}
+
+async function runBilling(): Promise<StepResult> {
+  try {
+    const r = await syncBillingData();
+    return { status: "success", monthsUpdated: r.monthsUpdated };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[sync] billing failed:", msg);
+    return { status: "failed", error: msg };
+  }
+}
+
+async function runMonday(): Promise<StepResult> {
+  try {
+    const r = await syncFunnelToSupabase();
+    if (!r.synced) return { status: "failed", error: r.error ?? "unknown" };
+    return { status: "success", totalLeads: r.totalLeads, wonDeals: r.wonDeals };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[sync] monday failed:", msg);
+    return { status: "failed", error: msg };
+  }
+}
+
+async function stamp(): Promise<void> {
   const now = new Date().toISOString();
-
-  const { data: homeRow } = await supabaseAdmin
+  const { data } = await supabaseAdmin
     .from("daily_home_totals")
     .select("date")
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
-
-  if (homeRow) {
+  if (data) {
     const { error } = await supabaseAdmin
       .from("daily_home_totals")
       .update({ created_at: now })
-      .eq("date", homeRow.date);
-    if (error) console.warn("[auto-sync] home stamp failed:", error.message);
-    else { console.log("[auto-sync] Stamped created_at on daily_home_totals"); return; }
+      .eq("date", data.date);
+    if (error) console.warn("[auto-sync] stamp failed:", error.message);
   }
-
-  const { data: row } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .select("date, partner_name, partner_type")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-
-  if (!row) return;
-
-  const { error } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .update({ created_at: now })
-    .eq("date", row.date)
-    .eq("partner_name", row.partner_name)
-    .eq("partner_type", row.partner_type);
-
-  if (error) console.warn("[auto-sync] partner stamp failed:", error.message);
-  else console.log("[auto-sync] Stamped created_at on partner row");
 }
+
+type Results = Record<string, StepResult>;
+
+function logResult(mode: string, results: Results, t0: number, extra?: Record<string, unknown>) {
+  console.log("[auto-sync] completed", JSON.stringify({
+    mode,
+    results,
+    ...extra,
+    duration: `${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    syncedAt: new Date().toISOString(),
+  }));
+}
+
+/** Parsed query — runs inside after() so cron-job.org closes before work starts. */
+type SyncParams = {
+  source: string;
+  target: string;
+  force: boolean;
+  backfill: boolean;
+  daysRaw: number;
+  singleDate: string;
+  backfillStart: string;
+  backfillEnd: string | null;
+};
+
+/**
+ * Full sync logic (runs after HTTP response is sent).
+ */
+async function executeSync(params: SyncParams): Promise<void> {
+  const t0 = Date.now();
+  const {
+    source, target, force, backfill, daysRaw, singleDate, backfillStart, backfillEnd,
+  } = params;
+
+  try {
+    if (backfill) {
+      const end = backfillEnd ?? todayIL();
+      console.log(`[auto-sync] BACKFILL ${backfillStart} → ${end}`);
+      let xdash: StepResult;
+      try {
+        const r = await syncXDASHBackfill(backfillStart, end);
+        xdash = { status: "success", datesSynced: r.datesSynced, rowsUpserted: r.rowsUpserted };
+      } catch (e) {
+        xdash = { status: "failed", error: e instanceof Error ? e.message : String(e) };
+      }
+      try { await stamp(); } catch { /* non-fatal */ }
+      bustCaches();
+      logResult("backfill", { xdash, pairs: SKIP, billing: SKIP, monday: SKIP }, t0, { range: { start: backfillStart, end } });
+      return;
+    }
+
+    if (target === "xdash-totals") {
+      const days = Number.isFinite(daysRaw) && daysRaw >= 1 ? daysRaw : 2;
+      console.log(`[auto-sync] Running targeted sync: ${target} for ${days} days (force=${force}).`);
+      let xdash: StepResult;
+      if (singleDate && validDate(singleDate)) {
+        try {
+          const r = await syncXDASHDataForDates([singleDate], { force });
+          xdash = { status: "success", ...r };
+        } catch (e) {
+          xdash = { status: "failed", error: e instanceof Error ? e.message : String(e) };
+        }
+      } else {
+        xdash = await runXdash(days, t0, force);
+      }
+      try { await stamp(); } catch { /* non-fatal */ }
+      bustCaches();
+      logResult("targeted:xdash-totals", { xdash, pairs: SKIP, billing: SKIP, monday: SKIP }, t0, { days });
+      return;
+    }
+
+    if (target === "partner-pairs") {
+      console.log(`[auto-sync] Running targeted sync: ${target}.`);
+      let pairs: StepResult;
+      if (singleDate && validDate(singleDate)) {
+        pairs = await runPairs([singleDate]);
+      } else {
+        pairs = await runFullPairs();
+      }
+      try { await stamp(); } catch { /* non-fatal */ }
+      bustCaches();
+      logResult("targeted:partner-pairs", { xdash: SKIP, pairs, billing: SKIP, monday: SKIP }, t0);
+      return;
+    }
+
+    if (target === "cron-daily-pairs") {
+      console.log(`[auto-sync] Running targeted sync: cron-daily-pairs for 2 days.`);
+      const pairs = await runPairs();
+      try { await stamp(); } catch { /* non-fatal */ }
+      bustCaches();
+      logResult("targeted:cron-daily-pairs", { xdash: SKIP, pairs, billing: SKIP, monday: SKIP }, t0);
+      return;
+    }
+
+    if (target === "daily" || target === "billing" || target === "monday") {
+      console.log(`[auto-sync] Running targeted sync: ${target}.`);
+      const [billing, monday] = await Promise.all([
+        target === "daily" || target === "billing" ? runBilling() : SKIP,
+        target === "daily" || target === "monday" ? runMonday() : SKIP,
+      ]);
+      try { await stamp(); } catch { /* non-fatal */ }
+      bustCaches();
+      logResult(
+        target === "daily" ? "daily-heavy" : `targeted:${target}`,
+        { xdash: SKIP, pairs: SKIP, billing, monday },
+        t0,
+      );
+      return;
+    }
+
+    if (source === "manual" || force) {
+      const days = Number.isFinite(daysRaw) && daysRaw >= 1 ? daysRaw : 7;
+      console.log(`[auto-sync] manual-recovery: ${days} days (force=${force})`);
+      const xdash = await runXdash(days, t0, force);
+      const pairs = await runPairs();
+      const elapsedMs = Date.now() - t0;
+      const TIME_BUDGET_MS = 45_000;
+      let billing: StepResult = SKIP;
+      let monday: StepResult = SKIP;
+      if (elapsedMs < TIME_BUDGET_MS) {
+        [billing, monday] = await Promise.all([runBilling(), runMonday()]);
+      }
+      try { await stamp(); } catch { /* non-fatal */ }
+      bustCaches();
+      logResult("manual-recovery", { xdash, pairs, billing, monday }, t0, { days });
+      return;
+    }
+
+    console.warn("[auto-sync] executeSync called with no matching mode (should not happen)");
+  } catch (err) {
+    console.error("[auto-sync] background sync error:", err instanceof Error ? err.message : err);
+  }
+}
+
+function hasValidSyncIntent(sp: URLSearchParams): boolean {
+  if (sp.get("backfill") === "true") return true;
+  const t = sp.get("target") ?? "";
+  if (["xdash-totals", "partner-pairs", "cron-daily-pairs", "daily", "billing", "monday"].includes(t)) {
+    return true;
+  }
+  if (sp.get("force") === "true") return true;
+  if (sp.get("source") === "manual") return true;
+  return false;
+}
+
+/* ===================================================================
+ *  GET — auth, then after() for work; response returns immediately.
+ * =================================================================== */
 
 export async function GET(request: NextRequest) {
   const auth = checkAuth(request);
   if (!auth.ok) {
-    return jsonWithNoCache({ error: "Secret mismatch", detail: auth.detail }, 401);
+    return respond({ error: "Secret mismatch", detail: auth.detail }, 401);
   }
 
-  const force = request.nextUrl.searchParams.get("force") === "true";
-  const full = request.nextUrl.searchParams.get("full") === "true";
-  const backfill = request.nextUrl.searchParams.get("backfill") === "true";
-  const source = request.nextUrl.searchParams.get("source") ?? "";
-  const isCron = source === "cron";
-  const daysParam = parseInt(request.nextUrl.searchParams.get("days") ?? "", 10);
-  const days = isCron
-    ? Math.min(Number.isFinite(daysParam) && daysParam >= 1 ? daysParam : 2, 2)
-    : (Number.isFinite(daysParam) && daysParam >= 1 ? daysParam : 2);
-  const serverNow = new Date();
+  const sp = request.nextUrl.searchParams;
+
+  if (!hasValidSyncIntent(sp)) {
+    return respond(
+      {
+        accepted: false,
+        error: "Missing target. Use ?target=xdash-totals, ?target=cron-daily-pairs, ?target=partner-pairs, ?target=daily|billing|monday, or ?backfill=true",
+      },
+      400,
+    );
+  }
+
+  const params: SyncParams = {
+    source: sp.get("source") ?? "",
+    target: sp.get("target") ?? "",
+    force: sp.get("force") === "true",
+    backfill: sp.get("backfill") === "true",
+    daysRaw: parseInt(sp.get("days") ?? "", 10),
+    singleDate: sp.get("singleDate") ?? "",
+    backfillStart: sp.get("start") ?? "2026-01-01",
+    backfillEnd: sp.get("end"),
+  };
 
   console.log(
-    "[auto-sync] invoked at",
-    serverNow.toISOString(),
-    "| Israel:",
-    nowIsrael(),
-    "| force:", force,
-    "| full:", full,
-    "| backfill:", backfill,
-    "| source:", source,
-    "| target:", target || "(all)",
-    "| isCron:", isCron,
-    "| days:", days,
+    `[auto-sync] accepted (background): source=${params.source} target=${params.target} backfill=${params.backfill}`,
   );
 
-  const target = request.nextUrl.searchParams.get("target") ?? "";
+  after(async () => {
+    await executeSync(params);
+  });
 
-  try {
-    // ── BACKFILL MODE: re-fetch a date range (defaults to 2026-01-01 → today) ──
-    if (backfill) {
-      const startDate = request.nextUrl.searchParams.get("start") ?? BACKFILL_START;
-      const endDate = request.nextUrl.searchParams.get("end") ?? getTodayIsrael();
-      console.log(`[auto-sync] BACKFILL MODE: ${startDate} → ${endDate}`);
-      const xdashResult = await syncXDASHBackfill(startDate, endDate);
-      console.log("[auto-sync] Backfill done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
-
-      try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
-      try { revalidatePath("/"); } catch (e) { console.warn("[auto-sync] revalidate failed:", e); }
-
-      return jsonWithNoCache({
-        synced: true,
-        mode: "backfill",
-        range: { start: startDate, end: endDate },
-        xdash: xdashResult,
-        syncedAt: new Date().toISOString(),
-      });
-    }
-
-    // ── TARGETED MODE: run only the requested subsystem ──
-    if (target === "xdash") {
-      console.log(`[auto-sync] TARGETED xdash: ${days}-day sync + partner pairs`);
-      const xdashResult = await syncXDASHDataLastNDays(days);
-      console.log("[auto-sync] XDASH done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
-
-      let pairsResult = { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
-      try {
-        pairsResult = await syncPartnerPairsData();
-        console.log("[auto-sync] Pairs done:", pairsResult.datesSynced, "dates,", pairsResult.rowsUpserted, "rows");
-      } catch (e) {
-        console.error("[auto-sync] partner pairs failed:", e);
-      }
-
-      try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
-      try { revalidatePath("/"); } catch (e) { console.warn("[auto-sync] revalidate failed:", e); }
-
-      const syncedAt = new Date().toISOString();
-      return jsonWithNoCache({
-        synced: true,
-        mode: `xdash ${days}-day + partners`,
-        target: "xdash",
-        days,
-        xdash: xdashResult,
-        partnerPairs: pairsResult,
-        syncedAt,
-      });
-    }
-
-    if (target === "monday") {
-      console.log("[auto-sync] TARGETED monday: funnel sync only");
-      const funnelResult = await syncFunnelToSupabase();
-      console.log("[auto-sync] Funnel done:", funnelResult.synced ? "ok" : `failed: ${funnelResult.error ?? "unknown"}`);
-
-      try { revalidatePath("/"); } catch (e) { console.warn("[auto-sync] revalidate failed:", e); }
-
-      const syncedAt = new Date().toISOString();
-      return jsonWithNoCache({
-        synced: funnelResult.synced,
-        mode: "monday funnel",
-        target: "monday",
-        funnel: funnelResult,
-        syncedAt: funnelResult.synced ? syncedAt : undefined,
-        ...(funnelResult.error && { error: funnelResult.error }),
-      });
-    }
-
-    // ── NORMAL MODE: staleness check ──
-    const [lastSync, latestDataDate] = await Promise.all([
-      getLastSyncTime(),
-      getLatestDataDate(),
-    ]);
-
-    const ageMs = lastSync ? serverNow.getTime() - lastSync.getTime() : Infinity;
-    const todayIsrael = getTodayIsrael();
-    const dataIsBehind = latestDataDate !== null && latestDataDate < todayIsrael;
-
-    console.log(
-      "[auto-sync]",
-      "lastSync:", lastSync?.toISOString() ?? "none",
-      "| age:", Math.round(ageMs / 60000), "min",
-      "| latestData:", latestDataDate,
-      "| today:", todayIsrael,
-      "| behind:", dataIsBehind,
-    );
-
-    if (!force && ageMs < STALE_THRESHOLD_MS && !dataIsBehind) {
-      console.log("[auto-sync] Skipping — data is fresh");
-      return jsonWithNoCache({
-        synced: false,
-        reason: "fresh",
-        ageMinutes: Math.round(ageMs / 60000),
-        lastSync: lastSync?.toISOString(),
-        syncedAt: lastSync?.toISOString() ?? null,
-      });
-    }
-
-    // ── XDASH + Funnel sync ──
-    let xdashResult;
-    let funnelResult: { synced: boolean; error?: string; totalLeads?: number; wonDeals?: number } =
-      { synced: false, error: "skipped (cron fast path)" };
-
-    if (isCron) {
-      console.log(`[auto-sync] CRON fast path: ${days}-day XDASH only (skipping funnel to stay under 10s)`);
-      xdashResult = await syncXDASHDataLastNDays(days);
-    } else {
-      console.log(`[auto-sync] Starting XDASH ${days}-day sync + funnel sync…`);
-      const [xdash, funnel] = await Promise.all([
-        syncXDASHDataLastNDays(days),
-        syncFunnelToSupabase().catch((e) => {
-          console.error("[auto-sync] funnel sync failed:", e);
-          return { synced: false, error: String(e) };
-        }),
-      ]);
-      xdashResult = xdash;
-      funnelResult = funnel;
-    }
-    console.log("[auto-sync] XDASH done:", xdashResult.datesSynced, "dates,", xdashResult.rowsUpserted, "rows");
-    if (!isCron) {
-      console.log("[auto-sync] Funnel done:", funnelResult.synced ? "ok" : `failed: ${funnelResult.error ?? "unknown"}`);
-    }
-
-    let pairsResult = { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
-    if (full && !isCron) {
-      try {
-        pairsResult = await syncPartnerPairsData();
-        console.log("[auto-sync] Pairs done:", pairsResult.datesSynced, "dates,", pairsResult.rowsUpserted, "rows");
-      } catch (e) {
-        console.error("[auto-sync] partner pairs failed:", e);
-      }
-    }
-
-    try { await stampLatestRow(); } catch (e) { console.warn("[auto-sync] stamp failed:", e); }
-    try { revalidatePath("/"); } catch (e) { console.warn("[auto-sync] revalidate failed:", e); }
-
-    const syncedAt = new Date().toISOString();
-    console.log("[auto-sync] Done, syncedAt:", syncedAt);
-
-    return jsonWithNoCache({
-      synced: true,
-      mode: isCron
-        ? `${days}-day home sync (cron fast path)`
-        : `${days}-day home sync + funnel${full ? " + partners" : ""}`,
-      days,
-      xdash: xdashResult,
-      funnel: funnelResult,
-      partnerPairs: pairsResult,
-      syncedAt,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error("[auto-sync] FATAL:", message, err);
-    return jsonWithNoCache(
-      { synced: false, error: "sync failed", detail: message },
-      500,
-    );
-  }
+  return respond({
+    accepted: true,
+    message: "Sync started in background",
+    mode: params.backfill
+      ? "backfill"
+      : params.target || (params.force || params.source === "manual" ? "manual-recovery" : "unknown"),
+  });
 }

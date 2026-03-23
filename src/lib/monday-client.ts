@@ -60,6 +60,8 @@ export interface MondayItem {
   name: string;
   /** ISO8601 from Monday API when requested */
   created_at?: string | null;
+  state?: string | null;
+  group?: { id: string } | null;
   column_values?: MondayColumnValue[];
 }
 
@@ -93,16 +95,20 @@ export const MONDAY_BOARD_IDS = {
 /** Single board ID for funnel (status-based mapping). Set MONDAY_BOARD_ID in .env.local. */
 export const MONDAY_BOARD_ID = process.env.MONDAY_BOARD_ID ?? "";
 
-/** Creation log column IDs for activity backfill (creation date per item). */
+/** Creation log column IDs — date for grouping (YYYY-MM-DD) and activity.created_date. */
 export const CREATION_LOG_COLUMN_IDS = {
-  /** Board 7832231403 (Leads) */
+  /** Board 7832231403 (Leads / New Partners). Count all items; no status filter. */
   leads: "pulse_log_mkzm790s",
-  /** Board 8280704003 (Contracts) */
+  /** Board 8280704003 (Media Contracts). Only "Complete Storage" in sync. */
   contracts: "pulse_log_mkzm1prs",
 } as const;
 
 /** Contracts board: column with company name. */
 export const CONTRACTS_COMPANY_COLUMN_ID = "text_mkpw5mcs";
+
+/** Contracts board: status column (cm_status_template). Only "Complete Storage" = signed deal. */
+export const CONTRACTS_STATUS_COLUMN_ID = "cm_status_template";
+export const CONTRACTS_SIGNED_STATUS = "Complete Storage";
 
 /**
  * Deals board: column that holds pipeline stage (Legal Negotiation, Waiting for sign, etc.).
@@ -110,6 +116,24 @@ export const CONTRACTS_COMPANY_COLUMN_ID = "text_mkpw5mcs";
  * Read at runtime so it always uses current env.
  */
 export const DEALS_STATUS_COLUMN_ID = process.env.DEALS_STATUS_COLUMN_ID ?? "";
+
+/** Deals board: the specific status column used for Stage 3 (Ops Approved) filter. */
+export const FUNNEL_DEALS_STATUS_COL = "status_mkmxymkn";
+
+/** Stage 2 & 3: only Deals from these group IDs count. */
+export const FUNNEL_DEALS_GROUP_IDS = new Set(["topics", "new_group_mkmgrv50"]);
+
+/** Stage 3: exact status labels that qualify as Ops Approved. */
+export const FUNNEL_OPS_STATUSES = new Set([
+  "Legal Negotiation",
+  "Waiting for sign",
+  "Negotiation Failed",
+]);
+
+/** Filter helper: keep only items with state "active" (default for items_page). */
+export function filterActiveItems(items: MondayItem[]): MondayItem[] {
+  return items.filter((i) => (i.state ?? "active") === "active");
+}
 
 const ITEMS_PAGE_LIMIT = 500;
 
@@ -137,6 +161,8 @@ export async function fetchBoardItems(
           items {
             id
             name
+            state
+            group { id }
             ${createdAtFragment}
             ${columnValuesFragment}
           }
@@ -152,6 +178,8 @@ export async function fetchBoardItems(
         items {
           id
           name
+          state
+          group { id }
           ${createdAtFragment}
           ${columnValuesFragment}
         }

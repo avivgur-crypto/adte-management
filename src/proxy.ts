@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // API routes with their own auth — bypass completely
@@ -67,6 +67,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|favicon\\.png|icon-.*\\.png|apple-touch-icon\\.png|manifest\\.json).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|favicon\\.png|icon-.*\\.png|apple-touch-icon\\.png|manifest\\.json|sw\\.js).*)",
   ],
 };

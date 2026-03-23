@@ -1,13 +1,17 @@
 /**
  * Monday.com sync: funnel metrics + Leads/Contracts activity.
- * - Leads board 7832231403 → total_leads per day (by creation date).
- * - Signed Deals board 8280704003 → won_deals per day (by creation date).
- * Uses created_at / creation log from Monday to determine date for each item.
+ * - Leads board 7832231403 (New Partners): every item, no status filter.
+ *   Date from Creation Log column pulse_log_mkzm790s → grouped by YYYY-MM-DD.
+ * - Contracts board 8280704003: only status "Complete Storage" (cm_status_template).
+ *   Date from Creation Log pulse_log_mkzm1prs.
+ * Before upsert: resets 2026 funnel lead/deal counts and replaces activity rows for both boards.
  */
 
 import {
   CREATION_LOG_COLUMN_IDS,
   CONTRACTS_COMPANY_COLUMN_ID,
+  CONTRACTS_STATUS_COLUMN_ID,
+  CONTRACTS_SIGNED_STATUS,
   fetchBoardItems,
   getCreationLogDate,
   getColumnText,
@@ -47,11 +51,18 @@ export interface SyncMondayResult {
 }
 
 export async function syncMondayData(): Promise<SyncMondayResult> {
-  const [leadsItems, contractsItems] = await Promise.all([
+  const [leadsItems, allContractsItems] = await Promise.all([
     fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
     fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
   ]);
 
+  // Only items with status "Complete Storage" count as signed deals
+  const contractsItems = allContractsItems.filter((item) => {
+    const status = getColumnText(item, CONTRACTS_STATUS_COLUMN_ID);
+    return status === CONTRACTS_SIGNED_STATUS;
+  });
+
+  // Leads: all items on board 7832231403; creation date from pulse_log_mkzm790s only.
   const totalLeadsByDate = countByCreationDate(leadsItems, CREATION_LOG_COLUMN_IDS.leads);
   const wonDealsByDate = countByCreationDate(contractsItems, CREATION_LOG_COLUMN_IDS.contracts);
   const allDates = new Set<string>([...totalLeadsByDate.keys(), ...wonDealsByDate.keys()]);
@@ -76,6 +87,14 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
       win_rate: null,
     });
   }
+  // Reset 2026 funnel rows so stale total_leads / won_deals from old logic or misdated rows clear.
+  const { error: resetError } = await supabaseAdmin
+    .from(TABLE)
+    .update({ total_leads: 0, won_deals: 0 })
+    .gte("date", "2026-01-01")
+    .lt("date", "2027-01-01");
+  if (resetError) console.error("[monday-sync] funnel total_leads/won_deals reset:", resetError.message);
+
   if (funnelRows.length > 0) {
     const { error: funnelError } = await supabaseAdmin
       .from(TABLE)
@@ -104,6 +123,20 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
       };
     });
   }
+
+  console.log(
+    `[monday-sync] leads: ${leadsItems.length} items (all statuses, date from ${CREATION_LOG_COLUMN_IDS.leads})`
+  );
+  console.log(
+    `[monday-sync] contracts: ${allContractsItems.length} total → ${contractsItems.length} with status "${CONTRACTS_SIGNED_STATUS}"`
+  );
+
+  // Replace activity for both boards so misdated or duplicate rows from old syncs are removed.
+  const { error: deleteError } = await supabaseAdmin
+    .from(ACTIVITY_TABLE)
+    .delete()
+    .in("board_id", [LEADS_BOARD_ID, CONTRACTS_BOARD_ID]);
+  if (deleteError) console.error("[monday-sync] activity cleanup (leads+contracts):", deleteError.message);
 
   const activityRows = [
     ...toActivityRows(leadsItems, LEADS_BOARD_ID, CREATION_LOG_COLUMN_IDS.leads),

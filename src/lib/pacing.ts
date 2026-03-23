@@ -32,6 +32,7 @@ export interface PacingSummary {
   total: PacingSection;
   media: PacingSection;
   saas: PacingSection;
+  profit: PacingSection;
 }
 
 function mtdPacePercent(
@@ -98,6 +99,9 @@ export async function getPacingSummary(
   /** Pre-computed XDASH media revenue for this month (from the shared cached totals).
    *  When provided, the function skips its own daily_partner_performance query. */
   xdashMediaRevenue?: number,
+  /** Pre-computed XDASH net profit for this month (from daily_home_totals).
+   *  When provided, used directly instead of calculating revenue - cost. */
+  xdashMediaProfit?: number,
 ): Promise<PacingSummary> {
   const now = asOfDate ?? new Date();
   let year: number;
@@ -198,6 +202,20 @@ export async function getPacingSummary(
     daysRemaining
   );
 
+  const mediaCost = Number(goalsRow?.media_cost ?? 0);
+  /** Net profit from XDASH (daily_home_totals); includes true $0. Calculation only if not passed. */
+  const profitActual =
+    xdashMediaProfit != null ? xdashMediaProfit : mediaRevenue - mediaCost;
+  const profitGoal = Number(goalsRow?.profit_goal ?? 0);
+  const profit = buildSection(
+    profitActual,
+    profitGoal,
+    effectiveDaysPassed,
+    daysInMonth,
+    paceTargetRatio,
+    daysRemaining
+  );
+
   return {
     month: monthKey,
     daysInMonth,
@@ -208,5 +226,6 @@ export async function getPacingSummary(
     total,
     media,
     saas,
+    profit,
   };
 }

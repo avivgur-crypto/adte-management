@@ -1,5 +1,4 @@
 import { Suspense } from "react";
-import { unstable_noStore as noStore } from "next/cache";
 import {
   getActivityDataFromFunnel,
   getSignedDealsCompanies,
@@ -26,6 +25,7 @@ import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import RevenueGoalChart from "@/app/components/RevenueGoalChart";
 import PartnerDistributionCharts from "@/app/components/PartnerDistributionCharts";
 import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
+import AutoSync from "@/app/components/AutoSync";
 import LastSyncLine from "@/app/components/LastSyncLine";
 import TotalOverview from "@/app/components/TotalOverview";
 import {
@@ -34,7 +34,11 @@ import {
   SkeletonDonutGrid,
 } from "@/app/components/SkeletonCard";
 
-export const dynamic = "force-dynamic";
+/**
+ * ISR (300s): aligns with financial unstable_cache TTL — fewer full RSC
+ * regenerations on cold Vercel / cache expiry. AutoSync may refresh today after paint.
+ */
+export const revalidate = 300;
 
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
 const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
@@ -75,33 +79,24 @@ function SalesSkeleton() {
 /* ── Async Server Components — each streams independently ── */
 
 async function LastSyncContent() {
-  noStore();
   const lastDataUpdate = await getLastDataUpdate();
   return <LastSyncLine syncedAt={lastDataUpdate?.syncedAt ?? null} />;
 }
 
-async function FinancialTab() {
-  const [overviewResult, xdashTotalsResult, paceResult, dailyResult] =
-    await Promise.allSettled([
-      getTotalOverviewData(),
-      getMonthlyXDASHTotals(),
-      getAllPaceByMonth(PACING_MONTH_KEYS),
-      getAllDailyMovement(),
-    ]);
-
+/** Lightweight: only overview + xdash totals. Renders first so totals paint from cache immediately. */
+async function FinancialOverview() {
+  const [overviewResult, xdashTotalsResult] = await Promise.allSettled([
+    getTotalOverviewData(),
+    getMonthlyXDASHTotals(),
+  ]);
   const overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
   const xdashTotals: Record<string, XDASHMonthTotals> =
     xdashTotalsResult.status === "fulfilled" ? xdashTotalsResult.value : {};
-  const paceByMonth: Record<string, FinancialPaceWithTrend> =
-    paceResult.status === "fulfilled" ? paceResult.value : {};
-  const dailyByMonth =
-    dailyResult.status === "fulfilled" ? dailyResult.value : {};
-
   const overview = Array.isArray(overviewData) ? overviewData : [];
   const hasError = overviewResult.status === "rejected";
 
   return (
-    <div className="stagger-children flex flex-col gap-8">
+    <div className="flex flex-col gap-8">
       {hasError && (
         <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
           Some financial data could not be loaded.
@@ -112,6 +107,29 @@ async function FinancialTab() {
           <TotalOverview dataByMonth={overview} xdashByMonth={xdashTotals} />
         )}
       </DashboardErrorBoundary>
+    </div>
+  );
+}
+
+/** Charts and pacing — heavier; do not block initial paint. */
+async function FinancialCharts() {
+  const [paceResult, dailyResult] = await Promise.allSettled([
+    getAllPaceByMonth(PACING_MONTH_KEYS),
+    getAllDailyMovement(),
+  ]);
+  const paceByMonth: Record<string, FinancialPaceWithTrend> =
+    paceResult.status === "fulfilled" ? paceResult.value : {};
+  const dailyByMonth =
+    dailyResult.status === "fulfilled" ? dailyResult.value : {};
+  const hasError = paceResult.status === "rejected";
+
+  return (
+    <div className="stagger-children flex flex-col gap-8">
+      {hasError && (
+        <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
+          Some pacing data could not be loaded.
+        </div>
+      )}
       <DashboardErrorBoundary sectionName="Financial pacing">
         <FinancialPaceFiltered paceByMonth={paceByMonth} />
       </DashboardErrorBoundary>
@@ -200,15 +218,40 @@ async function SalesTab() {
 
 export default function Home() {
   return (
-    <div className="bg-adte-page">
+    <div
+      className="bg-adte-page"
+      style={{
+        minHeight: "100vh",
+        background:
+          "radial-gradient(ellipse 120% 80% at 50% 0%, #1a1a1a 0%, #0a0a0a 50%, #000000 100%)",
+      }}
+    >
+      <AutoSync />
       <main className="mx-auto max-w-5xl px-4 py-10">
-        <Suspense fallback={<div className="h-5 w-48 animate-pulse rounded bg-white/10" />}>
+        <Suspense
+          fallback={
+            <div
+              className="h-5 w-48 animate-pulse rounded bg-white/10"
+              style={{
+                height: 20,
+                width: 192,
+                borderRadius: 8,
+                backgroundColor: "rgba(255,255,255,0.1)",
+              }}
+            />
+          }
+        >
           <LastSyncContent />
         </Suspense>
         <DashboardTabs>
-          <Suspense fallback={<FinancialSkeleton />}>
-            <FinancialTab />
-          </Suspense>
+          <div className="flex flex-col gap-8">
+            <Suspense fallback={<SkeletonCard lines={3} />}>
+              <FinancialOverview />
+            </Suspense>
+            <Suspense fallback={<FinancialSkeleton />}>
+              <FinancialCharts />
+            </Suspense>
+          </div>
           <Suspense fallback={<PartnersSkeleton />}>
             <PartnersTab />
           </Suspense>

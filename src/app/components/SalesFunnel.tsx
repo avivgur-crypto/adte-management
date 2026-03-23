@@ -1,12 +1,13 @@
 "use client";
 
+import { useState, useRef, useEffect } from "react";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
 
 const STAGES = [
   {
     key: "totalLeads" as const,
-    label: "Leads",
-    description: "Leads board + Signed Contracts",
+    label: "Total Leads",
+    description: "All active leads from the Leads board",
     light: "#B3E8FF",
     mid: "#38BDF8",
     dark: "#0C4A6E",
@@ -14,7 +15,7 @@ const STAGES = [
   {
     key: "qualifiedLeads" as const,
     label: "Qualified",
-    description: "Moved to Qualified",
+    description: "Active & Lost deals + Signed contracts",
     light: "#99F6E4",
     mid: "#2DD4BF",
     dark: "#134E4A",
@@ -22,7 +23,7 @@ const STAGES = [
   {
     key: "opsApprovedLeads" as const,
     label: "Ops Approved",
-    description: "Proposal/Negotiation",
+    description: "Deals in legal/signing stages + Signed contracts",
     light: "#D9F99D",
     mid: "#A3E635",
     dark: "#3F6212",
@@ -30,7 +31,7 @@ const STAGES = [
   {
     key: "wonDeals" as const,
     label: "Won Deals",
-    description: "Closed Won",
+    description: "Total items from the Signed Contracts board",
     light: "#FED7AA",
     mid: "#FB923C",
     dark: "#7C2D12",
@@ -59,11 +60,47 @@ function bottomArc(cx: number, cy: number, rx: number, ry: number) {
   return `M ${cx - rx} ${cy} A ${rx} ${ry} 0 0 0 ${cx + rx} ${cy}`;
 }
 
+function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4M12 8h.01" />
+    </svg>
+  );
+}
+
 export default function SalesFunnel({
   data,
 }: {
   data: SalesFunnelMetrics | null;
 }) {
+  const [activeTooltip, setActiveTooltip] = useState<number | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (activeTooltip === null) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        tooltipRef.current &&
+        !tooltipRef.current.contains(e.target as Node)
+      ) {
+        setActiveTooltip(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [activeTooltip]);
+
   if (!data) {
     return (
       <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
@@ -230,39 +267,104 @@ export default function SalesFunnel({
         <div className="relative min-h-0 flex-1">
           {STAGES.map((stage, i) => {
             const yPct = (RINGS[i].cy / VB_H) * 100;
+            const isActive = activeTooltip === i;
             return (
               <div
                 key={stage.key}
-                className="absolute left-0 right-0 flex flex-col gap-0.5 md:flex-row md:items-start md:justify-between md:gap-2"
+                ref={isActive ? tooltipRef : undefined}
+                className={`absolute left-0 right-0 flex items-center justify-between gap-1 md:items-start md:gap-2 ${isActive ? "z-50" : ""}`}
                 style={{ top: `${yPct}%`, transform: "translateY(-50%)" }}
               >
-                <div className="min-w-0">
-                  <div className="text-[13px] font-medium leading-tight text-white/95 md:text-xl md:font-medium">
-                    {String(i + 1).padStart(2, "0")}. {stage.label}
+                {/* Left: stage name + (i) icon */}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1">
+                    <span className="whitespace-nowrap text-[13px] font-medium leading-tight text-white/95 md:text-xl">
+                      {String(i + 1).padStart(2, "0")}. {stage.label}
+                    </span>
+                    {/* (i) icon — mobile: tap only */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setActiveTooltip(isActive ? null : i)
+                      }
+                      className="flex shrink-0 rounded-full p-0.5 text-zinc-500 hover:text-zinc-300 focus:outline-none md:hidden"
+                      aria-label={`Info: ${stage.label}`}
+                    >
+                      <InfoIcon className="h-3.5 w-3.5" />
+                    </button>
+                    {/* (i) icon — desktop: hover+click */}
+                    <button
+                      type="button"
+                      onMouseEnter={() => setActiveTooltip(i)}
+                      onMouseLeave={() => setActiveTooltip(null)}
+                      onClick={() =>
+                        setActiveTooltip(isActive ? null : i)
+                      }
+                      className="hidden shrink-0 rounded-full p-0.5 text-zinc-500 hover:bg-white/10 hover:text-zinc-300 focus:outline-none md:flex"
+                      aria-label={`Info: ${stage.label}`}
+                    >
+                      <InfoIcon className="h-4 w-4" />
+                    </button>
                   </div>
-                  <div className="hidden text-xs text-white/55 md:block">
+                  {/* Description — hidden on mobile */}
+                  <p className="hidden text-xs text-zinc-400 md:block">
                     {stage.description}
-                  </div>
+                  </p>
+                  {/* Tooltip popup */}
+                  {isActive && (
+                    <div
+                      className="absolute left-0 top-full z-[200] mt-1.5 w-[210px] rounded-xl border border-white/20 bg-[#1a1a2e] px-3.5 py-3 shadow-[0_8px_30px_rgba(0,0,0,0.7)]"
+                      role="tooltip"
+                    >
+                      {/* Conversion % — shown above description */}
+                      {i > 0 && conversionRates[i - 1] != null && (
+                        <div className="mb-1.5 flex items-center gap-1.5">
+                          <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.5"
+                            className="text-white/60"
+                          >
+                            <path d="M12 5v14M19 12l-7 7-7-7" />
+                          </svg>
+                          <span className="text-sm font-semibold tabular-nums text-white">
+                            {conversionRates[i - 1]}%
+                          </span>
+                          <span className="text-[11px] text-zinc-400">
+                            from {STAGES[i - 1].label}
+                          </span>
+                        </div>
+                      )}
+                      <p className="text-xs leading-relaxed text-zinc-300">
+                        {stage.description}
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <div className="flex flex-shrink-0 items-center gap-1.5 md:flex-col md:items-end md:gap-0 md:text-right">
-                  <div className="text-[13px] font-medium tabular-nums leading-tight text-white/95 md:text-base">
+                {/* Right: value */}
+                <div className="flex shrink-0 flex-col items-end gap-0 text-right">
+                  <span className="whitespace-nowrap text-[13px] font-semibold tabular-nums leading-tight text-white/95 md:text-base md:font-medium">
                     {values[i]!.toLocaleString()}
-                  </div>
-                  <div className="hidden text-xs text-white/55 md:block">
+                  </span>
+                  <span className="hidden text-xs text-zinc-400 md:block">
                     {stage.label.toLowerCase()}
-                  </div>
+                  </span>
                 </div>
               </div>
             );
           })}
-          {/* Conversion rate + arrow between each pair of stages */}
+
+          {/* Conversion rate pills between stages — desktop only */}
           {conversionRates.map((pct, i) => {
             const midY = (RINGS[i].cy + RINGS[i + 1].cy) / 2;
             const yPct = (midY / VB_H) * 100;
             return (
               <div
                 key={`conv-${i}`}
-                className="absolute left-0 right-0 flex items-center justify-end"
+                className="absolute left-0 right-0 hidden items-center justify-end md:flex"
                 style={{ top: `${yPct}%`, transform: "translateY(-50%)" }}
               >
                 <div className="flex items-center gap-1 rounded-md border border-white/12 bg-white/[0.06] px-1.5 py-0.5 md:gap-1.5 md:px-2.5 md:py-1">

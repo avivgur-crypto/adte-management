@@ -15,7 +15,7 @@ import {
 import { useFilter } from "@/app/context/FilterContext";
 import type { FinancialPaceWithTrend } from "@/app/actions/financials";
 
-export type RevenueChartFilter = "total" | "media" | "saas";
+export type RevenueChartFilter = "total" | "media" | "saas" | "profit";
 
 const MONTH_LABELS = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -29,12 +29,21 @@ const FILTER_OPTIONS: { value: RevenueChartFilter; label: string }[] = [
   { value: "total", label: "Total Revenue" },
   { value: "media", label: "Media" },
   { value: "saas", label: "SaaS" },
+  { value: "profit", label: "Net Profit" },
 ];
 
 function formatCompact(value: number): string {
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
   return `$${value}`;
+}
+
+/** Y-axis ticks for net profit — full currency, compact enough for chart width. */
+function formatProfitAxis(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
+  return formatCurrency(value);
 }
 
 function formatCurrency(n: number): string {
@@ -84,7 +93,7 @@ export default function RevenueGoalChart({
     const allKeys = Array.from({ length: 12 }, (_, i) =>
       `2026-${String(i + 1).padStart(2, "0")}-01`
     );
-    const section = revenueFilter; // "total" | "media" | "saas"
+    const section = revenueFilter; // "total" | "media" | "saas" | "profit"
 
     return allKeys.map((key, i) => {
       const pace = paceByMonth[key];
@@ -109,7 +118,12 @@ export default function RevenueGoalChart({
     return max;
   }, [chartData]);
 
-  const yDomain: [number, number] = [0, Math.ceil(maxValue / 500_000) * 500_000 || 1_000_000];
+  const isProfit = revenueFilter === "profit";
+  const yDomain: [number, number] = useMemo(() => {
+    const step = isProfit ? 50_000 : 500_000;
+    const top = Math.ceil(Math.max(maxValue, 1) / step) * step;
+    return [0, top || (isProfit ? 100_000 : 1_000_000)];
+  }, [maxValue, isProfit]);
 
   const filterLabel = FILTER_OPTIONS.find((f) => f.value === revenueFilter)?.label ?? "Revenue";
 
@@ -118,12 +132,17 @@ export default function RevenueGoalChart({
       <div className="mb-2 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-[25px] font-extrabold text-white">
-            Revenue vs. <span className="highlight-brand">Goal</span>
+            Month-to-Date Performance vs.{" "}
+            <span className="highlight-brand">Goal Pace</span>
           </h2>
           <p className="mt-1 text-sm text-white/50">
-            Monthly actual vs. finance goal by type
+            {isProfit
+              ? "Net profit (daily_home_totals) vs. profit goal from billing"
+              : "Monthly actual vs. finance goal by type"}
           </p>
-          <p className="mt-0.5 text-xs text-white/35">(from xdash)</p>
+          <p className="mt-0.5 text-xs text-white/35">
+            {isProfit ? "(XDASH net profit synced)" : "(from xdash)"}
+          </p>
         </div>
         <div className="flex rounded-lg border border-white/[0.08] bg-black/30 p-0.5">
           {FILTER_OPTIONS.map((opt) => (
@@ -162,11 +181,11 @@ export default function RevenueGoalChart({
             />
             <YAxis
               domain={yDomain}
-              tickFormatter={formatCompact}
+              tickFormatter={isProfit ? formatProfitAxis : formatCompact}
               tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 12 }}
               axisLine={false}
               tickLine={false}
-              width={60}
+              width={isProfit ? 72 : 60}
             />
             <Tooltip
               content={(props) => <CustomTooltip {...props} filterLabel={filterLabel} />}
@@ -175,7 +194,7 @@ export default function RevenueGoalChart({
             <Legend
               verticalAlign="top"
               align="center"
-              iconType="square"
+              iconType={isProfit ? "line" : "square"}
               wrapperStyle={{ paddingBottom: 12 }}
               formatter={(value: string) => (
                 <span className="text-xs text-white/70">
@@ -183,22 +202,47 @@ export default function RevenueGoalChart({
                 </span>
               )}
             />
-            <Bar
-              dataKey="actual"
-              fill={BAR_COLOR}
-              radius={[4, 4, 0, 0]}
-              barSize={32}
-              name="actual"
-            />
-            <Line
-              dataKey="goal"
-              type="monotone"
-              stroke={LINE_COLOR}
-              strokeWidth={2.5}
-              dot={{ r: 4, fill: LINE_COLOR, stroke: LINE_COLOR }}
-              activeDot={{ r: 6, fill: LINE_COLOR, stroke: "#fff", strokeWidth: 2 }}
-              name="goal"
-            />
+            {isProfit ? (
+              <>
+                <Line
+                  dataKey="actual"
+                  type="monotone"
+                  stroke={BAR_COLOR}
+                  strokeWidth={2.5}
+                  dot={{ r: 4, fill: BAR_COLOR, stroke: BAR_COLOR }}
+                  activeDot={{ r: 6, fill: BAR_COLOR, stroke: "#fff", strokeWidth: 2 }}
+                  name="actual"
+                />
+                <Line
+                  dataKey="goal"
+                  type="monotone"
+                  stroke={LINE_COLOR}
+                  strokeWidth={2.5}
+                  dot={{ r: 4, fill: LINE_COLOR, stroke: LINE_COLOR }}
+                  activeDot={{ r: 6, fill: LINE_COLOR, stroke: "#fff", strokeWidth: 2 }}
+                  name="goal"
+                />
+              </>
+            ) : (
+              <>
+                <Bar
+                  dataKey="actual"
+                  fill={BAR_COLOR}
+                  radius={[4, 4, 0, 0]}
+                  barSize={32}
+                  name="actual"
+                />
+                <Line
+                  dataKey="goal"
+                  type="monotone"
+                  stroke={LINE_COLOR}
+                  strokeWidth={2.5}
+                  dot={{ r: 4, fill: LINE_COLOR, stroke: LINE_COLOR }}
+                  activeDot={{ r: 6, fill: LINE_COLOR, stroke: "#fff", strokeWidth: 2 }}
+                  name="goal"
+                />
+              </>
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       </div>

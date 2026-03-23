@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
 /**
  * XDASH sync: demand & supply partner data → daily_partner_performance.
  * Fetches BOTH demand (revenue) and supply (cost) partners so revenue and cost are captured.
@@ -21,16 +24,32 @@ import {
   useReportsForSync,
   type PartnerRow,
 } from "@/lib/xdash-client";
+import type { PostgrestError } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const TABLE = "daily_partner_performance";
+
+/**
+ * If Supabase rejected an upsert (RLS, missing constraint keys, FK, etc.),
+ * log full details and throw so the sync stops instead of reporting success.
+ */
+function assertNoUpsertError(context: string, error: PostgrestError | null): asserts error is null {
+  if (!error) return;
+  console.error(`[xdash-sync] ${context}`, {
+    message: error.message,
+    code: error.code,
+    details: error.details,
+    hint: error.hint,
+  });
+  throw new Error(`${context}: ${error.message}`);
+}
 const BATCH_UPSERT_SIZE = 2000;
 const TIMEZONE_ISRAEL = "Asia/Jerusalem";
 
-/** Process one date at a time — the backup server is very weak. */
+/** Process one date at a time — the backup server is weak. */
 const FETCH_BATCH_SIZE = 1;
-/** Delay between fetch batches to give the backup server breathing room. */
-const INTER_BATCH_DELAY_MS = 5000;
+/** Delay between fetch batches (reduced from 5s; throttle in xdash-client protects the server). */
+const INTER_BATCH_DELAY_MS = 2000;
 
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
@@ -205,7 +224,10 @@ async function batchUpsert(records: Record<string, unknown>[]): Promise<number> 
     const { error } = await supabaseAdmin
       .from(TABLE)
       .upsert(chunk, { onConflict: "date,partner_name,partner_type" });
-    if (error) throw new Error(`XDASH upsert failed: ${error.message}`);
+    assertNoUpsertError(
+      `Upsert to ${TABLE} failed (${chunk.length} rows, batch ${Math.floor(i / BATCH_UPSERT_SIZE) + 1})`,
+      error,
+    );
     total += chunk.length;
   }
   return total;
@@ -233,43 +255,162 @@ async function fetchDatesInBatches(
 
 const HOME_TABLE = "daily_home_totals";
 
+/** Local JSON backup of raw Home API rows (survives DB issues). Written to project root when running Node (e.g. sync-fix). */
+const HOME_TOTALS_LOCAL_BACKUP_FILE = "xdash_backup_2026.json";
+
+type HomeTotalsBackupRow = {
+  date: string;
+  revenue: number;
+  cost: number;
+  profit: number;
+  impressions: number;
+  savedAt: string;
+};
+
 /**
- * For each date, fetch the Home API totals (revenue/cost/impressions) and
- * upsert into daily_home_totals. This is the source of truth for Financial
- * dashboard cards, Daily Progress chart, and Pacing.
- * Processes sequentially with delays to protect the backup server.
+ * Merge one day's XDASH Home totals into `xdash_backup_2026.json` (by date, sorted).
+ * Non-fatal on failure (e.g. read-only serverless FS).
  */
-async function syncHomeTotalsForDates(dates: string[], syncedAt: string): Promise<number> {
+async function persistHomeTotalsToLocalBackup(
+  row: Omit<HomeTotalsBackupRow, "savedAt">,
+): Promise<void> {
+  try {
+    const filePath = path.join(process.cwd(), HOME_TOTALS_LOCAL_BACKUP_FILE);
+    let existing: HomeTotalsBackupRow[] = [];
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) existing = parsed as HomeTotalsBackupRow[];
+    } catch {
+      /* missing or invalid — start fresh */
+    }
+    const byDate = new Map<string, HomeTotalsBackupRow>();
+    for (const r of existing) {
+      if (r?.date) byDate.set(r.date, r);
+    }
+    byDate.set(row.date, {
+      ...row,
+      savedAt: new Date().toISOString(),
+    });
+    const merged = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+    await fs.writeFile(filePath, JSON.stringify(merged, null, 2), "utf8");
+    console.log(`[xdash-sync] Local backup updated: ${HOME_TOTALS_LOCAL_BACKUP_FILE} (${merged.length} day(s))`);
+  } catch (e) {
+    console.warn(
+      "[xdash-sync] Local backup write failed (non-fatal):",
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
+/**
+ * Return the set of dates that already have a row in daily_home_totals with profit != 0.
+ * These dates can be safely skipped during non-force syncs.
+ */
+async function getHomeDatesWithProfit(dates: string[]): Promise<Set<string>> {
+  if (dates.length === 0) return new Set();
+  const { data, error } = await supabaseAdmin
+    .from(HOME_TABLE)
+    .select("date, profit")
+    .in("date", dates)
+    .neq("profit", 0);
+  if (error) {
+    console.warn(`[xdash-sync] Home date check failed (will fetch all):`, error.message);
+    return new Set();
+  }
+  const set = new Set<string>();
+  for (const row of data ?? []) {
+    if (row?.date) set.add(String(row.date).slice(0, 10));
+  }
+  return set;
+}
+
+/**
+ * For each date, fetch the Home API totals and batch-upsert into daily_home_totals.
+ * Skips dates that already have a non-zero profit unless `force` is true.
+ * Today is always re-fetched (intraday data grows throughout the day).
+ */
+export async function syncHomeTotalsForDates(
+  dates: string[],
+  syncedAt: string,
+  force = false,
+): Promise<number> {
   if (dates.length === 0) return 0;
-  let written = 0;
-  for (let i = 0; i < dates.length; i++) {
-    const date = dates[i]!;
+
+  const today = getTodayIsrael();
+  let toFetch = dates;
+
+  if (!force) {
+    const existing = await getHomeDatesWithProfit(dates);
+    toFetch = dates.filter((d) => d === today || !existing.has(d));
+    const skipped = dates.length - toFetch.length;
+    if (skipped > 0) {
+      console.log(`[xdash-sync] Skipping ${skipped} date(s) with existing profit data (use force=true to override)`);
+    }
+  }
+
+  if (toFetch.length === 0) return 0;
+
+  const pending: Array<{ date: string; revenue: number; cost: number; profit: number; impressions: number; created_at: string }> = [];
+
+  for (let i = 0; i < toFetch.length; i++) {
+    const date = toFetch[i]!;
     try {
       console.log(`[xdash-sync] Fetching Home totals for ${date}…`);
-      const { revenue, cost, impressions } = await fetchHomeForDate(date);
+      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
       if (revenue === 0 && cost === 0 && impressions === 0) {
-        console.warn(`[xdash-sync] Home returned zeros for ${date} — skipping upsert`);
+        console.warn(`[xdash-sync] Home returned zeros for ${date} — skipping`);
         continue;
       }
-      const { error } = await supabaseAdmin
-        .from(HOME_TABLE)
-        .upsert(
-          { date, revenue, cost, impressions, created_at: syncedAt },
-          { onConflict: "date" },
-        );
-      if (error) {
-        console.error(`[xdash-sync] Home upsert failed for ${date}:`, error.message);
-      } else {
-        console.log(`[xdash-sync] Home totals ${date}: revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}`);
-        written++;
-      }
+      console.log(`[xdash-sync] Home → DB: ${date} revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, profit=$${profit.toFixed(2)} (daily_home_totals.profit)`);
+      pending.push({ date, revenue, cost, profit, impressions, created_at: syncedAt });
+      await persistHomeTotalsToLocalBackup({ date, revenue, cost, profit, impressions });
     } catch (e) {
       console.warn(`[xdash-sync] Home fetch failed for ${date} (non-fatal):`, e instanceof Error ? e.message : e);
     }
-    if (i < dates.length - 1) {
+    if (i < toFetch.length - 1) {
       await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
     }
   }
+
+  if (pending.length === 0) return 0;
+
+  console.log(`[xdash-sync] Supabase target: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`);
+
+  const BATCH = 50;
+  let written = 0;
+  for (let i = 0; i < pending.length; i += BATCH) {
+    const chunk = pending.slice(i, i + BATCH);
+    const { data: returned, error } = await supabaseAdmin
+      .from("daily_home_totals")
+      .upsert(chunk, { onConflict: "date" })
+      .select("date, revenue, cost, profit, impressions");
+    if (error) {
+      console.error("DATABASE ERROR:", error);
+      throw error;
+    }
+    written += chunk.length;
+
+    // Log a sample row from each batch so we can verify what Supabase actually stored
+    const sample = (returned ?? []).find((r: { date: string }) => r.date === "2026-01-01")
+      ?? (returned ?? [])[0];
+    if (sample) {
+      console.log(`[xdash-sync] DB returned sample:`, JSON.stringify(sample));
+    }
+  }
+
+  // Final read-back for 2026-01-01 to confirm what the DB actually holds
+  const { data: proof, error: proofErr } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("date, revenue, cost, profit, impressions, created_at")
+    .eq("date", "2026-01-01")
+    .maybeSingle();
+  if (proofErr) {
+    console.error("[xdash-sync] Read-back failed:", proofErr);
+  } else {
+    console.log(`[xdash-sync] READ-BACK 2026-01-01:`, JSON.stringify(proof));
+  }
+
   return written;
 }
 
@@ -318,25 +459,81 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
   }
   const rowsUpserted = await batchUpsert(records);
 
-  // Fetch Home API totals per date → daily_home_totals (source of truth for Financial screen)
   await syncHomeTotalsForDates(toFetch, syncedAt);
   return { datesSynced: toFetch.length, rowsUpserted };
 }
 
+const DEFAULT_TIME_BUDGET_MS = 45_000;
+
 /**
  * Auto-sync: re-fetches the last N days (default 2 = today + yesterday).
- * Does NOT skip "already synced" dates — XDASH adjusts past-day numbers,
- * so we always overwrite with the latest values to prevent stale data.
- * Pass a higher N (e.g. 7) via ?days=7 for a wider refresh window.
+ * Processes days sequentially. If startTime + timeBudgetMs is set and elapsed
+ * reaches the budget (e.g. 45s), stops and saves what we have so we don't hit Vercel's 60s limit.
  */
-export async function syncXDASHDataLastNDays(n = 2): Promise<SyncXDASHResult> {
+export async function syncXDASHDataLastNDays(
+  n = 2,
+  options?: { startTime?: number; timeBudgetMs?: number; force?: boolean },
+): Promise<SyncXDASHResult> {
   const syncedAt = new Date().toISOString();
   const dates = lastNDaysIsrael(n);
   if (dates.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  console.log(`[xdash-sync] ${n}-day sync (always re-fetch): ${dates.join(", ")}`);
+  const startTime = options?.startTime ?? Date.now();
+  const timeBudgetMs = options?.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
+
+  console.log(`[xdash-sync] ${n}-day sync (always re-fetch): ${dates.join(", ")} (time budget ${timeBudgetMs / 1000}s)`);
+  const dayResults: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[] = [];
+
+  for (let i = 0; i < dates.length; i++) {
+    if (Date.now() - startTime >= timeBudgetMs) {
+      console.log(`[xdash-sync] Time budget reached after ${i} day(s), stopping.`);
+      break;
+    }
+    const date = dates[i]!;
+    try {
+      const result = await fetchDay(date);
+      dayResults.push(result);
+      if (result.demand.length === 0 && result.supply.length === 0) {
+        console.warn(`[xdash-sync] No data returned for ${date}`);
+      } else {
+        console.log(`[xdash-sync] ${date}: ${result.demand.length} demand + ${result.supply.length} supply rows`);
+      }
+    } catch (e) {
+      console.warn(`[xdash-sync] Failed for ${date} (skipping):`, e instanceof Error ? e.message : e);
+    }
+    if (i < dates.length - 1) {
+      await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
+    }
+  }
+
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
+  }
+  const rowsUpserted = records.length > 0 ? await batchUpsert(records) : 0;
+  const syncedDates = dayResults.map((d) => d.date);
+  if (syncedDates.length > 0) {
+    await syncHomeTotalsForDates(syncedDates, syncedAt, options?.force);
+  }
+  return { datesSynced: syncedDates.length, rowsUpserted };
+}
+
+/**
+ * Sync XDASH for an explicit list of dates (e.g. a single date for chunked client-side sync).
+ * Same logic as syncXDASHDataLastNDays but with a given date array.
+ */
+export async function syncXDASHDataForDates(
+  dates: string[],
+  options?: { force?: boolean },
+): Promise<SyncXDASHResult> {
+  if (dates.length === 0) {
+    return { datesSynced: 0, rowsUpserted: 0 };
+  }
+  const syncedAt = new Date().toISOString();
+  console.log(`[xdash-sync] Sync ${dates.length} date(s): ${dates.join(", ")}`);
   const dayResults = await fetchDatesInBatches(dates);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
@@ -349,8 +546,7 @@ export async function syncXDASHDataLastNDays(n = 2): Promise<SyncXDASHResult> {
     for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
   const rowsUpserted = await batchUpsert(records);
-
-  await syncHomeTotalsForDates(dates, syncedAt);
+  await syncHomeTotalsForDates(dates, syncedAt, options?.force);
   return { datesSynced: dates.length, rowsUpserted };
 }
 
@@ -384,7 +580,8 @@ export async function syncXDASHBackfill(
   }
   const rowsUpserted = await batchUpsert(records);
 
-  await syncHomeTotalsForDates(dates, syncedAt);
+  // Backfill always forces re-fetch of home totals
+  await syncHomeTotalsForDates(dates, syncedAt, true);
   return { datesSynced: dates.length, rowsUpserted };
 }
 
@@ -394,7 +591,8 @@ export async function syncXDASHBackfill(
  */
 export async function syncXDASHDataForMonth(
   year: number,
-  month: number
+  month: number,
+  options?: { force?: boolean },
 ): Promise<SyncXDASHResult> {
   const syncedAt = new Date().toISOString();
   const dates = datesForMonth(year, month);
@@ -406,8 +604,7 @@ export async function syncXDASHDataForMonth(
   }
   const rowsUpserted = await batchUpsert(records);
 
-  // Fetch Home API totals per date → daily_home_totals
-  await syncHomeTotalsForDates(dates, syncedAt);
+  await syncHomeTotalsForDates(dates, syncedAt, options?.force);
 
   return { datesSynced: dates.length, rowsUpserted };
 }

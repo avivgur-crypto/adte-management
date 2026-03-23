@@ -1,10 +1,23 @@
 export function SkeletonPulse({ className }: { className?: string }) {
-  return <div className={`animate-pulse rounded-lg bg-white/[0.06] ${className ?? ""}`} />;
+  return (
+    <div
+      className={`animate-pulse rounded-lg bg-white/[0.06] ${className ?? ""}`}
+      style={{ backgroundColor: "rgba(255, 255, 255, 0.06)" }}
+    />
+  );
 }
 
 export function SkeletonCard({ lines = 4 }: { lines?: number }) {
   return (
-    <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div
+      className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6"
+      style={{
+        backgroundColor: "#1a1a1a",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        borderWidth: 1,
+        borderStyle: "solid",
+      }}
+    >
       <SkeletonPulse className="mb-4 h-7 w-48" />
       <div className="space-y-3">
         {Array.from({ length: lines }).map((_, i) => (
@@ -17,12 +30,29 @@ export function SkeletonCard({ lines = 4 }: { lines?: number }) {
 
 export function SkeletonPacingGrid() {
   return (
-    <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div
+      className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6"
+      style={{
+        backgroundColor: "#1a1a1a",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        borderWidth: 1,
+        borderStyle: "solid",
+      }}
+    >
       <SkeletonPulse className="mb-4 h-7 w-56" />
       <SkeletonPulse className="mb-5 h-4 w-40" />
       <div className="grid gap-4 sm:grid-cols-3">
         {[0, 1, 2].map((i) => (
-          <div key={i} className="rounded-xl border border-white/[0.08] bg-black/30 p-4">
+          <div
+            key={i}
+            className="rounded-xl border border-white/[0.08] bg-black/30 p-4"
+            style={{
+              backgroundColor: "rgba(0, 0, 0, 0.3)",
+              borderColor: "rgba(255, 255, 255, 0.08)",
+              borderWidth: 1,
+              borderStyle: "solid",
+            }}
+          >
             <SkeletonPulse className="mb-3 h-4 w-24" />
             <div className="space-y-2.5">
               <SkeletonPulse className="h-3 w-20" />
@@ -42,11 +72,28 @@ export function SkeletonPacingGrid() {
 
 export function SkeletonDonutGrid() {
   return (
-    <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div
+      className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6"
+      style={{
+        backgroundColor: "#1a1a1a",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        borderWidth: 1,
+        borderStyle: "solid",
+      }}
+    >
       <SkeletonPulse className="mb-5 h-7 w-48" />
       <div className="grid gap-8 lg:grid-cols-2">
         {[0, 1].map((i) => (
-          <div key={i} className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5">
+          <div
+            key={i}
+            className="rounded-xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-5"
+            style={{
+              backgroundColor: "#1a1a1a",
+              borderColor: "rgba(255, 255, 255, 0.08)",
+              borderWidth: 1,
+              borderStyle: "solid",
+            }}
+          >
             <SkeletonPulse className="mb-3 h-4 w-28" />
             <SkeletonPulse className="mx-auto mb-4 h-52 w-52 rounded-full" />
             <div className="space-y-2">

@@ -31,6 +31,7 @@ export interface PairEntry {
   supplyPartner: string;
   revenue: number;
   cost: number;
+  profit?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,18 +42,20 @@ export function buildDependencyResult(
   pairsByMonth: Record<string, PairEntry[]>,
   selectedMonthKeys: string[],
 ): DependencyMappingResult {
-  const sums = new Map<string, { revenue: number; cost: number }>();
+  const sums = new Map<string, { revenue: number; cost: number; profit: number }>();
   for (const mk of selectedMonthKeys) {
     const entries = pairsByMonth[mk];
     if (!entries) continue;
     for (const p of entries) {
       const key = `${p.demandPartner}\u0001${p.supplyPartner}`;
+      const pProfit = p.profit ?? 0;
       const cur = sums.get(key);
       if (cur) {
         cur.revenue += p.revenue;
         cur.cost += p.cost;
+        cur.profit += pProfit;
       } else {
-        sums.set(key, { revenue: p.revenue, cost: p.cost });
+        sums.set(key, { revenue: p.revenue, cost: p.cost, profit: pProfit });
       }
     }
   }
@@ -70,11 +73,12 @@ export function buildDependencyResult(
   const demandTotalRevenue = new Map<string, number>();
   const demandSupplyRevenue = new Map<string, Map<string, number>>();
 
-  for (const [key, { revenue, cost }] of sums) {
+  for (const [key, { revenue, cost, profit: aggregatedProfit }] of sums) {
     const i = key.indexOf("\u0001");
     const demandPartner = i >= 0 ? key.slice(0, i) : key;
     const supplyPartner = i >= 0 ? key.slice(i + 1) : "Unknown";
-    const profit = revenue - cost;
+    /** Sum of pair-level profit from XDASH (netprofit → profit → revenue−cost at sync time). */
+    const profit = aggregatedProfit;
     const profitMarginPercent = revenue > 0 ? (profit / revenue) * 100 : 0;
     rows.push({ demandPartner, supplyPartner, revenue, cost, profit, profitMarginPercent });
 

@@ -49,7 +49,11 @@ function CustomTooltip({
       <p className="mb-1 text-xs font-semibold text-white">{dateLabel}</p>
       {payload.map((entry) => {
         const label =
-          entry.dataKey === "revenue" ? "Revenue" : entry.dataKey === "cost" ? "Cost" : "Profit";
+          entry.dataKey === "revenue"
+            ? "Revenue"
+            : entry.dataKey === "cost"
+              ? "Cost"
+              : "Net profit";
         return (
           <p key={entry.dataKey} className="text-xs" style={{ color: entry.color }}>
             {label}: <span className="font-semibold">{formatCurrency(entry.value)}</span>
@@ -63,7 +67,7 @@ function CustomTooltip({
 const SERIES = [
   { key: "revenue", label: "Revenue", color: "#2dd4bf" },
   { key: "cost", label: "Cost", color: "#f472b6" },
-  { key: "profit", label: "Profit", color: "#a78bfa" },
+  { key: "profit", label: "Net profit", color: "#a78bfa" },
 ] as const;
 
 type SeriesKey = (typeof SERIES)[number]["key"];
@@ -103,7 +107,7 @@ export default function DailyMovementChart({
     for (const key of keys) {
       const days = dailyByMonth[key] ?? [];
       for (const d of days) {
-        all.push({ date: d.date, revenue: d.revenue, cost: d.cost, profit: d.revenue - d.cost });
+        all.push({ date: d.date, revenue: d.revenue, cost: d.cost, profit: d.profit });
       }
     }
     all.sort((a, b) => a.date.localeCompare(b.date));
@@ -164,7 +168,7 @@ export default function DailyMovementChart({
           Daily <span className="highlight-brand">progress</span>
         </h2>
         <p className="mt-1 text-sm text-white/50">
-          xdash data
+          XDASH data — net profit is the synced netprofit field per day
         </p>
         {/* Toggle buttons — own row, wrap on narrow screens */}
         <div className="mt-3 flex flex-wrap gap-2">

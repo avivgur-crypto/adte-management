@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/react";
 import ConditionalShell from "@/app/components/ConditionalShell";
+import ServiceWorkerRegister from "@/app/components/ServiceWorkerRegister";
 import "./globals.css";
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -14,6 +15,13 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  themeColor: "#000000",
+};
 
 export const metadata: Metadata = {
   title: "Adte Management",
@@ -41,11 +49,21 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html
+      lang="en"
+      className="dark"
+      style={{ backgroundColor: "#000000", colorScheme: "dark" }}
+    >
       <body
         className={`${plusJakarta.variable} ${geistMono.variable} font-sans antialiased`}
+        style={{
+          backgroundColor: "#000000",
+          color: "#ffffff",
+          minHeight: "100%",
+        }}
       >
         <ConditionalShell>{children}</ConditionalShell>
+        <ServiceWorkerRegister />
         <Analytics />
       </body>
     </html>

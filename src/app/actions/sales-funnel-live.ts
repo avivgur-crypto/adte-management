@@ -2,11 +2,13 @@
 
 import { unstable_cache } from "next/cache";
 import {
-  DEALS_STATUS_COLUMN_ID,
   MONDAY_BOARD_IDS,
+  FUNNEL_DEALS_STATUS_COL,
+  FUNNEL_DEALS_GROUP_IDS,
+  FUNNEL_OPS_STATUSES,
   fetchBoardItems,
+  filterActiveItems,
   getColumnText,
-  getItemStatus,
   type MondayItem,
 } from "@/lib/monday-client";
 import { withRetry } from "@/lib/resilience";
@@ -17,18 +19,9 @@ const LEADS_BOARD_ID = MONDAY_BOARD_IDS.leads;
 const DEALS_BOARD_ID = MONDAY_BOARD_IDS.deals;
 const CONTRACTS_BOARD_ID = MONDAY_BOARD_IDS.contracts;
 
-/** 5-min TTL for the Supabase-cached funnel read. */
 const CACHE_TTL = 300;
-
-/**
- * Stage 3 (Ops Approved): a deal matches if its status text contains any of
- * these keywords (case-insensitive). Covers values like "Ops review",
- * "Legal Negotiation", "Waiting for sign", etc.
- */
-const OPS_STAGE_KEYWORDS = ["ops", "legal", "sign"] as const;
-
 const FUNNEL_TIMEOUT_MS = 45_000;
-const CACHE_REVALIDATE_S = 300; // 5 min
+const CACHE_REVALIDATE_S = 300;
 
 export interface MonthFilter {
   year: number;
@@ -44,39 +37,51 @@ function isInMonth(item: MondayItem, filter: MonthFilter): boolean {
 }
 
 /**
- * Core funnel computation. When monthFilter is provided, only items
- * whose created_at falls within that month are counted.
+ * Core funnel computation using NEW verified logic.
+ *
+ * Stage 1: ALL active Leads.
+ * Stage 2: Active Deals in (topics | new_group_mkmgrv50) + ALL active Contracts.
+ * Stage 3: Same group-filtered Deals with status in [Legal Negotiation, Waiting for sign, Negotiation Failed] + ALL active Contracts.
+ * Stage 4: ALL active Contracts.
+ * Win Rate: Stage 4 / Stage 1.
  */
 async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMetrics | null> {
   const needCreatedAt = !!monthFilter;
 
-  const [leadsItems, dealsItems, contractsItems] = await Promise.all([
+  const [leadsRaw, dealsRaw, contractsRaw] = await Promise.all([
     fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: false, includeCreatedAt: needCreatedAt }),
     fetchBoardItems(DEALS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: needCreatedAt }),
     fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: false, includeCreatedAt: needCreatedAt }),
   ]);
 
-  const leads = monthFilter ? leadsItems.filter((i) => isInMonth(i, monthFilter)) : leadsItems;
-  const deals = monthFilter ? dealsItems.filter((i) => isInMonth(i, monthFilter)) : dealsItems;
-  const contracts = monthFilter ? contractsItems.filter((i) => isInMonth(i, monthFilter)) : contractsItems;
+  let leads = filterActiveItems(leadsRaw);
+  let deals = filterActiveItems(dealsRaw);
+  let contracts = filterActiveItems(contractsRaw);
+
+  if (monthFilter) {
+    leads = leads.filter((i) => isInMonth(i, monthFilter));
+    deals = deals.filter((i) => isInMonth(i, monthFilter));
+    contracts = contracts.filter((i) => isInMonth(i, monthFilter));
+  }
 
   const contractsCount = contracts.length;
 
-  /* Stage 3: Deals whose status contains "ops", "legal", or "sign". */
-  let opsApprovedCount = 0;
-  const getDealStatus = DEALS_STATUS_COLUMN_ID
-    ? (item: MondayItem) => getColumnText(item, DEALS_STATUS_COLUMN_ID)
-    : getItemStatus;
-  for (const item of deals) {
-    const status = (getDealStatus(item) ?? "").trim().toLowerCase();
-    if (status && OPS_STAGE_KEYWORDS.some((kw) => status.includes(kw))) {
-      opsApprovedCount += 1;
+  const dealsInScope = deals.filter((i) => {
+    const gid = i.group?.id;
+    return gid != null && FUNNEL_DEALS_GROUP_IDS.has(gid);
+  });
+
+  let opsMatchedCount = 0;
+  for (const item of dealsInScope) {
+    const status = getColumnText(item, FUNNEL_DEALS_STATUS_COL);
+    if (status != null && FUNNEL_OPS_STATUSES.has(status)) {
+      opsMatchedCount += 1;
     }
   }
 
-  const totalLeads = leads.length + contractsCount;
-  const qualifiedLeads = deals.length + contractsCount;
-  const opsApprovedLeads = opsApprovedCount + contractsCount;
+  const totalLeads = leads.length;
+  const qualifiedLeads = dealsInScope.length + contractsCount;
+  const opsApprovedLeads = opsMatchedCount + contractsCount;
   const wonDeals = contractsCount;
 
   const leadToQualifiedPercent =
@@ -136,10 +141,6 @@ export async function getSalesFunnelMetricsFromMonday(): Promise<SalesFunnelMetr
 
 /* ── Monthly funnel for PDF / report generation ── */
 
-/**
- * Fetch funnel data for a specific month (for monthly reports / PDFMonkey).
- * Not cached — intended for one-off report generation.
- */
 export async function getMonthlyFunnelMetrics(
   year: number,
   month: number,

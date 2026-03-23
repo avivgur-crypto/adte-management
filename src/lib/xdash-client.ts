@@ -74,6 +74,10 @@ export interface XDashTotals {
   fillRate: number;
   adFillRate: number;
   serviceCost: number;
+  netprofit?: number;
+  netProfit?: number;
+  net_profit?: number;
+  profit?: number;
   dpId?: string;
 }
 
@@ -167,7 +171,7 @@ const REPORT_PATH_404_FALLBACKS = ["/reports", "/reports/run", "/api/report", "/
 /** Report payload shape required by XDASH API: dimensions camelCase, aggregationPeriod, metrics include profit. */
 const REPORT_DIMENSIONS = ["supplyTag", "demandTag"] as const;
 const REPORT_AGGREGATION_PERIOD = "sum";
-const REPORT_METRICS = ["revenue", "cost", "impressions", "profit"];
+const REPORT_METRICS = ["revenue", "cost", "impressions", "profit", "netprofit"];
 
 function buildReportPayload(date: string): string {
   return JSON.stringify({
@@ -200,6 +204,9 @@ interface ReportRowLike {
   cost?: number;
   impressions?: number;
   profit?: number;
+  netprofit?: number;
+  net_profit?: number;
+  netProfit?: number;
   partnerName?: string;
   name?: string;
   demandTag?: string | { name?: string; [k: string]: unknown };
@@ -214,6 +221,9 @@ interface ReportRowLike {
     cost?: number;
     impressions?: number;
     profit?: number;
+    netprofit?: number;
+    net_profit?: number;
+    netProfit?: number;
     [k: string]: unknown;
   };
   "Demand Partner"?: string;
@@ -262,6 +272,31 @@ function resolveMetric(row: ReportRowLike, key: "revenue" | "cost" | "impression
   const alt = (row as Record<string, unknown>)[titleCase];
   if (alt !== undefined && alt !== null) return parseCurrencyValue(alt);
   return 0;
+}
+
+/**
+ * Resolve profit for a report row — same priority as resolveProfit:
+ *   1. netRevenue - netCost from the row (matches XDASH "Net Profit")
+ *   2. Explicit netprofit / net_profit field
+ *   3. revenue - cost (gross fallback)
+ */
+function resolveReportProfit(row: ReportRowLike, revenue: number, cost: number): number {
+  const rec = row as Record<string, unknown>;
+  const metrics = row.metrics as Record<string, unknown> | undefined;
+
+  // Primary: netRevenue - netCost (check metrics sub-object first, then top-level)
+  const netRev = presentNumber(metrics?.netRevenue) ?? presentNumber(rec.netRevenue);
+  const netCst = presentNumber(metrics?.netCost) ?? presentNumber(rec.netCost);
+  if (netRev !== null && netCst !== null) return netRev - netCst;
+
+  // Backup: explicit net profit field
+  for (const key of NET_PROFIT_KEYS) {
+    const v = presentNumber(metrics?.[key]) ?? presentNumber(rec[key]);
+    if (v !== null) return v;
+  }
+
+  // Last resort: gross revenue - cost passed in
+  return revenue - cost;
 }
 
 function parseReportRowToPartnerRows(row: ReportRowLike): PartnerRow[] {
@@ -394,8 +429,7 @@ export async function fetchReportPairsForDateRange(
           const revenue = resolveMetric(row, "revenue");
           const cost = resolveMetric(row, "cost");
           if (revenue <= 0 && cost <= 0) continue;
-          const rawProfit = resolveMetric(row, "profit");
-          const profit = rawProfit !== 0 ? rawProfit : revenue - cost;
+          const profit = resolveReportProfit(row, revenue, cost);
           pairs.push({ demandPartner, supplyPartner, revenue, cost, profit });
         }
         return pairs;
@@ -455,7 +489,7 @@ export async function fetchReportPairsDayByDay(
   endDate: string
 ): Promise<ReportPairRow[]> {
   const days = datesBetween(startDate, endDate);
-  const pairSums = new Map<string, { revenue: number; cost: number }>();
+  const pairSums = new Map<string, { revenue: number; cost: number; profit: number }>();
   const sep = "\u0001";
 
   for (let i = 0; i < days.length; i++) {
@@ -463,9 +497,10 @@ export async function fetchReportPairsDayByDay(
     const rows = await fetchReportPairsForDateRange(day, day);
     for (const p of rows) {
       const key = `${p.demandPartner}${sep}${p.supplyPartner}`;
-      const cur = pairSums.get(key) ?? { revenue: 0, cost: 0 };
+      const cur = pairSums.get(key) ?? { revenue: 0, cost: 0, profit: 0 };
       cur.revenue += p.revenue;
       cur.cost += p.cost;
+      cur.profit += p.profit ?? 0;
       pairSums.set(key, cur);
     }
     if (i < days.length - 1) {
@@ -473,11 +508,11 @@ export async function fetchReportPairsDayByDay(
     }
   }
 
-  return Array.from(pairSums.entries()).map(([key, { revenue, cost }]) => {
+  return Array.from(pairSums.entries()).map(([key, { revenue, cost, profit }]) => {
     const i = key.indexOf(sep);
     const demandPartner = i >= 0 ? key.slice(0, i) : key;
     const supplyPartner = i >= 0 ? key.slice(i + 1) : "Unknown";
-    return { demandPartner, supplyPartner, revenue, cost };
+    return { demandPartner, supplyPartner, revenue, cost, profit };
   });
 }
 
@@ -498,12 +533,14 @@ function parseCurrencyValue(v: unknown): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
-/** Build common headers used by every XDASH API call */
+/** Build common headers used by every XDASH API call (reads env at call time, not module init) */
 function buildHeaders(): Record<string, string> {
+  const token = process.env.XDASH_AUTH_TOKEN ?? XDASH_AUTH_TOKEN;
+  const org = process.env.XDASH_ORGANIZATION_ID ?? XDASH_ORGANIZATION_ID;
   return {
     "Content-Type": "application/json",
-    "x-organization": XDASH_ORGANIZATION_ID,
-    Cookie: `auth-token=${XDASH_AUTH_TOKEN}`,
+    "x-organization": org,
+    Cookie: `auth-token=${token}`,
   };
 }
 
@@ -520,7 +557,7 @@ const RETRY_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 5000;
 
 // Throttle: minimum gap between consecutive API calls to protect the backup server.
-const THROTTLE_MS = 3000;
+const THROTTLE_MS = 2000;
 let _lastRequestTime = 0;
 
 async function throttle(): Promise<void> {
@@ -532,26 +569,44 @@ async function throttle(): Promise<void> {
   _lastRequestTime = Date.now();
 }
 
-/** Fetch with retry on network errors (ETIMEDOUT, ECONNRESET, etc.). Throttled to protect backup server. */
+/** Per-request timeout so a slow XDASH day doesn't hang the whole sync. */
+const FETCH_TIMEOUT_MS = 60_000;
+
+/** Append a cache-busting timestamp so XDASH CDN/proxy never returns stale data. */
+function bustCache(url: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}_t=${Date.now()}`;
+}
+
+/** Fetch with retry on network errors. Each attempt has a 60s timeout — abort that day and move on. */
 async function fetchWithRetry(
   url: string,
   options: RequestInit
 ): Promise<Response> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       await throttle();
-      const res = await fetch(url, {
+      const res = await fetch(bustCache(url), {
         ...options,
+        signal: controller.signal,
         cache: "no-store",
         next: { revalidate: 0 },
       } as RequestInit);
+      clearTimeout(timeoutId);
       return res;
     } catch (e) {
+      clearTimeout(timeoutId);
       lastErr = e;
       const isNetwork =
         e instanceof TypeError && (e.message === "fetch failed" || e.cause != null);
-      if (attempt < RETRY_ATTEMPTS && isNetwork) {
+      const isAbort = e instanceof Error && e.name === "AbortError";
+      if (isAbort) {
+        console.warn(`[xdash-client] Request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+      }
+      if (attempt < RETRY_ATTEMPTS && (isNetwork || isAbort)) {
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         continue;
       }
@@ -623,29 +678,99 @@ export async function fetchAdServerOverview(
 }
 
 /**
- * Fetch Home API totals for a single date. Returns {revenue, cost, impressions}.
- * Reads from overviewTotals.selectedDates.totals — the exact "Total" shown
- * on the XDASH Home dashboard. Falls back to netRevenue/netCost if the
- * gross fields are zero (some XDASH configurations only populate net fields).
+ * Fetch Home API totals for a single date. Returns {revenue, cost, profit, impressions}.
+ * Uses /home/overview/adServers only — the same source as the XDASH Home dashboard.
+ *
+ * Net Profit priority:
+ *   1. netRevenue - netCost  (matches XDASH UI "Net Profit")
+ *   2. Explicit netprofit / net_profit field (if XDASH ever adds one)
+ *   3. revenue - cost  (gross fallback, last resort)
  */
 export async function fetchHomeForDate(
   date: string
-): Promise<{ revenue: number; cost: number; impressions: number }> {
+): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
   const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
   const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
-  const totals = (sd?.selectedDates as Record<string, unknown> | undefined)?.totals as
-    | XDashTotals
-    | undefined;
+  const selectedDates = sd?.selectedDates as Record<string, unknown> | undefined;
+  const totals = selectedDates?.totals as XDashTotals | undefined;
 
-  const revenue = Number(totals?.revenue ?? 0) || Number(totals?.netRevenue ?? 0);
-  const cost = Number(totals?.cost ?? 0) || Number(totals?.netCost ?? 0);
-  const impressions = Number(totals?.impressions ?? 0);
+  const grossRevenue = Number(totals?.revenue ?? 0);
+  const grossCost    = Number(totals?.cost ?? 0);
+  const netRevenue   = Number(totals?.netRevenue ?? 0);
+  const netCost      = Number(totals?.netCost ?? 0);
+  const impressions  = Number(totals?.impressions ?? 0);
 
-  console.log(
-    `[xdash-client] Home ${date}: revenue=$${revenue.toFixed(2)} cost=$${cost.toFixed(2)} imp=${impressions}`,
+  // Revenue/cost stored in DB are the gross values (for display consistency)
+  const revenue = grossRevenue || netRevenue;
+  const cost    = grossCost || netCost;
+
+  const { value: profit, source: profitSource } = resolveProfit(
+    totals, netRevenue, netCost, revenue, cost,
   );
 
-  return { revenue, cost, impressions };
+  const todayIL = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  const isToday = date === todayIL;
+  console.log(
+    `[xdash-client] Home ${date}${isToday ? " (live)" : ""}: ` +
+    `grossRev=$${grossRevenue.toFixed(2)} grossCost=$${grossCost.toFixed(2)} ` +
+    `netRev=$${netRevenue.toFixed(2)} netCost=$${netCost.toFixed(2)} ` +
+    `profit=$${profit.toFixed(2)} (from: ${profitSource}) imp=${impressions}`,
+  );
+
+  return { revenue, cost, profit, impressions };
+}
+
+/**
+ * Parse a numeric field if present. `0` is valid (real net profit).
+ * Returns null only when missing (undefined/null) or unparseable (NaN).
+ */
+function presentNumber(v: unknown): number | null {
+  if (v === undefined || v === null) return null;
+  const n = typeof v === "number" ? v : parseCurrencyValue(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+/** Explicit net-profit field names to check as a backup. */
+const NET_PROFIT_KEYS = [
+  "netprofit", "netProfit", "net_profit",
+  "netProfitTotal", "net_profit_total",
+] as const;
+
+interface ResolvedProfit {
+  value: number;
+  source: string;
+}
+
+/**
+ * Profit resolution — matches the XDASH UI definition of "Net Profit".
+ *
+ *   1. netRevenue - netCost   (primary — this is how XDASH calculates Net Profit)
+ *   2. Explicit netprofit / net_profit field  (backup if XDASH ever exposes one)
+ *   3. revenue - cost         (gross fallback, last resort)
+ */
+function resolveProfit(
+  totals: XDashTotals | null | undefined,
+  netRevenue: number,
+  netCost: number,
+  grossRevenue: number,
+  grossCost: number,
+): ResolvedProfit {
+  // Primary: netRevenue - netCost (both must be present / non-zero together is fine; 0 is valid)
+  if (totals && (netRevenue !== 0 || netCost !== 0)) {
+    return { value: netRevenue - netCost, source: "netRevenue-netCost" };
+  }
+
+  // Backup: check for an explicit net profit field on the totals object
+  if (totals) {
+    const t = totals as unknown as Record<string, unknown>;
+    for (const key of NET_PROFIT_KEYS) {
+      const v = presentNumber(t[key]);
+      if (v !== null) return { value: v, source: key };
+    }
+  }
+
+  // Last resort: gross revenue - gross cost
+  return { value: grossRevenue - grossCost, source: "calculated(grossRevenue-grossCost)" };
 }
 
 const REVENUE_KEYS = ["revenue", "netRevenue", "totalRevenue", "revenueAmount"];

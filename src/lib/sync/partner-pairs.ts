@@ -135,6 +135,19 @@ export interface SyncPartnerPairsResult {
 }
 
 /**
+ * Sync partner pairs for a single date. Used for chunked client-side sync (one day per request).
+ */
+export async function syncPartnerPairsForDate(date: string): Promise<SyncPartnerPairsResult> {
+  const pairs = await fetchPairsForDate(date);
+  const rowsUpserted = await batchUpsert(date, pairs);
+  return {
+    datesRequested: 1,
+    datesSynced: 1,
+    rowsUpserted,
+  };
+}
+
+/**
  * Sync partner pairs for the current month.
  *
  * Strategy:

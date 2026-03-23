@@ -1,15 +1,25 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import {
-  DEALS_STATUS_COLUMN_ID,
   MONDAY_BOARD_IDS,
+  FUNNEL_DEALS_STATUS_COL,
+  FUNNEL_DEALS_GROUP_IDS,
+  FUNNEL_OPS_STATUSES,
   fetchBoardItems,
+  filterActiveItems,
   getColumnText,
-  getItemStatus,
-  type MondayItem,
 } from "@/lib/monday-client";
 
-const OPS_STAGE_KEYWORDS = ["ops", "legal", "sign"] as const;
-
+/**
+ * Compute the new funnel stages from Monday.com and upsert to
+ * cached_funnel_metrics so the dashboard reads from Supabase.
+ *
+ * Stage 1 (Leads):        ALL active items on the Leads board.
+ * Stage 2 (Qualified):    Active Deals in groups (topics | new_group_mkmgrv50) + ALL active Contracts.
+ * Stage 3 (Ops Approved): Same group-filtered Deals whose status_mkmxymkn is
+ *                          Legal Negotiation / Waiting for sign / Negotiation Failed + ALL active Contracts.
+ * Stage 4 (Won Deals):    ALL active items on the Contracts board.
+ * Win Rate:               Stage 4 / Stage 1 * 100.
+ */
 export async function syncFunnelToSupabase(): Promise<{
   synced: boolean;
   totalLeads?: number;
@@ -17,29 +27,34 @@ export async function syncFunnelToSupabase(): Promise<{
   error?: string;
 }> {
   try {
-    const [leadsItems, dealsItems, contractsItems] = await Promise.all([
+    const [leadsRaw, dealsRaw, contractsRaw] = await Promise.all([
       fetchBoardItems(MONDAY_BOARD_IDS.leads, { includeColumnValues: false }),
       fetchBoardItems(MONDAY_BOARD_IDS.deals, { includeColumnValues: true }),
       fetchBoardItems(MONDAY_BOARD_IDS.contracts, { includeColumnValues: false }),
     ]);
 
-    const contractsCount = contractsItems.length;
+    const leads = filterActiveItems(leadsRaw);
+    const deals = filterActiveItems(dealsRaw);
+    const contracts = filterActiveItems(contractsRaw);
 
-    let opsApprovedCount = 0;
-    const getDealStatus = DEALS_STATUS_COLUMN_ID
-      ? (item: MondayItem) => getColumnText(item, DEALS_STATUS_COLUMN_ID)
-      : getItemStatus;
+    const contractsCount = contracts.length;
 
-    for (const item of dealsItems) {
-      const status = (getDealStatus(item) ?? "").trim().toLowerCase();
-      if (status && OPS_STAGE_KEYWORDS.some((kw) => status.includes(kw))) {
-        opsApprovedCount += 1;
+    const dealsInScope = deals.filter((i) => {
+      const gid = i.group?.id;
+      return gid != null && FUNNEL_DEALS_GROUP_IDS.has(gid);
+    });
+
+    let opsMatchedCount = 0;
+    for (const item of dealsInScope) {
+      const status = getColumnText(item, FUNNEL_DEALS_STATUS_COL);
+      if (status != null && FUNNEL_OPS_STATUSES.has(status)) {
+        opsMatchedCount += 1;
       }
     }
 
-    const totalLeads = leadsItems.length + contractsCount;
-    const qualifiedLeads = dealsItems.length + contractsCount;
-    const opsApprovedLeads = opsApprovedCount + contractsCount;
+    const totalLeads = leads.length;
+    const qualifiedLeads = dealsInScope.length + contractsCount;
+    const opsApprovedLeads = opsMatchedCount + contractsCount;
     const wonDeals = contractsCount;
 
     const leadToQualifiedPct =
@@ -74,7 +89,9 @@ export async function syncFunnelToSupabase(): Promise<{
       return { synced: false, error: error.message };
     }
 
-    console.log(`[sync-funnel] Synced: ${totalLeads} leads, ${wonDeals} won deals`);
+    console.log(
+      `[sync-funnel] Synced: ${totalLeads} leads, ${qualifiedLeads} qualified, ${opsApprovedLeads} ops, ${wonDeals} won`,
+    );
     return { synced: true, totalLeads, wonDeals };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

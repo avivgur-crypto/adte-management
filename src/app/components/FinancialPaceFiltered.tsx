@@ -20,7 +20,7 @@ function aggregateMultiMonth(
   if (singles.length === 1) return singles[0]!;
 
   function aggSection(
-    key: "total" | "media" | "saas"
+    key: "total" | "media" | "saas" | "profit"
   ): FinancialPaceWithTrend["total"] {
     let actual = 0;
     let goal = 0;
@@ -64,7 +64,8 @@ function aggregateMultiMonth(
     total: aggSection("total"),
     media: aggSection("media"),
     saas: aggSection("saas"),
-    trend: { total: "stable", media: "stable", saas: "stable" },
+    profit: aggSection("profit"),
+    trend: { total: "stable", media: "stable", saas: "stable", profit: "stable" },
     isMultiMonth: true,
   };
 }

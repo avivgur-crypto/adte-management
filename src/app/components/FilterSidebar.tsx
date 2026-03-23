@@ -1,8 +1,8 @@
 "use client";
 
-import { Funnel, LayoutDashboard, Loader2, LogOut, Menu, RefreshCw, Users } from "lucide-react";
-import { triggerSyncViaCronApi } from "@/app/actions/sync";
+import { Funnel, LayoutDashboard, LogOut, Menu, Users } from "lucide-react";
 import { logout } from "@/app/actions/auth";
+import AdminSyncPanel from "./AdminSyncPanel";
 import { useAuth } from "@/app/context/AuthContext";
 import { useState, useCallback, useEffect, useTransition } from "react";
 import { createPortal } from "react-dom";
@@ -183,27 +183,7 @@ function FilterFormContent({
 function DesktopSidebar() {
   const state = useFilter();
   const { user } = useAuth();
-  const [syncing, setSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<"success" | "error" | null>(null);
-  const [syncError, setSyncError] = useState<string | null>(null);
   const [loggingOut, startLogout] = useTransition();
-
-  const handleSync = async () => {
-    setSyncing(true);
-    setSyncMessage(null);
-    setSyncError(null);
-    try {
-      const result = await triggerSyncViaCronApi();
-      if (result.success) {
-        setSyncMessage("success");
-      } else {
-        setSyncMessage("error");
-        setSyncError(result.error);
-      }
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   const handleLogout = () => {
     startLogout(async () => {
@@ -225,34 +205,7 @@ function DesktopSidebar() {
       </div>
       {user?.isAdmin && (
         <div className="border-t border-white/10 p-3">
-          <button
-            type="button"
-            onClick={handleSync}
-            disabled={syncing}
-            className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-200 shadow-sm transition-colors hover:bg-white/10 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {syncing ? (
-              <>
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-zinc-400" />
-                <span>Syncing...</span>
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4 shrink-0 text-zinc-400" />
-                <span>Sync Data</span>
-              </>
-            )}
-          </button>
-          {syncMessage === "success" && !syncing && (
-            <p className="mt-2 text-center text-xs font-medium text-emerald-400">
-              All synced!
-            </p>
-          )}
-          {syncMessage === "error" && syncError && !syncing && (
-            <p className="mt-2 truncate text-center text-xs text-red-400" title={syncError}>
-              {syncError}
-            </p>
-          )}
+          <AdminSyncPanel />
         </div>
       )}
       {user && (
@@ -385,6 +338,11 @@ function MobileMenuPanel() {
             Filters
           </h3>
           <FilterFormContent state={localState} isMobile onApply={apply} />
+          {user?.isAdmin && (
+            <div className="mt-4 border-t border-white/10 pt-3">
+              <AdminSyncPanel />
+            </div>
+          )}
           {user && (
             <div className="mt-4 border-t border-white/10 pt-3">
               <button

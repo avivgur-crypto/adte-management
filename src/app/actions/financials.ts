@@ -1,29 +1,33 @@
 "use server";
 
 import { cache } from "react";
-import { unstable_cache } from "next/cache";
+import { revalidateTag, unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
+import { fetchHomeForDate } from "@/lib/xdash-client";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 
 /** 5-min TTL — data only changes on cron sync (every 30 min). */
 const CACHE_TTL = 300;
+const FINANCIAL_TAG = "financial-data";
 
 export type PacingTrend = "up" | "down" | "stable";
 
 /** When true, section.projected and section.projectedVsGoalPercent are null. */
-export interface FinancialPaceWithTrend extends Omit<PacingSummary, "total" | "media" | "saas"> {
+export interface FinancialPaceWithTrend extends Omit<PacingSummary, "total" | "media" | "saas" | "profit"> {
   trend: {
     total: PacingTrend;
     media: PacingTrend;
     saas: PacingTrend;
+    profit: PacingTrend;
   };
   isMultiMonth?: boolean;
   total: PacingSummary["total"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
   media: PacingSummary["media"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
   saas: PacingSummary["saas"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
+  profit: PacingSummary["profit"] & { projected?: number | null; projectedVsGoalPercent?: number | null };
 }
 
 function comparePace(nowPercent: number | null, prevPercent: number | null): PacingTrend {
@@ -60,6 +64,7 @@ async function _getFinancialPace(
       const summary = await getPacingSummary(
         supabaseAdmin, undefined, monthStart,
         xdash?.mediaRevenue,
+        xdash?.mediaProfit,
       );
       let priorSummary: PacingSummary;
       try {
@@ -68,6 +73,7 @@ async function _getFinancialPace(
         priorSummary = await getPacingSummary(
           supabaseAdmin, undefined, priorKey,
           priorXdash?.mediaRevenue,
+          priorXdash?.mediaProfit,
         );
       } catch {
         priorSummary = summary;
@@ -78,6 +84,7 @@ async function _getFinancialPace(
           total: comparePace(summary.total.pacePercent, priorSummary.total.pacePercent),
           media: comparePace(summary.media.pacePercent, priorSummary.media.pacePercent),
           saas: comparePace(summary.saas.pacePercent, priorSummary.saas.pacePercent),
+          profit: comparePace(summary.profit.pacePercent, priorSummary.profit.pacePercent),
         },
       };
     }
@@ -85,12 +92,12 @@ async function _getFinancialPace(
     const summaries = await Promise.all(
       months.map((m) => {
         const xdash = xdashTotals[m];
-        return getPacingSummary(supabaseAdmin, undefined, m, xdash?.mediaRevenue);
+        return getPacingSummary(supabaseAdmin, undefined, m, xdash?.mediaRevenue, xdash?.mediaProfit);
       })
     );
 
     function aggSection(
-      key: "total" | "media" | "saas"
+      key: "total" | "media" | "saas" | "profit"
     ): FinancialPaceWithTrend["total"] {
       let actual = 0;
       let goal = 0;
@@ -133,10 +140,12 @@ async function _getFinancialPace(
       total: aggSection("total"),
       media: aggSection("media"),
       saas: aggSection("saas"),
+      profit: aggSection("profit"),
       trend: {
         total: "stable",
         media: "stable",
         saas: "stable",
+        profit: "stable",
       },
       isMultiMonth: true,
     };
@@ -152,7 +161,7 @@ export async function getFinancialPace(
   return unstable_cache(
     () => _getFinancialPace(validMonths),
     ["financial-pace", key],
-    { revalidate: CACHE_TTL },
+    { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] },
   )();
 }
 
@@ -235,6 +244,12 @@ async function _getAllPaceByMonth(
     const saas = buildSec(saasActual, saasGoal);
     const total = buildSec(mediaRevenue + saasActual, revenueGoal + saasGoal);
 
+    /** Sum of daily `profit` from daily_home_totals (field-based net profit from XDASH). */
+    const profitActual =
+      xdash != null ? xdash.mediaProfit : mediaRevenue - Number(goals?.media_cost ?? 0);
+    const profitGoal = Number(goals?.profit_goal ?? 0);
+    const profit = buildSec(profitActual, profitGoal);
+
     const priorKey = priorMonthKey(monthStart);
     const priorGoals = goalsMap.get(priorKey);
     const priorXdash = xdashTotals[priorKey];
@@ -247,6 +262,13 @@ async function _getAllPaceByMonth(
     const priorSaas2 = { pacePercent: pDIM > 0 && priorSaasGoal > 0 ? Math.round((priorSaasActual / (priorSaasGoal * 1)) * 100) : null };
     const priorTotal2 = { pacePercent: pDIM > 0 && (priorRevGoal + priorSaasGoal) > 0 ? Math.round(((priorMedia + priorSaasActual) / ((priorRevGoal + priorSaasGoal) * 1)) * 100) : null };
 
+    const priorProfitActual =
+      priorXdash != null
+        ? priorXdash.mediaProfit
+        : priorMedia - Number(priorGoals?.media_cost ?? 0);
+    const priorProfitGoal = Number(priorGoals?.profit_goal ?? 0);
+    const priorProfit2 = { pacePercent: pDIM > 0 && priorProfitGoal > 0 ? Math.round((priorProfitActual / (priorProfitGoal * 1)) * 100) : null };
+
     result[monthStart] = {
       month: monthKey,
       daysInMonth,
@@ -257,10 +279,12 @@ async function _getAllPaceByMonth(
       total,
       media,
       saas,
+      profit,
       trend: {
         total: comparePace(total.pacePercent, priorTotal2.pacePercent),
         media: comparePace(media.pacePercent, priorMedia2.pacePercent),
         saas: comparePace(saas.pacePercent, priorSaas2.pacePercent),
+        profit: comparePace(profit.pacePercent, priorProfit2.pacePercent),
       },
     };
   }
@@ -274,7 +298,7 @@ export async function getAllPaceByMonth(
   return unstable_cache(
     () => _getAllPaceByMonth(monthKeys),
     ["all-pace-by-month"],
-    { revalidate: CACHE_TTL },
+    { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] },
   )();
 }
 
@@ -388,7 +412,7 @@ export async function getPartnerConcentration(
   return unstable_cache(
     () => _getPartnerConcentration(parsed.data),
     ["partner-concentration", parsed.data],
-    { revalidate: CACHE_TTL },
+    { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] },
   )();
 }
 
@@ -413,30 +437,52 @@ const OVERVIEW_MONTHS = Array.from({ length: 12 }, (_, i) =>
 export interface XDASHMonthTotals {
   mediaRevenue: number;
   mediaCost: number;
+  mediaProfit: number;
 }
 
 // ---------------------------------------------------------------------------
-// Monthly home totals — SQL view does the SUM (returns ~12 rows, not ~365)
+// Monthly home totals — aggregate from raw daily_home_totals in JS
 // ---------------------------------------------------------------------------
 
 async function _fetchMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
-  const { data, error } = await supabaseAdmin
-    .from("v_monthly_home_totals")
-    .select("month, revenue, cost");
-  if (error) throw new Error(`fetchMonthlyXDASHTotals: ${error.message}`);
+  const PAGE = 1000;
+  const allRows: Array<{ date: string; revenue: number; cost: number; profit: number }> = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabaseAdmin
+      .from("daily_home_totals")
+      .select("date, revenue, cost, profit")
+      .gte("date", `${OVERVIEW_YEAR}-01-01`)
+      .lte("date", `${OVERVIEW_YEAR}-12-31`)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw new Error(`fetchMonthlyXDASHTotals: ${error.message}`);
+    if (!data || data.length === 0) break;
+    for (const row of data) {
+      allRows.push({
+        date: String(row.date).slice(0, 10),
+        revenue: Number(row.revenue ?? 0),
+        cost: Number(row.cost ?? 0),
+        profit: Number(row.profit ?? 0),
+      });
+    }
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+
   const result: Record<string, XDASHMonthTotals> = {};
-  for (const row of data ?? []) {
-    const monthKey = String(row.month).slice(0, 10);
-    result[monthKey] = {
-      mediaRevenue: Number(row.revenue ?? 0),
-      mediaCost: Number(row.cost ?? 0),
-    };
+  for (const row of allRows) {
+    const monthKey = row.date.slice(0, 7) + "-01";
+    if (!result[monthKey]) result[monthKey] = { mediaRevenue: 0, mediaCost: 0, mediaProfit: 0 };
+    result[monthKey]!.mediaRevenue += row.revenue;
+    result[monthKey]!.mediaCost += row.cost;
+    result[monthKey]!.mediaProfit += row.profit;
   }
   return result;
 }
 
 const _cachedMonthlyXDASHTotals = cache(
-  unstable_cache(_fetchMonthlyXDASHTotals, ["monthly-xdash-totals"], { revalidate: CACHE_TTL }),
+  unstable_cache(_fetchMonthlyXDASHTotals, ["monthly-xdash-totals"], { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] }),
 );
 
 export async function getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonthTotals>> {
@@ -461,12 +507,13 @@ interface MonthlyGoalRow {
   media_cost: number;
   tech_cost: number;
   bs_cost: number;
+  profit_goal: number;
 }
 
 async function _getAllMonthlyGoals(): Promise<MonthlyGoalRow[]> {
   const { data: rows, error } = await supabaseAdmin
     .from("monthly_goals")
-    .select("month, revenue_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost")
+    .select("month, revenue_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost, profit_goal")
     .in("month", ALL_GOAL_MONTHS)
     .order("month", { ascending: true });
   if (error) throw new Error(`getAllMonthlyGoals: ${error.message}`);
@@ -474,7 +521,7 @@ async function _getAllMonthlyGoals(): Promise<MonthlyGoalRow[]> {
 }
 
 const getAllMonthlyGoals = cache(
-  unstable_cache(_getAllMonthlyGoals, ["all-monthly-goals"], { revalidate: CACHE_TTL }),
+  unstable_cache(_getAllMonthlyGoals, ["all-monthly-goals"], { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] }),
 );
 
 async function _getTotalOverviewData(): Promise<MonthOverview[]> {
@@ -495,7 +542,7 @@ async function _getTotalOverviewData(): Promise<MonthOverview[]> {
 }
 
 export const getTotalOverviewData = cache(
-  unstable_cache(_getTotalOverviewData, ["total-overview"], { revalidate: CACHE_TTL }),
+  unstable_cache(_getTotalOverviewData, ["total-overview"], { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] }),
 );
 
 // ---------------------------------------------------------------------------
@@ -506,6 +553,7 @@ export interface DailyMovementDay {
   date: string;
   revenue: number;
   cost: number;
+  profit: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -515,7 +563,7 @@ export interface DailyMovementDay {
 async function _fetchAllDailyByMonth(): Promise<Record<string, DailyMovementDay[]>> {
   const { data, error } = await supabaseAdmin
     .from("daily_home_totals")
-    .select("date, revenue, cost")
+    .select("date, revenue, cost, profit")
     .gte("date", `${OVERVIEW_YEAR}-01-01`)
     .lte("date", `${OVERVIEW_YEAR}-12-31`)
     .order("date", { ascending: true });
@@ -528,13 +576,14 @@ async function _fetchAllDailyByMonth(): Promise<Record<string, DailyMovementDay[
       date: String(row.date).slice(0, 10),
       revenue: Number(row.revenue ?? 0),
       cost: Number(row.cost ?? 0),
+      profit: Number(row.profit ?? 0),
     });
   }
   return byMonth;
 }
 
 const _cachedDailyByMonth = cache(
-  unstable_cache(_fetchAllDailyByMonth, ["all-daily-movement"], { revalidate: CACHE_TTL }),
+  unstable_cache(_fetchAllDailyByMonth, ["all-daily-movement"], { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] }),
 );
 
 export async function getAllDailyMovement(): Promise<Record<string, DailyMovementDay[]>> {
@@ -549,8 +598,7 @@ export async function getDailyMovement(monthKey: string): Promise<DailyMovementD
   return all[parsed.data] ?? [];
 }
 
-/** Returns { date, syncedAt } of the most recent data row. No cache — always fresh. */
-export async function getLastDataUpdate(): Promise<{ date: string; syncedAt: string } | null> {
+async function _getLastDataUpdate(): Promise<{ date: string; syncedAt: string } | null> {
   const { data: homeRow } = await supabaseAdmin
     .from("daily_home_totals")
     .select("date, created_at")
@@ -567,4 +615,57 @@ export async function getLastDataUpdate(): Promise<{ date: string; syncedAt: str
     .single();
   if (!data) return null;
   return { date: data.date, syncedAt: data.created_at };
+}
+
+export const getLastDataUpdate = cache(
+  unstable_cache(_getLastDataUpdate, ["last-data-update"], { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] }),
+);
+
+// ---------------------------------------------------------------------------
+// Live refresh: fetch today's Home total from XDASH and upsert into Supabase.
+// Called once on page load so the dashboard shows real-time "today" numbers
+// without waiting for the next 30-minute cron.
+// ---------------------------------------------------------------------------
+
+const REFRESH_STALE_MS = 5 * 60 * 1000; // only refresh if row is >5 min old
+
+export type RefreshTodayHomeResult = { updated: boolean };
+
+/** Returns { updated: true } only when today's row was actually refreshed from XDASH. */
+export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
+  try {
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+
+    const { data: existing } = await supabaseAdmin
+      .from("daily_home_totals")
+      .select("created_at")
+      .eq("date", today)
+      .maybeSingle();
+
+    if (existing?.created_at) {
+      const age = Date.now() - new Date(existing.created_at).getTime();
+      if (age < REFRESH_STALE_MS) return { updated: false };
+    }
+
+    const { revenue, cost, profit, impressions } = await fetchHomeForDate(today);
+    if (revenue === 0 && cost === 0 && impressions === 0) return { updated: false };
+
+    const { error } = await supabaseAdmin
+      .from("daily_home_totals")
+      .upsert(
+        { date: today, revenue, cost, profit, impressions, created_at: new Date().toISOString() },
+        { onConflict: "date" },
+      );
+    if (error) {
+      console.error("[refreshTodayHome] upsert failed:", error.message);
+      return { updated: false };
+    }
+
+    console.log(`[refreshTodayHome] Updated today (${today}): $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`);
+    revalidateTag(FINANCIAL_TAG, { expire: 0 });
+    return { updated: true };
+  } catch (e) {
+    console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
+    return { updated: false };
+  }
 }
