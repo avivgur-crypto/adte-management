@@ -143,6 +143,28 @@ function SectionBlock({
               <span>Goal {formatCurrency(goal)}</span>
               <PaceBadge percent={projectedVsGoalPercent ?? null} trend={trend} />
             </div>
+            {projected != null && (
+              <div className="mt-1.5 text-xs font-medium tabular-nums">
+                {(() => {
+                  const variance = projected - goal;
+                  if (variance > 0) {
+                    return (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        +{formatCurrency(variance)} ahead of Goal
+                      </span>
+                    );
+                  }
+                  if (variance < 0) {
+                    return (
+                      <span className="text-red-600 dark:text-red-400">
+                        {formatCurrency(variance)} behind Goal
+                      </span>
+                    );
+                  }
+                  return <span className="text-white/60">On goal</span>;
+                })()}
+              </div>
+            )}
           </div>
         )}
 
@@ -181,12 +203,12 @@ function FinancialPaceCard({
         <span><span className="font-semibold text-red-600 dark:text-red-400">&lt;90%</span></span>
       </div>
       <div className="grid gap-4 sm:grid-cols-3">
-        <SectionBlock title="Total revenue" section={summary.total} trend={summary.trend.total} isMultiMonth={summary.isMultiMonth} />
+        <SectionBlock title="Total Revenue" section={summary.total} trend={summary.trend.total} isMultiMonth={summary.isMultiMonth} />
         <SectionBlock title="Media Revenue (from Xdash)" section={summary.media} trend={summary.trend.media} isMultiMonth={summary.isMultiMonth} />
         <SectionBlock title="SaaS Revenue (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
       </div>
       <div className="mt-4 grid gap-4 sm:grid-cols-3">
-        <SectionBlock title="Net Profit pace" section={summary.profit} trend={summary.trend.profit} isMultiMonth={summary.isMultiMonth} />
+        <SectionBlock title="Net Profit" section={summary.profit} trend={summary.trend.profit} isMultiMonth={summary.isMultiMonth} />
       </div>
       <p className="mt-4 text-[15px] text-white/50">
         Live data from xdash, updated automatically.

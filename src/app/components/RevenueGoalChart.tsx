@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import {
   ComposedChart,
-  Bar,
   Line,
   XAxis,
   YAxis,
@@ -27,8 +26,8 @@ const LINE_COLOR = "#a78bfa"; // violet-400
 
 const FILTER_OPTIONS: { value: RevenueChartFilter; label: string }[] = [
   { value: "total", label: "Total Revenue" },
-  { value: "media", label: "Media" },
-  { value: "saas", label: "SaaS" },
+  { value: "media", label: "Media Revenue" },
+  { value: "saas", label: "SaaS Revenue" },
   { value: "profit", label: "Net Profit" },
 ];
 
@@ -140,9 +139,9 @@ export default function RevenueGoalChart({
               ? "Net profit (daily_home_totals) vs. profit goal from billing"
               : "Monthly actual vs. finance goal by type"}
           </p>
-          <p className="mt-0.5 text-xs text-white/35">
-            {isProfit ? "(XDASH net profit synced)" : "(from xdash)"}
-          </p>
+          {isProfit && (
+            <p className="mt-0.5 text-xs text-white/35">(XDASH net profit synced)</p>
+          )}
         </div>
         <div className="flex rounded-lg border border-white/[0.08] bg-black/30 p-0.5">
           {FILTER_OPTIONS.map((opt) => (
@@ -194,7 +193,7 @@ export default function RevenueGoalChart({
             <Legend
               verticalAlign="top"
               align="center"
-              iconType={isProfit ? "line" : "square"}
+              iconType="line"
               wrapperStyle={{ paddingBottom: 12 }}
               formatter={(value: string) => (
                 <span className="text-xs text-white/70">
@@ -202,47 +201,24 @@ export default function RevenueGoalChart({
                 </span>
               )}
             />
-            {isProfit ? (
-              <>
-                <Line
-                  dataKey="actual"
-                  type="monotone"
-                  stroke={BAR_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: BAR_COLOR, stroke: BAR_COLOR }}
-                  activeDot={{ r: 6, fill: BAR_COLOR, stroke: "#fff", strokeWidth: 2 }}
-                  name="actual"
-                />
-                <Line
-                  dataKey="goal"
-                  type="monotone"
-                  stroke={LINE_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: LINE_COLOR, stroke: LINE_COLOR }}
-                  activeDot={{ r: 6, fill: LINE_COLOR, stroke: "#fff", strokeWidth: 2 }}
-                  name="goal"
-                />
-              </>
-            ) : (
-              <>
-                <Bar
-                  dataKey="actual"
-                  fill={BAR_COLOR}
-                  radius={[4, 4, 0, 0]}
-                  barSize={32}
-                  name="actual"
-                />
-                <Line
-                  dataKey="goal"
-                  type="monotone"
-                  stroke={LINE_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: LINE_COLOR, stroke: LINE_COLOR }}
-                  activeDot={{ r: 6, fill: LINE_COLOR, stroke: "#fff", strokeWidth: 2 }}
-                  name="goal"
-                />
-              </>
-            )}
+            <Line
+              dataKey="actual"
+              type="monotone"
+              stroke={BAR_COLOR}
+              strokeWidth={2.5}
+              dot={{ r: 4, fill: BAR_COLOR, stroke: BAR_COLOR }}
+              activeDot={{ r: 6, fill: BAR_COLOR, stroke: "#fff", strokeWidth: 2 }}
+              name="actual"
+            />
+            <Line
+              dataKey="goal"
+              type="monotone"
+              stroke={LINE_COLOR}
+              strokeWidth={2.5}
+              dot={{ r: 4, fill: LINE_COLOR, stroke: LINE_COLOR }}
+              activeDot={{ r: 6, fill: LINE_COLOR, stroke: "#fff", strokeWidth: 2 }}
+              name="goal"
+            />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
