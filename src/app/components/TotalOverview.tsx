@@ -198,9 +198,9 @@ function ProfitCard({
           }`}
         />
       </div>
-      <div className="text-sm text-white/50">
-        {isBilling ? "Revenue − Cost" : "From XDASH (synced)"}
-      </div>
+      {isBilling && (
+        <div className="text-sm text-white/50">Revenue − Cost</div>
+      )}
     </div>
   );
 }

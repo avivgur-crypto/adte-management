@@ -1,8 +1,8 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useCallback, useState } from "react";
 import type { PacingSection } from "@/lib/pacing";
-import type { FinancialPaceWithTrend, PacingTrend } from "@/app/actions/financials";
+import type { FinancialPaceWithTrend } from "@/app/actions/financials";
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -13,38 +13,19 @@ function formatCurrency(n: number): string {
   }).format(n);
 }
 
-function TrendIcon({ trend }: { trend: PacingTrend }) {
-  if (trend === "up") return <span className="ml-0.5 text-emerald-600 dark:text-emerald-400" aria-hidden>↑</span>;
-  if (trend === "down") return <span className="ml-0.5 text-red-600 dark:text-red-400" aria-hidden>↓</span>;
-  return null;
-}
-
-function PaceBadge({
-  percent,
-  trend,
-}: {
-  percent: number | null;
-  trend?: PacingTrend;
-}) {
+/** Projected vs goal %: ≥100% green + ↑, &lt;100% red + ↓ (do not mix in MoM trend). */
+function PaceBadge({ percent }: { percent: number | null }) {
   if (percent == null) return <span className="text-white/50">—</span>;
-  // When trend is present, color percentage by trend (e.g. 77% ⬇️ in red)
-  const byTrend =
-    trend === "up"
-      ? "font-semibold text-emerald-600 dark:text-emerald-400"
-      : trend === "down"
-        ? "font-semibold text-red-600 dark:text-red-400"
-        : null;
-  const byPace =
-    percent >= 100
-      ? "font-semibold text-emerald-600 dark:text-emerald-400"
-      : percent >= 90
-        ? "font-semibold text-amber-600 dark:text-amber-400"
-        : "font-semibold text-red-600 dark:text-red-400";
-  const className = byTrend ?? byPace;
+  const atOrAboveGoal = percent >= 100;
+  const className = atOrAboveGoal
+    ? "font-semibold text-emerald-600 dark:text-emerald-400"
+    : "font-semibold text-red-600 dark:text-red-400";
   return (
-    <span className="inline-flex items-baseline">
+    <span className="inline-flex items-baseline gap-0.5">
       <span className={className}>{percent}%</span>
-      {trend != null && trend !== "stable" && <TrendIcon trend={trend} />}
+      <span className={className} aria-hidden>
+        {atOrAboveGoal ? "↑" : "↓"}
+      </span>
     </span>
   );
 }
@@ -52,13 +33,14 @@ function PaceBadge({
 function SectionBlock({
   title,
   section,
-  trend,
   isMultiMonth,
+  showGoalVarianceLine,
 }: {
   title: string;
   section: PacingSection & { projected?: number | null; projectedVsGoalPercent?: number | null };
-  trend?: PacingTrend;
   isMultiMonth?: boolean;
+  /** Only for current calendar month (projected pacing); hide for closed months. */
+  showGoalVarianceLine?: boolean;
 }) {
   const { actual, targetMtd, goal, delta, requiredDailyRunRate, pacePercent, projected, projectedVsGoalPercent } = section;
   const barScale = goal > 0 ? goal : 1;
@@ -141,9 +123,9 @@ function SectionBlock({
             </div>
             <div className="mt-1 flex items-baseline justify-between gap-2 text-[11px] text-white/50">
               <span>Goal {formatCurrency(goal)}</span>
-              <PaceBadge percent={projectedVsGoalPercent ?? null} trend={trend} />
+              <PaceBadge percent={projectedVsGoalPercent ?? null} />
             </div>
-            {projected != null && (
+            {showGoalVarianceLine && projected != null && (
               <div className="mt-1.5 text-xs font-medium tabular-nums">
                 {(() => {
                   const variance = projected - goal;
@@ -177,11 +159,38 @@ function SectionBlock({
   );
 }
 
+type PaceMetricKey = "total" | "media" | "saas" | "profit";
+
+const PACE_METRIC_DEFAULTS: Record<PaceMetricKey, boolean> = {
+  total: true,
+  media: true,
+  saas: true,
+  profit: true,
+};
+
+const PACE_METRIC_OPTIONS: { key: PaceMetricKey; label: string }[] = [
+  { key: "total", label: "Total Revenue" },
+  { key: "media", label: "Media Revenue" },
+  { key: "saas", label: "SaaS Revenue" },
+  { key: "profit", label: "Net Profit" },
+];
+
 function FinancialPaceCard({
   summary,
+  showGoalVarianceLine = false,
 }: {
   summary: FinancialPaceWithTrend;
+  /** Goal variance row only when viewing the live calendar month (single-month). */
+  showGoalVarianceLine?: boolean;
 }) {
+  const [visible, setVisible] = useState<Record<PaceMetricKey, boolean>>(() => ({
+    ...PACE_METRIC_DEFAULTS,
+  }));
+
+  const toggleMetric = useCallback((key: PaceMetricKey) => {
+    setVisible((v) => ({ ...v, [key]: !v[key] }));
+  }, []);
+
   return (
     <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-4">
@@ -202,13 +211,60 @@ function FinancialPaceCard({
         <span><span className="font-semibold text-amber-600 dark:text-amber-400">90–99%</span></span>
         <span><span className="font-semibold text-red-600 dark:text-red-400">&lt;90%</span></span>
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <SectionBlock title="Total Revenue" section={summary.total} trend={summary.trend.total} isMultiMonth={summary.isMultiMonth} />
-        <SectionBlock title="Media Revenue (from Xdash)" section={summary.media} trend={summary.trend.media} isMultiMonth={summary.isMultiMonth} />
-        <SectionBlock title="SaaS Revenue (from Billing)" section={summary.saas} trend={summary.trend.saas} isMultiMonth={summary.isMultiMonth} />
+
+      <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-white/[0.06] pb-4">
+        <span className="text-xs font-semibold uppercase tracking-wide text-white/40">Show metrics</span>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          {PACE_METRIC_OPTIONS.map(({ key, label }) => (
+            <label
+              key={key}
+              className="inline-flex cursor-pointer select-none items-center gap-2 text-sm text-white/85"
+            >
+              <input
+                type="checkbox"
+                checked={visible[key]}
+                onChange={() => toggleMetric(key)}
+                className="h-4 w-4 shrink-0 rounded border-white/25 bg-black/50 text-violet-400 accent-violet-500 focus:ring-2 focus:ring-violet-500/40"
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
       </div>
-      <div className="mt-4 grid gap-4 sm:grid-cols-3">
-        <SectionBlock title="Net Profit" section={summary.profit} trend={summary.trend.profit} isMultiMonth={summary.isMultiMonth} />
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {visible.total && (
+          <SectionBlock
+            title="Total Revenue"
+            section={summary.total}
+            isMultiMonth={summary.isMultiMonth}
+            showGoalVarianceLine={showGoalVarianceLine}
+          />
+        )}
+        {visible.media && (
+          <SectionBlock
+            title="Media Revenue (from Xdash)"
+            section={summary.media}
+            isMultiMonth={summary.isMultiMonth}
+            showGoalVarianceLine={showGoalVarianceLine}
+          />
+        )}
+        {visible.saas && (
+          <SectionBlock
+            title="SaaS Revenue (from Billing)"
+            section={summary.saas}
+            isMultiMonth={summary.isMultiMonth}
+            showGoalVarianceLine={showGoalVarianceLine}
+          />
+        )}
+        {visible.profit && (
+          <SectionBlock
+            title="Net Profit"
+            section={summary.profit}
+            isMultiMonth={summary.isMultiMonth}
+            showGoalVarianceLine={showGoalVarianceLine}
+          />
+        )}
       </div>
       <p className="mt-4 text-[15px] text-white/50">
         Live data from xdash, updated automatically.

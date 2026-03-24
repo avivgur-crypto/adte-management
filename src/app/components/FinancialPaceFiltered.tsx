@@ -5,11 +5,23 @@ import { useFilter } from "@/app/context/FilterContext";
 import FinancialPaceCard from "./FinancialPaceCard";
 import type { FinancialPaceWithTrend } from "@/app/actions/financials";
 
+const DASHBOARD_YEAR = 2026;
+
 function getCurrentMonthStart(): string {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth() + 1;
   return `${y}-${String(m).padStart(2, "0")}-01`;
+}
+
+/** YYYY-MM for today, clamped to dashboard year (matches FilterContext / pacing `summary.month`). */
+function getCurrentMonthYYYYMM(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  if (y < DASHBOARD_YEAR) return `${DASHBOARD_YEAR}-01`;
+  if (y > DASHBOARD_YEAR) return `${DASHBOARD_YEAR}-12`;
+  return `${DASHBOARD_YEAR}-${String(m).padStart(2, "0")}`;
 }
 
 /** Aggregate multiple single-month pacing results into one multi-month summary (client-side). */
@@ -108,9 +120,16 @@ export default function FinancialPaceFiltered({
     return aggregateMultiMonth(singles);
   }, [paceByMonth, selectedMonths]);
 
+  const showGoalVarianceLine = useMemo(() => {
+    if (summary == null || summary.isMultiMonth) return false;
+    return summary.month === getCurrentMonthYYYYMM();
+  }, [summary]);
+
   if (summary == null) {
     return <PacingSkeleton />;
   }
 
-  return <FinancialPaceCard summary={summary} />;
+  return (
+    <FinancialPaceCard summary={summary} showGoalVarianceLine={showGoalVarianceLine} />
+  );
 }

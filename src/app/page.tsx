@@ -227,7 +227,7 @@ export default function Home() {
       }}
     >
       <AutoSync />
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <main className="mx-auto max-w-5xl px-3 pb-8 pt-6 sm:px-4 sm:pb-10 sm:pt-10">
         <Suspense
           fallback={
             <div

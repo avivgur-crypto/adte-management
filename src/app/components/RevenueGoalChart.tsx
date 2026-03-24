@@ -127,45 +127,43 @@ export default function RevenueGoalChart({
   const filterLabel = FILTER_OPTIONS.find((f) => f.value === revenueFilter)?.label ?? "Revenue";
 
   return (
-    <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="text-[25px] font-extrabold text-white">
+    <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-4 sm:p-6">
+      <div className="mb-4 flex min-w-0 flex-col gap-4 sm:mb-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0 flex-1">
+          <h2 className="break-words text-lg font-extrabold leading-snug tracking-tight text-white sm:text-xl md:text-2xl lg:text-[25px] lg:leading-tight">
             Month-to-Date Performance vs.{" "}
             <span className="highlight-brand">Goal Pace</span>
           </h2>
-          <p className="mt-1 text-sm text-white/50">
-            {isProfit
-              ? "Net profit (daily_home_totals) vs. profit goal from billing"
-              : "Monthly actual vs. finance goal by type"}
-          </p>
-          {isProfit && (
-            <p className="mt-0.5 text-xs text-white/35">(XDASH net profit synced)</p>
-          )}
         </div>
-        <div className="flex rounded-lg border border-white/[0.08] bg-black/30 p-0.5">
-          {FILTER_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setRevenueFilter(opt.value)}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                revenueFilter === opt.value
-                  ? "bg-white/15 text-white"
-                  : "text-white/60 hover:text-white/80"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div
+          className="w-full min-w-0 sm:w-auto sm:max-w-none sm:shrink-0"
+          role="group"
+          aria-label="Chart metric"
+        >
+          <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-white/[0.08] bg-black/30 p-1 sm:inline-flex sm:flex-nowrap sm:gap-0 sm:rounded-lg sm:p-0.5">
+            {FILTER_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setRevenueFilter(opt.value)}
+                className={`min-h-[44px] touch-manipulation rounded-lg px-2.5 py-2 text-center text-xs font-medium leading-tight transition-colors sm:min-h-0 sm:rounded-md sm:px-3 sm:py-1.5 sm:text-sm ${
+                  revenueFilter === opt.value
+                    ? "bg-white/15 text-white"
+                    : "text-white/60 hover:bg-white/5 hover:text-white/80 active:bg-white/10"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="mb-4 h-[340px] min-h-[280px] min-w-0 w-full">
+      <div className="mb-2 h-[240px] w-full min-w-0 sm:mb-4 sm:h-[300px] lg:h-[340px]">
         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
           <ComposedChart
             data={chartData}
-            margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+            margin={{ top: 8, right: 8, left: 4, bottom: 0 }}
           >
             <CartesianGrid
               strokeDasharray="3 3"
@@ -174,17 +172,18 @@ export default function RevenueGoalChart({
             />
             <XAxis
               dataKey="month"
-              tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 12 }}
+              tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
               axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
               tickLine={false}
+              minTickGap={8}
             />
             <YAxis
               domain={yDomain}
               tickFormatter={isProfit ? formatProfitAxis : formatCompact}
-              tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 12 }}
+              tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
               axisLine={false}
               tickLine={false}
-              width={isProfit ? 72 : 60}
+              width={isProfit ? 58 : 50}
             />
             <Tooltip
               content={(props) => <CustomTooltip {...props} filterLabel={filterLabel} />}
@@ -194,7 +193,13 @@ export default function RevenueGoalChart({
               verticalAlign="top"
               align="center"
               iconType="line"
-              wrapperStyle={{ paddingBottom: 12 }}
+              wrapperStyle={{
+                paddingBottom: 8,
+                paddingLeft: 4,
+                paddingRight: 4,
+                width: "100%",
+                fontSize: 11,
+              }}
               formatter={(value: string) => (
                 <span className="text-xs text-white/70">
                   {value === "actual" ? `${filterLabel} Actual` : `${filterLabel} Goal`}
