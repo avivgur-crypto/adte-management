@@ -75,7 +75,7 @@ export interface SignedDealCompany {
 }
 
 /**
- * Fetch all signed deals (contracts) in 2026 with company name (column text_mkpw5mcs).
+ * Fetch all signed deals (contracts) in 2026 with Account Name (default column text_mkpw5mcs).
  * Client filters by selected months and displays names under "New Signed Deals".
  */
 async function _getSignedDealsCompanies(): Promise<SignedDealCompany[]> {

@@ -97,14 +97,21 @@ export const MONDAY_BOARD_ID = process.env.MONDAY_BOARD_ID ?? "";
 
 /** Creation log column IDs — date for grouping (YYYY-MM-DD) and activity.created_date. */
 export const CREATION_LOG_COLUMN_IDS = {
-  /** Board 7832231403 (Leads / New Partners). Count all items; no status filter. */
-  leads: "pulse_log_mkzm790s",
-  /** Board 8280704003 (Media Contracts). Only "Complete Storage" in sync. */
+  /** Board 7832231403 (Leads / New Partners). Monday "Creation log" = pulse_log_mkzm1prs. */
+  leads: "pulse_log_mkzm1prs",
+  /** Board 8280704003 (Media Contracts). Same Creation log column id. */
   contracts: "pulse_log_mkzm1prs",
 } as const;
 
-/** Contracts board: column with company name. */
-export const CONTRACTS_COMPANY_COLUMN_ID = "text_mkpw5mcs";
+/**
+ * Media Contracts board: "Account Name" column (company label in Monday).
+ * Override with MONDAY_CONTRACTS_ACCOUNT_NAME_COLUMN_ID if the board uses a different id.
+ */
+export const CONTRACTS_ACCOUNT_NAME_COLUMN_ID =
+  process.env.MONDAY_CONTRACTS_ACCOUNT_NAME_COLUMN_ID?.trim() || "text_mkpw5mcs";
+
+/** @deprecated Use CONTRACTS_ACCOUNT_NAME_COLUMN_ID */
+export const CONTRACTS_COMPANY_COLUMN_ID = CONTRACTS_ACCOUNT_NAME_COLUMN_ID;
 
 /** Contracts board: status column (cm_status_template). Only "Complete Storage" = signed deal. */
 export const CONTRACTS_STATUS_COLUMN_ID = "cm_status_template";
@@ -231,7 +238,7 @@ export function getItemStatus(item: MondayItem): string | null {
 }
 
 /**
- * Get text value of a column by id (e.g. text_mkpw5mcs for company name on Contracts board).
+ * Get text value of a column by id (e.g. Account Name / text_mkpw5mcs on Contracts board).
  */
 export function getColumnText(item: MondayItem, columnId: string): string | null {
   const cols = item.column_values ?? [];
@@ -243,7 +250,7 @@ export function getColumnText(item: MondayItem, columnId: string): string | null
 }
 
 /**
- * Get creation date from a creation-log column (e.g. pulse_log_mkzm790s, pulse_log_mkzm1prs).
+ * Get creation date from a creation-log column (e.g. pulse_log_mkzm1prs).
  * Prefer the column's value; fall back to item.created_at if present.
  * Parses JSON value with "date", "changed_at", or plain ISO date string.
  * Returns null if unparseable.

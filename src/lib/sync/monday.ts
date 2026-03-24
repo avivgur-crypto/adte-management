@@ -1,17 +1,17 @@
 /**
  * Monday.com sync: funnel metrics + Leads/Contracts activity.
  * - Leads board 7832231403 (New Partners): every item, no status filter.
- *   Date from Creation Log column pulse_log_mkzm790s → grouped by YYYY-MM-DD.
- * - Contracts board 8280704003: only status "Complete Storage" (cm_status_template).
- *   Date from Creation Log pulse_log_mkzm1prs.
+ *   Date from Creation Log pulse_log_mkzm1prs → grouped by calendar day (Asia/Jerusalem).
+ * - Contracts board 8280704003: status in MONDAY_CONTRACTS_SIGNED_STATUSES (default includes
+ *   Complete Storage, Signed, Done, Complete). Date from Creation Log pulse_log_mkzm1prs.
+ * - Company list: Account Name column (CONTRACTS_ACCOUNT_NAME_COLUMN_ID), else Monday item name.
  * Before upsert: resets 2026 funnel lead/deal counts and replaces activity rows for both boards.
  */
 
 import {
   CREATION_LOG_COLUMN_IDS,
-  CONTRACTS_COMPANY_COLUMN_ID,
+  CONTRACTS_ACCOUNT_NAME_COLUMN_ID,
   CONTRACTS_STATUS_COLUMN_ID,
-  CONTRACTS_SIGNED_STATUS,
   fetchBoardItems,
   getCreationLogDate,
   getColumnText,
@@ -22,12 +22,38 @@ const TABLE = "daily_funnel_metrics";
 const ACTIVITY_TABLE = "monday_items_activity";
 const LEADS_BOARD_ID = "7832231403";
 const CONTRACTS_BOARD_ID = "8280704003";
+/** Match Monday UI / business day — avoids UTC vs local shifting March rows into Feb/April. */
+const DATE_TZ = "Asia/Jerusalem";
 
-function dateToKey(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+/**
+ * Calendar YYYY-MM-DD in Israel (same as XDASH / rest of app).
+ * Used for daily_funnel_metrics keys and monday_items_activity.created_date.
+ */
+function dateKeyFromDate(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: DATE_TZ });
+}
+
+/**
+ * Status labels on Media Contracts that count as "signed" for funnel activity.
+ * Override with env MONDAY_CONTRACTS_SIGNED_STATUSES="Complete Storage,Signed,Done" (comma-separated).
+ */
+function signedContractStatuses(): Set<string> {
+  const raw =
+    process.env.MONDAY_CONTRACTS_SIGNED_STATUSES?.trim() ||
+    "Complete Storage,Signed,Done,Complete";
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+function isSignedContractStatus(status: string | null, allowed: Set<string>): boolean {
+  if (status == null) return false;
+  const t = status.trim();
+  if (t === "") return false;
+  return allowed.has(t);
 }
 
 /** Count items per creation date (YYYY-MM-DD) for a board. */
@@ -39,7 +65,7 @@ function countByCreationDate(
   for (const item of items) {
     const createdAt = getCreationLogDate(item, creationLogColumnId);
     const d = createdAt ?? new Date();
-    const key = dateToKey(d);
+    const key = dateKeyFromDate(d);
     byDate.set(key, (byDate.get(key) ?? 0) + 1);
   }
   return byDate;
@@ -56,13 +82,13 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
   ]);
 
-  // Only items with status "Complete Storage" count as signed deals
+  const signedStatuses = signedContractStatuses();
   const contractsItems = allContractsItems.filter((item) => {
     const status = getColumnText(item, CONTRACTS_STATUS_COLUMN_ID);
-    return status === CONTRACTS_SIGNED_STATUS;
+    return isSignedContractStatus(status, signedStatuses);
   });
 
-  // Leads: all items on board 7832231403; creation date from pulse_log_mkzm790s only.
+  // Leads: all items on board 7832231403; creation date from Creation log (pulse_log_mkzm1prs).
   const totalLeadsByDate = countByCreationDate(leadsItems, CREATION_LOG_COLUMN_IDS.leads);
   const wonDealsByDate = countByCreationDate(contractsItems, CREATION_LOG_COLUMN_IDS.contracts);
   const allDates = new Set<string>([...totalLeadsByDate.keys(), ...wonDealsByDate.keys()]);
@@ -111,9 +137,13 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     return items.map((item) => {
       const createdAtDate = getCreationLogDate(item, creationLogColumnId);
       const createdAt = createdAtDate ?? new Date(item.created_at ?? Date.now());
-      const dateStr = dateToKey(createdAt);
-      const company_name =
+      const dateStr = dateKeyFromDate(createdAt);
+      const fromColumn =
         companyColumnId != null ? getColumnText(item, companyColumnId) : null;
+      const company_name =
+        fromColumn && fromColumn.trim() !== ""
+          ? fromColumn.trim()
+          : (item.name?.trim() || null);
       return {
         item_id: String(item.id),
         board_id: boardId,
@@ -128,7 +158,7 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     `[monday-sync] leads: ${leadsItems.length} items (all statuses, date from ${CREATION_LOG_COLUMN_IDS.leads})`
   );
   console.log(
-    `[monday-sync] contracts: ${allContractsItems.length} total → ${contractsItems.length} with status "${CONTRACTS_SIGNED_STATUS}"`
+    `[monday-sync] contracts: ${allContractsItems.length} total → ${contractsItems.length} with signed status in [${[...signedStatuses].join(", ")}]`,
   );
 
   // Replace activity for both boards so misdated or duplicate rows from old syncs are removed.
@@ -144,7 +174,7 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
       contractsItems,
       CONTRACTS_BOARD_ID,
       CREATION_LOG_COLUMN_IDS.contracts,
-      CONTRACTS_COMPANY_COLUMN_ID
+      CONTRACTS_ACCOUNT_NAME_COLUMN_ID
     ),
   ];
 

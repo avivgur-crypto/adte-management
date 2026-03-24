@@ -167,9 +167,6 @@ export default function DailyMovementChart({
         <h2 className="text-[25px] font-extrabold text-white">
           Daily <span className="highlight-brand">progress</span>
         </h2>
-        <p className="mt-1 text-sm text-white/50">
-          XDASH data — net profit is the synced netprofit field per day
-        </p>
         {/* Toggle buttons — own row, wrap on narrow screens */}
         <div className="mt-3 flex flex-wrap gap-2">
           {SERIES.map((s) => {

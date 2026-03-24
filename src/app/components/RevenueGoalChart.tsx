@@ -131,7 +131,7 @@ export default function RevenueGoalChart({
       <div className="mb-4 flex min-w-0 flex-col gap-4 sm:mb-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="min-w-0 flex-1">
           <h2 className="break-words text-lg font-extrabold leading-snug tracking-tight text-white sm:text-xl md:text-2xl lg:text-[25px] lg:leading-tight">
-            Month-to-Date Performance vs.{" "}
+            Performance vs.{" "}
             <span className="highlight-brand">Goal Pace</span>
           </h2>
         </div>

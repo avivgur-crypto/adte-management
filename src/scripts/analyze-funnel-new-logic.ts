@@ -1,14 +1,20 @@
 /**
- * Temporary standalone script to verify NEW funnel calculation logic.
+ * Standalone script: exploratory funnel math (active items only). Not the production sync.
  *
- * Data: state: active only. Boards: Leads (7832231403), Deals (7832231409), Contracts (8280704003).
+ * Production writes to Supabase via:
+ *   - `src/lib/sync/funnel.ts` → cached_funnel_metrics (Sankey / stage counts)
+ *   - `src/lib/sync/monday.ts` → daily_funnel_metrics + monday_items_activity (Activity cards)
+ *
+ * To refresh Activity + daily funnel from Monday, run:
+ *   npm run fetch:monday
+ *   (or: npx tsx --env-file=.env.local src/scripts/fetch-monday.ts)
  *
  * Stage 1: All items in Leads board.
  * Stage 2: (Deals in groups "topics" or "new_group_mkmgrv50") + (all Contracts).
  * Stage 3: (Deals from same 2 groups where status_mkmxymkn in Legal Negotiation / Waiting for sign / Negotiation Failed) + (all Contracts).
  * Stage 4: All items in Contracts board.
  *
- * Run: DOTENV_CONFIG_PATH=.env.local npx tsx src/scripts/analyze-funnel-new-logic.ts
+ * Run: npx tsx --env-file=.env.local src/scripts/analyze-funnel-new-logic.ts
  */
 import "dotenv/config";
 

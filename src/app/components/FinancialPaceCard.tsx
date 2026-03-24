@@ -192,7 +192,7 @@ function FinancialPaceCard({
   }, []);
 
   return (
-    <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-4 sm:p-6">
       <div className="mb-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="text-[25px] font-extrabold text-white">

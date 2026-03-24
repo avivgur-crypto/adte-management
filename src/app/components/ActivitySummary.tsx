@@ -111,18 +111,24 @@ export default function ActivitySummary({
           <p className="mb-3 text-xs text-white/50">
             New deals signed in selected period (Monday&apos;s &apos;Media Contracts&apos; board creation date)
           </p>
-          {hasSelection && companiesInPeriod.length > 0 && (
+          {hasSelection && metrics.newSignedDeals > 0 && (
             <div className="border-t border-white/10 pt-3">
               <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/40">
                 Companies that signed this period
               </p>
-              <ul className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-white/80">
-                {companiesInPeriod.map((name) => (
-                  <li key={name} className="rounded bg-white/5 px-2 py-0.5">
-                    {name}
-                  </li>
-                ))}
-              </ul>
+              {companiesInPeriod.length > 0 ? (
+                <ul className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-white/80">
+                  {companiesInPeriod.map((name) => (
+                    <li key={name} className="rounded bg-white/5 px-2 py-0.5">
+                      {name}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-white/45">
+                  Run Monday sync after updating env — company names come from the board or item title.
+                </p>
+              )}
             </div>
           )}
         </div>
