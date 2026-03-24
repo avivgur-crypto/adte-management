@@ -47,40 +47,38 @@ export default function ActivitySummary({
 }) {
   const { selectedMonths } = useFilter();
 
-  const { metrics, monthStarts, periodLabel, hasSelection, companiesInPeriod } =
+  const { metrics, monthStarts, periodLabel, hasSelection, signedContractsInPeriod } =
     useMemo(() => {
       const monthStarts =
         selectedMonths.size > 0 ? Array.from(selectedMonths).sort() : [];
       let newLeads = 0;
-      let newSignedDeals = 0;
       for (const row of activityData) {
         if (monthStarts.length === 0 || !dateInMonths(row.date, monthStarts))
           continue;
         newLeads += row.total_leads;
-        newSignedDeals += row.won_deals;
       }
+
+      /** One entry per contract row from monday_items_activity (getSignedDealsCompanies); counter and list use this array only. */
+      const signedContractsInPeriod =
+        monthStarts.length === 0
+          ? []
+          : signedDealsCompanies.filter((c) =>
+              dateInMonths(c.created_date, monthStarts),
+            );
+
       const periodLabel =
         monthStarts.length === 0
           ? "Select months in the filter to see data"
           : getPeriodLabel(monthStarts);
 
-      const companiesInPeriod =
-        monthStarts.length === 0
-          ? []
-          : Array.from(
-              new Set(
-                signedDealsCompanies
-                  .filter((c) => dateInMonths(c.created_date, monthStarts))
-                  .map((c) => c.company_name)
-              )
-            ).sort();
+      const newSignedDeals = signedContractsInPeriod.length;
 
       return {
         metrics: { newLeads, newSignedDeals },
         monthStarts,
         periodLabel,
         hasSelection: monthStarts.length > 0,
-        companiesInPeriod,
+        signedContractsInPeriod,
       };
     }, [activityData, selectedMonths, signedDealsCompanies]);
 
@@ -114,13 +112,16 @@ export default function ActivitySummary({
           {hasSelection && metrics.newSignedDeals > 0 && (
             <div className="border-t border-white/10 pt-3">
               <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/40">
-                Companies that signed this period
+                Signed contracts this period
               </p>
-              {companiesInPeriod.length > 0 ? (
+              {signedContractsInPeriod.length > 0 ? (
                 <ul className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-white/80">
-                  {companiesInPeriod.map((name) => (
-                    <li key={name} className="rounded bg-white/5 px-2 py-0.5">
-                      {name}
+                  {signedContractsInPeriod.map((entry, index) => (
+                    <li
+                      key={`${entry.created_date}-${index}`}
+                      className="rounded bg-white/5 px-2 py-0.5"
+                    >
+                      {entry.company_name}
                     </li>
                   ))}
                 </ul>
