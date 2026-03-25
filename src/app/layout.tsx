@@ -24,8 +24,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Adte Management",
-  description: "Adte management dashboard",
+  title: "Adtex - Adte's Management App",
+  description: "Adtex — Adte's management app",
   manifest: "/manifest.json",
   icons: {
     icon: [
@@ -39,7 +39,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Adte",
+    title: "Adtex",
   },
 };
 

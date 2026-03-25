@@ -35,7 +35,7 @@ export default function AdteLogo({
   return (
     <div
       className={`flex flex-col items-center gap-2 ${className}`}
-      aria-label="Adte"
+      aria-label="Adtex"
     >
       {!imgError ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -56,7 +56,7 @@ export default function AdteLogo({
               size === "sm" ? "1.25rem" : size === "md" ? "1.5rem" : "2.5rem",
           }}
         >
-          Adte
+          Adtex
         </span>
       )}
       {showWordmark && (
@@ -68,7 +68,7 @@ export default function AdteLogo({
                 size === "sm" ? "0.875rem" : size === "md" ? "1rem" : "1.5rem",
             }}
           >
-            Adte
+            Adtex
           </span>
           {showTagline && (
             <span className="text-[0.75rem] font-normal tracking-wide text-white/60">
@@ -87,12 +87,12 @@ export function AdteLogoHeader({
   return (
     <div
       className={`flex items-center gap-5 ${className}`}
-      aria-label="Adte"
+      aria-label="Adtex"
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src="/logo.svg"
-        alt="Adte"
+        alt="Adtex"
         width={200}
         height={200}
         className="h-[200px] w-[200px] object-contain"
@@ -100,7 +100,7 @@ export function AdteLogoHeader({
       />
       <div className="flex flex-col justify-center gap-0.5">
         <span className="text-2xl font-bold tracking-tight text-white leading-tight md:text-3xl">
-          Adte&apos;s Management App
+          Adtex
         </span>
       </div>
     </div>

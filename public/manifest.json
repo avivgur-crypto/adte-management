@@ -1,7 +1,7 @@
 {
-  "name": "Adte Management",
-  "short_name": "Adte",
-  "description": "Adte management dashboard",
+  "name": "Adtex - Adte's Management App",
+  "short_name": "Adtex",
+  "description": "Adtex — Adte's management app",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",
