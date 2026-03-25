@@ -1,108 +1,86 @@
 "use client";
 
-import { useState, useEffect } from "react";
+type LogoMarkSize = "sm" | "md" | "lg";
 
-const TAGLINE = "Stream Your Brand";
-
-type AdteLogoProps = {
-  size?: "sm" | "md" | "lg";
-  showWordmark?: boolean;
-  showTagline?: boolean;
-  className?: string;
+/**
+ * קופסה בגודל קבוע — התמונה (512×512 אינטרינסית) חייבת להיכנס בפנים בלבד.
+ * לא להשתמש ב-width/height גדולים על ה-img או ב-h-full/w-full בלי קופסה מוגדרת היטב.
+ */
+const MARK_BOX: Record<LogoMarkSize, string> = {
+  sm: "h-10 w-10 max-h-10 max-w-10",
+  /** כותרת: קופסה קבועה + תמונה max-* כדי שלא תתנפח */
+  md: "h-[120px] w-[120px] max-h-[120px] max-w-[120px]",
+  lg: "h-[80px] w-[80px] max-h-[80px] max-w-[80px]",
 };
 
-// Logo SVG viewBox is ~1093.5×996 → aspect ratio width/height ≈ 1.098
-const LOGO_ASPECT = 1093.5 / 996;
-const sizes = { sm: 32, md: 48, lg: 96 } as const;
+/** מימדים אינטרינסיים ל-img */
+const MARK_IMG_DIMS: Record<LogoMarkSize, { w: number; h: number }> = {
+  sm: { w: 64, h: 64 },
+  md: { w: 100, h: 120 },
+  lg: { w: 80, h: 80 },
+};
 
-export default function AdteLogo({
+const MARK_IMG_CLASS: Record<LogoMarkSize, string> = {
+  sm: "",
+  md: "h-[120px] w-[100px]",
+  lg: "h-[80px] w-[80px]",
+};
+
+/** סמל המותג — icon-512 על רקע כהה שקוף */
+export function LogoMark({
   size = "md",
-  showWordmark = true,
-  showTagline = false,
   className = "",
-}: AdteLogoProps) {
-  const [imgError, setImgError] = useState(false);
-  const [logoSrc, setLogoSrc] = useState("/logo.svg");
-  const h = sizes[size];
-  const w = Math.round(h * LOGO_ASPECT);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setLogoSrc(`${window.location.origin}/logo.svg`);
-    }
-  }, []);
-
+}: {
+  size?: LogoMarkSize;
+  className?: string;
+}) {
   return (
     <div
-      className={`flex flex-col items-center gap-2 ${className}`}
-      aria-label="Adtex"
+      className={`flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/[0.04] p-px ring-1 ring-white/[0.1] ${MARK_BOX[size]} ${className}`}
     >
-      {!imgError ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={logoSrc}
-          alt=""
-          width={w}
-          height={h}
-          className="h-auto w-auto max-h-[120px] object-contain object-center"
-          loading="eager"
-          onError={() => setImgError(true)}
-        />
-      ) : (
-        <span
-          className="font-bold tracking-tight text-white"
-          style={{
-            fontSize:
-              size === "sm" ? "1.25rem" : size === "md" ? "1.5rem" : "2.5rem",
-          }}
-        >
-          Adtex
-        </span>
-      )}
-      {showWordmark && (
-        <div className="flex flex-col items-center gap-0.5 text-center">
-          <span
-            className="font-bold tracking-tight text-white"
-            style={{
-              fontSize:
-                size === "sm" ? "0.875rem" : size === "md" ? "1rem" : "1.5rem",
-            }}
-          >
-            Adtex
-          </span>
-          {showTagline && (
-            <span className="text-[0.75rem] font-normal tracking-wide text-white/60">
-              {TAGLINE}
-            </span>
-          )}
-        </div>
-      )}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/icon-512.png"
+        alt=""
+        width={MARK_IMG_DIMS[size].w}
+        height={MARK_IMG_DIMS[size].h}
+        className={`max-h-full max-w-full rounded-[10px] object-contain ${MARK_IMG_CLASS[size]}`}
+        loading="eager"
+        decoding="async"
+      />
     </div>
   );
 }
 
-export function AdteLogoHeader({
-  className = "",
-}: { className?: string } = {}) {
+type AdteLogoProps = {
+  size?: LogoMarkSize;
+  className?: string;
+};
+
+export default function AdteLogo({ size = "md", className = "" }: AdteLogoProps) {
   return (
     <div
-      className={`flex items-center gap-5 ${className}`}
+      className={`flex min-h-0 w-full max-w-full flex-col items-center gap-2 overflow-hidden ${className}`}
       aria-label="Adtex"
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src="/logo.svg"
-        alt="Adtex"
-        width={200}
-        height={200}
-        className="h-[200px] w-[200px] object-contain"
-        loading="eager"
-      />
-      <div className="flex flex-col justify-center gap-0.5">
-        <span className="text-2xl font-bold tracking-tight text-white leading-tight md:text-3xl">
-          Adtex
-        </span>
-      </div>
+      <LogoMark size={size} />
+    </div>
+  );
+}
+
+/** כותרת דשבורד: לוגו + שם + כיתוב */
+export function AdteLogoHeader({ className = "" }: { className?: string }) {
+  return (
+    <div
+      className={`relative flex min-h-[88px] min-w-0 items-center gap-4 md:min-h-[96px] md:gap-5 ${className}`}
+    >
+      <LogoMark size="md" className="shrink-0" />
+      <h1 className="absolute left-[130px] top-[20px] m-0 text-xl font-semibold leading-tight tracking-tight text-white md:text-2xl">
+        Adtex
+      </h1>
+      <p className="absolute left-[130px] top-[65px] m-0 flex w-[130px] flex-wrap text-[13px] font-medium leading-[18px] text-zinc-500">
+        Management App
+      </p>
     </div>
   );
 }

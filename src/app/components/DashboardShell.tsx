@@ -51,8 +51,8 @@ export default function DashboardShell({
         className="sticky top-0 z-30 border-b border-white/5 bg-black/95 backdrop-blur-sm transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] md:translate-y-0"
         style={{ transform: headerVisible ? "translateY(0)" : "translateY(-100%)" }}
       >
-        <div className="mx-auto flex h-[150px] max-w-5xl items-center px-4 py-3 md:py-4">
-          <AdteLogoHeader />
+        <div className="mx-auto flex min-h-[88px] max-w-5xl items-center px-4 py-3 pr-14 md:min-h-[96px] md:py-3.5 md:pr-4">
+          <AdteLogoHeader className="flex-1" />
         </div>
       </header>
       <main

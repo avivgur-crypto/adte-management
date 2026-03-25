@@ -193,8 +193,8 @@ function DesktopSidebar() {
 
   return (
     <aside
-      className="fixed right-0 top-[150px] z-30 hidden flex-shrink-0 flex-col border-l border-white/10 bg-white/[0.06] shadow-2xl backdrop-blur-xl lg:flex"
-      style={{ width: SIDEBAR_WIDTH, height: "calc(100vh - 150px)" }}
+      className="fixed right-0 top-[112px] z-30 hidden flex-shrink-0 flex-col border-l border-white/10 bg-white/[0.06] shadow-2xl backdrop-blur-xl lg:flex"
+      style={{ width: SIDEBAR_WIDTH, height: "calc(100vh - 112px)" }}
     >
       <div className="flex-1 overflow-y-auto p-3">
         <ScreenNav />
@@ -368,11 +368,10 @@ function MobileMenuPanel() {
 
   return (
     <>
-      {/* Hamburger at top-right: toggle only (no X), always visible on mobile */}
       <button
         type="button"
         onClick={toggle}
-        className="fixed top-4 right-4 z-50 flex lg:hidden h-11 w-11 items-center justify-center rounded-xl bg-white/10 text-zinc-200 shadow-lg backdrop-blur-xl hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-colors"
+        className="fixed top-4 right-4 z-50 flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 text-zinc-200 shadow-lg backdrop-blur-xl transition-colors hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 lg:hidden"
         aria-label={open ? "Close menu" : "Open menu"}
         aria-expanded={open}
       >
