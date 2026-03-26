@@ -53,7 +53,7 @@ function CustomTooltip({
             ? "Revenue"
             : entry.dataKey === "cost"
               ? "Cost"
-              : "Net profit";
+              : "Gross profit";
         return (
           <p key={entry.dataKey} className="text-xs" style={{ color: entry.color }}>
             {label}: <span className="font-semibold">{formatCurrency(entry.value)}</span>
@@ -67,7 +67,7 @@ function CustomTooltip({
 const SERIES = [
   { key: "revenue", label: "Revenue", color: "#2dd4bf" },
   { key: "cost", label: "Cost", color: "#f472b6" },
-  { key: "profit", label: "Net profit", color: "#a78bfa" },
+  { key: "profit", label: "Gross profit", color: "#a78bfa" },
 ] as const;
 
 type SeriesKey = (typeof SERIES)[number]["key"];

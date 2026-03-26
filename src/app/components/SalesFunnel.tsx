@@ -6,15 +6,15 @@ import type { SalesFunnelMetrics } from "@/app/actions/sales";
 const STAGES = [
   {
     key: "totalLeads" as const,
-    label: "Total Leads",
-    description: "All active leads from the Leads board",
+    label: "Total Prospects",
+    description: "All active prospects from the Leads board",
     light: "#B3E8FF",
     mid: "#38BDF8",
     dark: "#0C4A6E",
   },
   {
     key: "qualifiedLeads" as const,
-    label: "Qualified",
+    label: "Qualified Leads",
     description: "Active & Lost deals + Signed contracts",
     light: "#99F6E4",
     mid: "#2DD4BF",

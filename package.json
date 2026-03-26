@@ -16,7 +16,8 @@
     "backfill:pairs": "tsx --env-file=.env.local src/scripts/backfill-pairs.ts",
     "backfill:xdash-month": "tsx --env-file=.env.local scripts/backfill-xdash-month.ts",
     "backfill:xdash-ytd": "tsx --env-file=.env.local scripts/backfill-xdash-year-to-date.ts",
-    "xdash:refresh-token": "tsx --env-file=.env.local src/lib/xdash-auth.ts"
+    "xdash:refresh-token": "tsx --env-file=.env.local src/lib/xdash-auth.ts",
+    "diagnostic:xdash-home-cost": "tsx --env-file=.env.local src/scripts/diagnostic-xdash-home-cost.ts"
   },
   "dependencies": {
     "@nivo/core": "^0.99.0",

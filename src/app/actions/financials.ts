@@ -1,16 +1,26 @@
 "use server";
 
 import { cache } from "react";
-import { revalidateTag, unstable_cache } from "next/cache";
+import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
+import { getIsraelDateDaysAgo } from "@/lib/israel-date";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
-import { fetchHomeForDate } from "@/lib/xdash-client";
+import {
+  fetchAdServerOverview,
+  fetchHomeForDate,
+  type XDashTotals,
+} from "@/lib/xdash-client";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 
-/** 5-min TTL — data only changes on cron sync (every 30 min). */
-const CACHE_TTL = 300;
+/**
+ * Short TTL: page is force-dynamic so every navigation re-renders, but
+ * unstable_cache still deduplicates within a burst of concurrent requests.
+ * refreshTodayHome / cron sync invalidate the tag immediately after writes,
+ * so 60s is only a safety-net, not the primary freshness mechanism.
+ */
+const CACHE_TTL = 60;
 const FINANCIAL_TAG = "financial-data";
 
 export type PacingTrend = "up" | "down" | "stable";
@@ -165,13 +175,16 @@ export async function getFinancialPace(
   )();
 }
 
+export type DualPaceByMonth = {
+  xdash: Record<string, FinancialPaceWithTrend>;
+  billing: Record<string, FinancialPaceWithTrend>;
+};
+
 /**
- * Bulk-fetch pacing for ALL months at once (single DB round-trip for goals).
- * Returns Record<monthKey, FinancialPaceWithTrend>.
+ * Bulk-fetch pacing for ALL months: XDASH-aligned actuals vs Billing-sheet actuals,
+ * both against the same monthly_goals targets.
  */
-async function _getAllPaceByMonth(
-  monthKeys: string[],
-): Promise<Record<string, FinancialPaceWithTrend>> {
+async function _getDualPaceByMonth(monthKeys: string[]): Promise<DualPaceByMonth> {
   const xdashTotals = await getMonthlyXDASHTotals();
   const allGoals = await getAllMonthlyGoals();
 
@@ -181,7 +194,8 @@ async function _getAllPaceByMonth(
   }
 
   const now = new Date();
-  const result: Record<string, FinancialPaceWithTrend> = {};
+  const resultXdash: Record<string, FinancialPaceWithTrend> = {};
+  const resultBilling: Record<string, FinancialPaceWithTrend> = {};
 
   for (const monthStart of monthKeys) {
     const [yy, mm] = monthStart.split("-").map(Number);
@@ -235,71 +249,92 @@ async function _getAllPaceByMonth(
     const goals = goalsMap.get(monthStart);
     const xdash = xdashTotals[monthStart];
     const billingMedia = Number(goals?.media_revenue ?? 0);
-    const mediaRevenue = (xdash?.mediaRevenue ?? 0) > 0 ? xdash!.mediaRevenue : billingMedia;
     const revenueGoal = Number(goals?.revenue_goal ?? 0);
     const saasGoal = Number(goals?.saas_goal ?? 0);
     const saasActual = Number(goals?.saas_actual ?? 0);
-
-    const media = buildSec(mediaRevenue, revenueGoal);
-    const saas = buildSec(saasActual, saasGoal);
-    const total = buildSec(mediaRevenue + saasActual, revenueGoal + saasGoal);
-
-    /** Sum of daily `profit` from daily_home_totals (field-based net profit from XDASH). */
-    const profitActual =
-      xdash != null ? xdash.mediaProfit : mediaRevenue - Number(goals?.media_cost ?? 0);
+    const mediaCost = Number(goals?.media_cost ?? 0);
+    const techCost = Number(goals?.tech_cost ?? 0);
+    const bsCost = Number(goals?.bs_cost ?? 0);
     const profitGoal = Number(goals?.profit_goal ?? 0);
-    const profit = buildSec(profitActual, profitGoal);
+
+    const mediaRevenueXdash =
+      (xdash?.mediaRevenue ?? 0) > 0 ? xdash!.mediaRevenue : billingMedia;
+    const profitActualXdash =
+      xdash != null ? xdash.mediaProfit : mediaRevenueXdash - mediaCost;
+
+    const mediaX = buildSec(mediaRevenueXdash, revenueGoal);
+    const saas = buildSec(saasActual, saasGoal);
+    const totalX = buildSec(mediaRevenueXdash + saasActual, revenueGoal + saasGoal);
+    const profitX = buildSec(profitActualXdash, profitGoal);
+
+    const profitActualBilling =
+      billingMedia + saasActual - mediaCost - techCost - bsCost;
+    const mediaB = buildSec(billingMedia, revenueGoal);
+    const totalB = buildSec(billingMedia + saasActual, revenueGoal + saasGoal);
+    const profitB = buildSec(profitActualBilling, profitGoal);
 
     const priorKey = priorMonthKey(monthStart);
-    const priorGoals = goalsMap.get(priorKey);
-    const priorXdash = xdashTotals[priorKey];
-    const priorMedia = (priorXdash?.mediaRevenue ?? 0) > 0 ? priorXdash!.mediaRevenue : Number(priorGoals?.media_revenue ?? 0);
-    const priorRevGoal = Number(priorGoals?.revenue_goal ?? 0);
-    const priorSaasGoal = Number(priorGoals?.saas_goal ?? 0);
-    const priorSaasActual = Number(priorGoals?.saas_actual ?? 0);
-    const pDIM = new Date(yy!, (mm ?? 1) - 1, 0).getDate() || 30;
-    const priorMedia2 = { pacePercent: pDIM > 0 && priorRevGoal > 0 ? Math.round((priorMedia / (priorRevGoal * 1)) * 100) : null };
-    const priorSaas2 = { pacePercent: pDIM > 0 && priorSaasGoal > 0 ? Math.round((priorSaasActual / (priorSaasGoal * 1)) * 100) : null };
-    const priorTotal2 = { pacePercent: pDIM > 0 && (priorRevGoal + priorSaasGoal) > 0 ? Math.round(((priorMedia + priorSaasActual) / ((priorRevGoal + priorSaasGoal) * 1)) * 100) : null };
+    const priorXd = resultXdash[priorKey];
+    const priorBl = resultBilling[priorKey];
 
-    const priorProfitActual =
-      priorXdash != null
-        ? priorXdash.mediaProfit
-        : priorMedia - Number(priorGoals?.media_cost ?? 0);
-    const priorProfitGoal = Number(priorGoals?.profit_goal ?? 0);
-    const priorProfit2 = { pacePercent: pDIM > 0 && priorProfitGoal > 0 ? Math.round((priorProfitActual / (priorProfitGoal * 1)) * 100) : null };
-
-    result[monthStart] = {
+    resultXdash[monthStart] = {
       month: monthKey,
       daysInMonth,
       effectiveDaysPassed,
       daysRemaining,
       paceTargetRatio,
       dataThroughDate,
-      total,
-      media,
+      total: totalX,
+      media: mediaX,
       saas,
-      profit,
+      profit: profitX,
       trend: {
-        total: comparePace(total.pacePercent, priorTotal2.pacePercent),
-        media: comparePace(media.pacePercent, priorMedia2.pacePercent),
-        saas: comparePace(saas.pacePercent, priorSaas2.pacePercent),
-        profit: comparePace(profit.pacePercent, priorProfit2.pacePercent),
+        total: priorXd ? comparePace(totalX.pacePercent, priorXd.total.pacePercent) : "stable",
+        media: priorXd ? comparePace(mediaX.pacePercent, priorXd.media.pacePercent) : "stable",
+        saas: priorXd ? comparePace(saas.pacePercent, priorXd.saas.pacePercent) : "stable",
+        profit: priorXd ? comparePace(profitX.pacePercent, priorXd.profit.pacePercent) : "stable",
+      },
+    };
+
+    resultBilling[monthStart] = {
+      month: monthKey,
+      daysInMonth,
+      effectiveDaysPassed,
+      daysRemaining,
+      paceTargetRatio,
+      dataThroughDate,
+      total: totalB,
+      media: mediaB,
+      saas,
+      profit: profitB,
+      trend: {
+        total: priorBl ? comparePace(totalB.pacePercent, priorBl.total.pacePercent) : "stable",
+        media: priorBl ? comparePace(mediaB.pacePercent, priorBl.media.pacePercent) : "stable",
+        saas: priorBl ? comparePace(saas.pacePercent, priorBl.saas.pacePercent) : "stable",
+        profit: priorBl ? comparePace(profitB.pacePercent, priorBl.profit.pacePercent) : "stable",
       },
     };
   }
 
-  return result;
+  return { xdash: resultXdash, billing: resultBilling };
 }
 
+export async function getDualPaceByMonth(
+  monthKeys: string[],
+): Promise<DualPaceByMonth> {
+  return unstable_cache(
+    () => _getDualPaceByMonth(monthKeys),
+    ["dual-pace-by-month"],
+    { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] },
+  )();
+}
+
+/** @deprecated Prefer getDualPaceByMonth when you need both sources; returns XDASH-aligned pacing only. */
 export async function getAllPaceByMonth(
   monthKeys: string[],
 ): Promise<Record<string, FinancialPaceWithTrend>> {
-  return unstable_cache(
-    () => _getAllPaceByMonth(monthKeys),
-    ["all-pace-by-month"],
-    { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] },
-  )();
+  const dual = await getDualPaceByMonth(monthKeys);
+  return dual.xdash;
 }
 
 function getCurrentMonthKey(): string {
@@ -621,6 +656,103 @@ export const getLastDataUpdate = cache(
   unstable_cache(_getLastDataUpdate, ["last-data-update"], { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] }),
 );
 
+/** Single row for "today" in Asia/Jerusalem — direct DB read (no unstable_cache). */
+export type TodayHomeRow = {
+  date: string;
+  revenue: number;
+  cost: number;
+  profit: number;
+  impressions: number;
+};
+
+function mapDailyHomeRow(data: {
+  date: unknown;
+  revenue: unknown;
+  cost: unknown;
+  profit: unknown;
+  impressions: unknown;
+}): TodayHomeRow {
+  return {
+    date: String(data.date),
+    revenue: Number(data.revenue ?? 0),
+    cost: Number(data.cost ?? 0),
+    profit: Number(data.profit ?? 0),
+    impressions: Number(data.impressions ?? 0),
+  };
+}
+
+async function getHomeRowForDate(isoDate: string): Promise<TodayHomeRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("date, revenue, cost, profit, impressions")
+    .eq("date", isoDate)
+    .maybeSingle();
+  if (error) {
+    console.error("[getHomeRowForDate]", isoDate, error.message);
+    return null;
+  }
+  if (!data) return null;
+  return mapDailyHomeRow(data);
+}
+
+/**
+ * Today’s row in `daily_home_totals` (Israel calendar date). Returns null if missing.
+ * Stays fresh with force-dynamic + AutoSync / refreshTodayHome.
+ */
+export async function getTodayHomeTotals(): Promise<TodayHomeRow | null> {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  return getHomeRowForDate(today);
+}
+
+/** Pulse comparison: today + past rows keyed by day offset (e.g. 1 = yesterday, 7, 28). */
+export type ComparisonData = {
+  today: TodayHomeRow | null;
+  past: Record<number, TodayHomeRow | null>;
+};
+
+/**
+ * Fetches `daily_home_totals` for today (IL) and for each offset in calendar days ago.
+ * Costs include service cost as stored (same as refreshTodayHome / fetchHomeForDate).
+ */
+export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
+  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  const pastKeys = offsets.map((o) => getIsraelDateDaysAgo(o));
+  const uniqueDates = Array.from(new Set([todayKey, ...pastKeys]));
+
+  const { data: rows, error } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("date, revenue, cost, profit, impressions")
+    .in("date", uniqueDates);
+
+  if (error) {
+    console.error("[getComparisonData]", error.message);
+    return {
+      today: null,
+      past: Object.fromEntries(offsets.map((o) => [o, null])) as Record<
+        number,
+        TodayHomeRow | null
+      >,
+    };
+  }
+
+  const byDate = new Map<string, TodayHomeRow>();
+  for (const r of rows ?? []) {
+    const key = String(r.date ?? "").slice(0, 10);
+    byDate.set(key, mapDailyHomeRow(r));
+  }
+
+  const past: Record<number, TodayHomeRow | null> = {};
+  for (const o of offsets) {
+    const k = getIsraelDateDaysAgo(o);
+    past[o] = byDate.get(k) ?? null;
+  }
+
+  return {
+    today: byDate.get(todayKey) ?? null,
+    past,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Live refresh: fetch today's Home total from XDASH and upsert into Supabase.
 // Called once on page load so the dashboard shows real-time "today" numbers
@@ -648,12 +780,12 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
     }
 
     const { revenue, cost, profit, impressions } = await fetchHomeForDate(today);
-    if (revenue === 0 && cost === 0 && impressions === 0) return { updated: false };
 
+    const syncedAt = new Date().toISOString();
     const { error } = await supabaseAdmin
       .from("daily_home_totals")
       .upsert(
-        { date: today, revenue, cost, profit, impressions, created_at: new Date().toISOString() },
+        { date: today, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
       );
     if (error) {
@@ -663,9 +795,102 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
 
     console.log(`[refreshTodayHome] Updated today (${today}): $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`);
     revalidateTag(FINANCIAL_TAG, { expire: 0 });
+    revalidatePath("/");
     return { updated: true };
   } catch (e) {
     console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
     return { updated: false };
+  }
+}
+
+/** Calendar yesterday in Asia/Jerusalem as YYYY-MM-DD */
+function getYesterdayIsraelDate(): string {
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  const [y, m, d] = todayStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+export type DiagnosticXdashHomeCostResult =
+  | {
+      ok: true;
+      date: string;
+      note: string;
+      rawApiTotals: {
+        cost: number;
+        netCost: number;
+        revenue: number;
+        netRevenue: number;
+        serviceCost: number;
+        impressions: number;
+      };
+      /** Same as fetchHomeForDate: (cost||netCost) + serviceCost */
+      mappedCostAsUpserted: number;
+      /** Legacy: netCost + serviceCost */
+      sumNetCostPlusServiceCost: number;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Diagnostics only: fetch Home `/home/overview/adServers` for one date and compare
+ * raw cost fields to what we store. Does not write to the DB.
+ *
+ * - Default `date` = yesterday (Israel calendar).
+ * - In production, pass `secret` equal to `CRON_SECRET`.
+ */
+export async function diagnosticXdashHomeCostFields(
+  options: { date?: string; secret?: string } = {},
+): Promise<DiagnosticXdashHomeCostResult> {
+  const inProd = process.env.NODE_ENV === "production";
+  if (inProd && options.secret !== process.env.CRON_SECRET) {
+    return { ok: false, error: "In production, pass secret matching CRON_SECRET." };
+  }
+
+  const date = options.date?.trim() || getYesterdayIsraelDate();
+
+  try {
+    const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
+    const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
+    const selectedDates = sd?.selectedDates as Record<string, unknown> | undefined;
+    const totals = selectedDates?.totals as XDashTotals | undefined;
+
+    const grossCost = Number(totals?.cost ?? 0);
+    const netCost = Number(totals?.netCost ?? 0);
+    const grossRevenue = Number(totals?.revenue ?? 0);
+    const netRevenue = Number(totals?.netRevenue ?? 0);
+    const serviceCost = Number(totals?.serviceCost ?? 0);
+    const impressions = Number(totals?.impressions ?? 0);
+
+    const baseCost = grossCost || netCost;
+    const mappedCostAsUpserted = baseCost + serviceCost;
+    const sumNetCostPlusServiceCost = netCost + serviceCost;
+
+    const payload = {
+      ok: true as const,
+      date,
+      note:
+        "mappedCostAsUpserted = (cost||netCost) + serviceCost (fetchHomeForDate). Compare to XDASH main Cost box.",
+      rawApiTotals: {
+        cost: grossCost,
+        netCost,
+        revenue: grossRevenue,
+        netRevenue,
+        serviceCost,
+        impressions,
+      },
+      mappedCostAsUpserted,
+      sumNetCostPlusServiceCost,
+    };
+
+    console.log("[diagnosticXdashHomeCostFields]", JSON.stringify(payload, null, 2));
+    return payload;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[diagnosticXdashHomeCostFields]", msg);
+    return { ok: false, error: msg };
   }
 }

@@ -89,7 +89,7 @@ export default function DependencyMappingTable({
         {riskSet.size > 0 && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-300">
             <RiskAlertIcon className="h-4 w-4" />
-            Risk: demand partner &gt;60% from single supply
+            Risk: demand tag &gt;60% from single supply
           </span>
         )}
       </div>
@@ -100,10 +100,10 @@ export default function DependencyMappingTable({
           <thead>
             <tr className="border-b border-white/10">
               <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-white/60">
-                Demand Partner
+                Demand Tag
               </th>
               <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-white/60">
-                Supply Partner
+                Supply Tag
               </th>
               <th className="pb-3 pr-4 text-right font-semibold uppercase tracking-wider text-white/60">
                 Revenue
@@ -243,10 +243,10 @@ function MobileCardList({
               <div className="border-t border-white/[0.06] px-3 pb-3 pt-2 text-xs">
                 <div className="mb-2 space-y-0.5">
                   <div className="text-white/90 break-words leading-relaxed">
-                    <span className="text-white/40">Demand: </span>{row.demandPartner}
+                    <span className="text-white/40">Demand tag: </span>{row.demandPartner}
                   </div>
                   <div className="text-white/70 break-words leading-relaxed">
-                    <span className="text-white/40">Supply: </span>{row.supplyPartner}
+                    <span className="text-white/40">Supply tag: </span>{row.supplyPartner}
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-y-1.5 gap-x-2">

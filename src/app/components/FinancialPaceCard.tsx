@@ -1,8 +1,12 @@
 "use client";
 
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useState, type ReactNode } from "react";
 import type { PacingSection } from "@/lib/pacing";
 import type { FinancialPaceWithTrend } from "@/app/actions/financials";
+import {
+  DataSourceToggle,
+  type FinancialDataSource,
+} from "@/app/components/DataSourceToggle";
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -36,7 +40,7 @@ function SectionBlock({
   isMultiMonth,
   showGoalVarianceLine,
 }: {
-  title: string;
+  title: ReactNode;
   section: PacingSection & { projected?: number | null; projectedVsGoalPercent?: number | null };
   isMultiMonth?: boolean;
   /** Only for current calendar month (projected pacing); hide for closed months. */
@@ -168,20 +172,24 @@ const PACE_METRIC_DEFAULTS: Record<PaceMetricKey, boolean> = {
   profit: true,
 };
 
-const PACE_METRIC_OPTIONS: { key: PaceMetricKey; label: string }[] = [
+const PACE_METRIC_OPTIONS: { key: PaceMetricKey; label: string; shortLabel?: string }[] = [
   { key: "total", label: "Total Revenue" },
   { key: "media", label: "Media Revenue" },
   { key: "saas", label: "SaaS Revenue" },
-  { key: "profit", label: "Net Profit" },
+  { key: "profit", label: "Gross Profit", shortLabel: "G. Profit" },
 ];
 
 function FinancialPaceCard({
   summary,
   showGoalVarianceLine = false,
+  dataSource = "xdash",
+  onDataSourceChange,
 }: {
   summary: FinancialPaceWithTrend;
   /** Goal variance row only when viewing the live calendar month (single-month). */
   showGoalVarianceLine?: boolean;
+  dataSource?: FinancialDataSource;
+  onDataSourceChange?: (v: FinancialDataSource) => void;
 }) {
   const [visible, setVisible] = useState<Record<PaceMetricKey, boolean>>(() => ({
     ...PACE_METRIC_DEFAULTS,
@@ -194,13 +202,13 @@ function FinancialPaceCard({
   return (
     <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-4 sm:p-6">
       <div className="mb-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-[25px] font-extrabold text-white">
             Pacing <span className="highlight-brand">achievement</span>
           </h2>
-          <p className="text-xs text-white/50">
-            Effective days: {summary.effectiveDaysPassed} of {summary.daysInMonth} (N-1)
-          </p>
+          {onDataSourceChange && (
+            <DataSourceToggle value={dataSource} onChange={onDataSourceChange} />
+          )}
         </div>
         <p className="mt-1 text-sm text-white/50">
           Actual vs. MTD calculated target
@@ -215,7 +223,7 @@ function FinancialPaceCard({
       <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-white/[0.06] pb-4">
         <span className="text-xs font-semibold uppercase tracking-wide text-white/40">Show metrics</span>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-          {PACE_METRIC_OPTIONS.map(({ key, label }) => (
+          {PACE_METRIC_OPTIONS.map(({ key, label, shortLabel }) => (
             <label
               key={key}
               className="inline-flex cursor-pointer select-none items-center gap-2 text-sm text-white/85"
@@ -226,7 +234,10 @@ function FinancialPaceCard({
                 onChange={() => toggleMetric(key)}
                 className="h-4 w-4 shrink-0 rounded border-white/25 bg-black/50 text-violet-400 accent-violet-500 focus:ring-2 focus:ring-violet-500/40"
               />
-              <span>{label}</span>
+              <span>
+                <span className="sm:hidden">{shortLabel ?? label}</span>
+                <span className="hidden sm:inline">{label}</span>
+              </span>
             </label>
           ))}
         </div>
@@ -259,7 +270,12 @@ function FinancialPaceCard({
         )}
         {visible.profit && (
           <SectionBlock
-            title="Net Profit"
+            title={
+              <>
+                <span className="sm:hidden">G. Profit</span>
+                <span className="hidden sm:inline">Gross Profit</span>
+              </>
+            }
             section={summary.profit}
             isMultiMonth={summary.isMultiMonth}
             showGoalVarianceLine={showGoalVarianceLine}
@@ -267,7 +283,9 @@ function FinancialPaceCard({
         )}
       </div>
       <p className="mt-4 text-[15px] text-white/50">
-        Live data from xdash, updated automatically.
+        {dataSource === "xdash"
+          ? "Actuals from XDASH vs. the same monthly goals (N-1)."
+          : "Actuals from Master Billing vs. the same monthly goals (N-1)."}
       </p>
     </div>
   );

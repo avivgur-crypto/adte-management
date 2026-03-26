@@ -275,8 +275,8 @@ function resolveMetric(row: ReportRowLike, key: "revenue" | "cost" | "impression
 }
 
 /**
- * Resolve profit for a report row — same priority as resolveProfit:
- *   1. netRevenue - netCost from the row (matches XDASH "Net Profit")
+ * Resolve profit for a report row:
+ *   1. netRevenue - netCost from the row
  *   2. Explicit netprofit / net_profit field
  *   3. revenue - cost (gross fallback)
  */
@@ -681,10 +681,8 @@ export async function fetchAdServerOverview(
  * Fetch Home API totals for a single date. Returns {revenue, cost, profit, impressions}.
  * Uses /home/overview/adServers only — the same source as the XDASH Home dashboard.
  *
- * Net Profit priority:
- *   1. netRevenue - netCost  (matches XDASH UI "Net Profit")
- *   2. Explicit netprofit / net_profit field (if XDASH ever adds one)
- *   3. revenue - cost  (gross fallback, last resort)
+ * Cost: (gross cost || net cost) + serviceCost — matches XDASH total cost incl. serving.
+ * Profit: revenue − total cost (same bottom-line identity as Net Profit when revenue/cost align).
  */
 export async function fetchHomeForDate(
   date: string
@@ -695,33 +693,31 @@ export async function fetchHomeForDate(
   const totals = selectedDates?.totals as XDashTotals | undefined;
 
   const grossRevenue = Number(totals?.revenue ?? 0);
-  const grossCost    = Number(totals?.cost ?? 0);
-  const netRevenue   = Number(totals?.netRevenue ?? 0);
-  const netCost      = Number(totals?.netCost ?? 0);
-  const impressions  = Number(totals?.impressions ?? 0);
+  const grossCost = Number(totals?.cost ?? 0);
+  const netRevenue = Number(totals?.netRevenue ?? 0);
+  const netCost = Number(totals?.netCost ?? 0);
+  const serviceCost = Number(totals?.serviceCost ?? 0);
+  const impressions = Number(totals?.impressions ?? 0);
 
-  // Revenue/cost stored in DB are the gross values (for display consistency)
   const revenue = grossRevenue || netRevenue;
-  const cost    = grossCost || netCost;
-
-  const { value: profit, source: profitSource } = resolveProfit(
-    totals, netRevenue, netCost, revenue, cost,
-  );
+  const baseCost = grossCost || netCost;
+  const totalActualCost = baseCost + serviceCost;
+  const cost = totalActualCost;
+  const profit = revenue - totalActualCost;
 
   const todayIL = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
   const isToday = date === todayIL;
   console.log(
     `[xdash-client] Home ${date}${isToday ? " (live)" : ""}: ` +
-    `grossRev=$${grossRevenue.toFixed(2)} grossCost=$${grossCost.toFixed(2)} ` +
-    `netRev=$${netRevenue.toFixed(2)} netCost=$${netCost.toFixed(2)} ` +
-    `profit=$${profit.toFixed(2)} (from: ${profitSource}) imp=${impressions}`,
+    `rev=$${revenue.toFixed(2)} baseCost=$${baseCost.toFixed(2)} svc=$${serviceCost.toFixed(2)} ` +
+    `totalCost=$${totalActualCost.toFixed(2)} profit=$${profit.toFixed(2)} imp=${impressions}`,
   );
 
   return { revenue, cost, profit, impressions };
 }
 
 /**
- * Parse a numeric field if present. `0` is valid (real net profit).
+ * Parse a numeric field if present. `0` is valid (real profit).
  * Returns null only when missing (undefined/null) or unparseable (NaN).
  */
 function presentNumber(v: unknown): number | null {
@@ -735,43 +731,6 @@ const NET_PROFIT_KEYS = [
   "netprofit", "netProfit", "net_profit",
   "netProfitTotal", "net_profit_total",
 ] as const;
-
-interface ResolvedProfit {
-  value: number;
-  source: string;
-}
-
-/**
- * Profit resolution — matches the XDASH UI definition of "Net Profit".
- *
- *   1. netRevenue - netCost   (primary — this is how XDASH calculates Net Profit)
- *   2. Explicit netprofit / net_profit field  (backup if XDASH ever exposes one)
- *   3. revenue - cost         (gross fallback, last resort)
- */
-function resolveProfit(
-  totals: XDashTotals | null | undefined,
-  netRevenue: number,
-  netCost: number,
-  grossRevenue: number,
-  grossCost: number,
-): ResolvedProfit {
-  // Primary: netRevenue - netCost (both must be present / non-zero together is fine; 0 is valid)
-  if (totals && (netRevenue !== 0 || netCost !== 0)) {
-    return { value: netRevenue - netCost, source: "netRevenue-netCost" };
-  }
-
-  // Backup: check for an explicit net profit field on the totals object
-  if (totals) {
-    const t = totals as unknown as Record<string, unknown>;
-    for (const key of NET_PROFIT_KEYS) {
-      const v = presentNumber(t[key]);
-      if (v !== null) return { value: v, source: key };
-    }
-  }
-
-  // Last resort: gross revenue - gross cost
-  return { value: grossRevenue - grossCost, source: "calculated(grossRevenue-grossCost)" };
-}
 
 const REVENUE_KEYS = ["revenue", "netRevenue", "totalRevenue", "revenueAmount"];
 

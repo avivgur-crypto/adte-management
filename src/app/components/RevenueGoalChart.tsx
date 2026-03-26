@@ -25,10 +25,10 @@ const BAR_COLOR = "#2dd4bf"; // teal-400
 const LINE_COLOR = "#a78bfa"; // violet-400
 
 const FILTER_OPTIONS: { value: RevenueChartFilter; label: string }[] = [
+  { value: "profit", label: "Gross Profit" },
   { value: "total", label: "Total Revenue" },
   { value: "media", label: "Media Revenue" },
   { value: "saas", label: "SaaS Revenue" },
-  { value: "profit", label: "Net Profit" },
 ];
 
 function formatCompact(value: number): string {
@@ -37,7 +37,7 @@ function formatCompact(value: number): string {
   return `$${value}`;
 }
 
-/** Y-axis ticks for net profit — full currency, compact enough for chart width. */
+/** Y-axis ticks for gross profit — full currency, compact enough for chart width. */
 function formatProfitAxis(value: number): string {
   const abs = Math.abs(value);
   if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
@@ -86,7 +86,7 @@ export default function RevenueGoalChart({
   paceByMonth: Record<string, FinancialPaceWithTrend>;
 }) {
   const { selectedMonths } = useFilter();
-  const [revenueFilter, setRevenueFilter] = useState<RevenueChartFilter>("total");
+  const [revenueFilter, setRevenueFilter] = useState<RevenueChartFilter>("profit");
 
   const chartData = useMemo(() => {
     const allKeys = Array.from({ length: 12 }, (_, i) =>

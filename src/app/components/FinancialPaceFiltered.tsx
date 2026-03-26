@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useFilter } from "@/app/context/FilterContext";
 import FinancialPaceCard from "./FinancialPaceCard";
 import type { FinancialPaceWithTrend } from "@/app/actions/financials";
+import type { FinancialDataSource } from "@/app/components/DataSourceToggle";
 
 const DASHBOARD_YEAR = 2026;
 
@@ -101,11 +102,16 @@ function PacingSkeleton() {
 }
 
 export default function FinancialPaceFiltered({
-  paceByMonth,
+  paceByMonthXdash,
+  paceByMonthBilling,
 }: {
-  paceByMonth: Record<string, FinancialPaceWithTrend>;
+  paceByMonthXdash: Record<string, FinancialPaceWithTrend>;
+  paceByMonthBilling: Record<string, FinancialPaceWithTrend>;
 }) {
   const { selectedMonths } = useFilter();
+  const [source, setSource] = useState<FinancialDataSource>("xdash");
+
+  const activeMap = source === "xdash" ? paceByMonthXdash : paceByMonthBilling;
 
   const summary = useMemo(() => {
     const monthStarts =
@@ -113,12 +119,12 @@ export default function FinancialPaceFiltered({
         ? Array.from(selectedMonths).sort()
         : [getCurrentMonthStart()];
     const singles = monthStarts
-      .map((m) => paceByMonth[m])
+      .map((m) => activeMap[m])
       .filter((s): s is FinancialPaceWithTrend => s != null);
     if (singles.length === 0) return null;
     if (singles.length === 1) return singles[0]!;
     return aggregateMultiMonth(singles);
-  }, [paceByMonth, selectedMonths]);
+  }, [activeMap, selectedMonths]);
 
   const showGoalVarianceLine = useMemo(() => {
     if (summary == null || summary.isMultiMonth) return false;
@@ -130,6 +136,11 @@ export default function FinancialPaceFiltered({
   }
 
   return (
-    <FinancialPaceCard summary={summary} showGoalVarianceLine={showGoalVarianceLine} />
+    <FinancialPaceCard
+      summary={summary}
+      showGoalVarianceLine={showGoalVarianceLine}
+      dataSource={source}
+      onDataSourceChange={setSource}
+    />
   );
 }

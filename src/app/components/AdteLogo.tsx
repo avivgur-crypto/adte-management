@@ -75,10 +75,10 @@ export function AdteLogoHeader({ className = "" }: { className?: string }) {
       className={`relative flex min-h-[88px] min-w-0 items-center gap-4 md:min-h-[96px] md:gap-5 ${className}`}
     >
       <LogoMark size="md" className="shrink-0" />
-      <h1 className="absolute left-[130px] top-[20px] m-0 text-xl font-semibold leading-tight tracking-tight text-white md:text-2xl">
+      <h1 className="absolute left-[130px] top-[40px] m-0 text-[30px] font-extrabold leading-tight tracking-tight text-white">
         Adtex
       </h1>
-      <p className="absolute left-[130px] top-[65px] m-0 flex w-[130px] flex-wrap text-[13px] font-medium leading-[18px] text-zinc-500">
+      <p className="absolute left-[130px] top-[70px] m-0 flex w-[130px] flex-wrap text-[13px] font-medium leading-[18px] text-zinc-500">
         Management App
       </p>
     </div>

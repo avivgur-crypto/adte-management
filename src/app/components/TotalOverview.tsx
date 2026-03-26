@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFilter } from "@/app/context/FilterContext";
 import type { MonthOverview, XDASHMonthTotals } from "@/app/actions/financials";
-
-type DataSource = "billing" | "xdash";
+import {
+  DataSourceToggle,
+  type FinancialDataSource,
+} from "@/app/components/DataSourceToggle";
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -75,12 +77,51 @@ function Collapsible({
   );
 }
 
+function ProfitMarginCard({
+  profit,
+  revenue,
+  source,
+}: {
+  profit: number;
+  revenue: number;
+  source: FinancialDataSource;
+}) {
+  const pct = revenue === 0 ? 0 : (profit / revenue) * 100;
+  const rounded = Math.round(pct * 10) / 10;
+  const display = `${rounded.toFixed(1)}%`;
+
+  return (
+    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
+        <span className="inline sm:hidden">Margin %</span>
+        <span className="hidden sm:inline">Profit Margin %</span>
+      </h2>
+      <div className="flex min-h-[65px] items-center">
+        <span
+          className={`text-[43px] font-semibold tabular-nums ${
+            rounded >= 0 ? "text-white" : "text-red-400"
+          }`}
+        >
+          {display}
+        </span>
+      </div>
+      <div className="text-sm text-white/50">
+        {revenue === 0
+          ? "—"
+          : source === "billing"
+            ? "Profit ÷ Revenue"
+            : "Gross Profit ÷ Revenue"}
+      </div>
+    </div>
+  );
+}
+
 function RevenueCard({
   data,
   source,
 }: {
   data: MonthOverview[];
-  source: DataSource;
+  source: FinancialDataSource;
 }) {
   const totalRevenue = useMemo(
     () => data.reduce((s, d) => s + d.mediaRevenue + d.saasRevenue, 0),
@@ -127,7 +168,7 @@ function CostCard({
   source,
 }: {
   data: MonthOverview[];
-  source: DataSource;
+  source: FinancialDataSource;
 }) {
   const totalCost = useMemo(
     () => data.reduce((s, d) => s + d.mediaCost + d.techCost + d.bsCost, 0),
@@ -182,13 +223,13 @@ function ProfitCard({
   source,
 }: {
   profit: number;
-  source: DataSource;
+  source: FinancialDataSource;
 }) {
-  const isBilling = source === "billing";
   return (
     <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
-        {isBilling ? "Profit" : "Net Profit"}
+        <span className="sm:hidden">G. Profit</span>
+        <span className="hidden sm:inline">Gross Profit</span>
       </h2>
       <div className="mb-4 flex min-h-[65px] items-center">
         <AnimatedCurrency
@@ -198,40 +239,9 @@ function ProfitCard({
           }`}
         />
       </div>
-      {isBilling && (
+      {source === "billing" && (
         <div className="text-sm text-white/50">Revenue − Cost</div>
       )}
-    </div>
-  );
-}
-
-function SourceToggle({
-  value,
-  onChange,
-}: {
-  value: DataSource;
-  onChange: (v: DataSource) => void;
-}) {
-  return (
-    <div className="relative inline-flex rounded-full border border-white/10 bg-black/40 p-[3px]">
-      {/* sliding indicator */}
-      <div
-        className="absolute inset-y-[3px] w-[calc(50%-3px)] rounded-full bg-white/15 transition-transform duration-300 ease-in-out"
-        style={{
-          transform: value === "billing" ? "translateX(3px)" : "translateX(calc(100% + 3px))",
-        }}
-      />
-      {(["billing", "xdash"] as const).map((src) => (
-        <button
-          key={src}
-          onClick={() => onChange(src)}
-          className={`relative z-10 rounded-full px-4 py-1 text-xs font-semibold transition-colors duration-200 ${
-            value === src ? "text-white" : "text-white/40 hover:text-white/60"
-          }`}
-        >
-          {src === "billing" ? "Billing" : "XDASH"}
-        </button>
-      ))}
     </div>
   );
 }
@@ -244,9 +254,9 @@ export default function TotalOverview({
   xdashByMonth?: Record<string, XDASHMonthTotals>;
 }) {
   const { selectedMonths } = useFilter();
-  const [source, setSource] = useState<DataSource>("xdash");
+  const [source, setSource] = useState<FinancialDataSource>("xdash");
 
-  const { filteredData, profitValue } = useMemo(() => {
+  const { filteredData, profitValue, revenueTotal } = useMemo(() => {
     const billing = dataByMonth.filter((d) => selectedMonths.has(d.month));
 
     // Billing profit: total revenue − total cost (all buckets)
@@ -262,8 +272,15 @@ export default function TotalOverview({
 
     const profit = source === "billing" ? billingProfit : xdashProfit;
 
+    const revenueFromRows = (rows: MonthOverview[]) =>
+      rows.reduce((s, d) => s + d.mediaRevenue + d.saasRevenue, 0);
+
     if (source === "billing" || !xdashByMonth) {
-      return { filteredData: billing, profitValue: profit };
+      return {
+        filteredData: billing,
+        profitValue: profit,
+        revenueTotal: revenueFromRows(billing),
+      };
     }
 
     const mapped = billing.map((d) => {
@@ -277,7 +294,11 @@ export default function TotalOverview({
         mediaCost: xdash.mediaCost,
       };
     });
-    return { filteredData: mapped, profitValue: profit };
+    return {
+      filteredData: mapped,
+      profitValue: profit,
+      revenueTotal: revenueFromRows(mapped),
+    };
   }, [dataByMonth, selectedMonths, source, xdashByMonth]);
 
   if (filteredData.length === 0) {
@@ -294,14 +315,19 @@ export default function TotalOverview({
     <section className="mb-8">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-[25px] font-extrabold text-white">
-          Revenue vs. <span className="highlight-brand">Cost</span>
+          Main <span className="highlight-brand">Stats</span>
         </h2>
-        <SourceToggle value={source} onChange={setSource} />
+        <DataSourceToggle value={source} onChange={setSource} />
       </div>
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
         <RevenueCard data={filteredData} source={source} />
         <CostCard data={filteredData} source={source} />
         <ProfitCard profit={profitValue} source={source} />
+        <ProfitMarginCard
+          profit={profitValue}
+          revenue={revenueTotal}
+          source={source}
+        />
       </div>
     </section>
   );

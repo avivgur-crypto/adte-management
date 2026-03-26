@@ -153,7 +153,7 @@ export default function PartnerFlowSankey({
   if (!mounted) {
     return (
       <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-        <h2 className="mb-1 text-[25px] font-extrabold text-white">Partner <span className="highlight-brand">Flow</span></h2>
+        <h2 className="mb-1 text-[25px] font-extrabold text-white">Tags <span className="highlight-brand">Flow</span></h2>
         <p className="mt-1 text-sm text-white/50">Demand → Supply revenue flow</p>
         <div className="mt-6 flex h-[500px] items-center justify-center rounded-xl border border-white/10 bg-white/[0.03]">
           <p className="text-sm text-white/40">Loading chart…</p>
@@ -166,7 +166,7 @@ export default function PartnerFlowSankey({
     return (
       <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
         <h2 className="mb-1 text-[25px] font-extrabold text-white">
-          Partner <span className="highlight-brand">Flow</span>
+          Tags <span className="highlight-brand">Flow</span>
         </h2>
         <p className="mt-1 text-sm text-white/50">
           Demand → Supply revenue flow
@@ -181,7 +181,7 @@ export default function PartnerFlowSankey({
   return (
     <div className="w-full max-w-5xl rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <div className="mb-4">
-        <h2 className="text-[25px] font-extrabold text-white">Partner <span className="highlight-brand">Flow</span></h2>
+        <h2 className="text-[25px] font-extrabold text-white">Tags <span className="highlight-brand">Flow</span></h2>
         <p className="mt-1 text-sm text-white/50">
           {isMobile
             ? "Tap a flow line for details"

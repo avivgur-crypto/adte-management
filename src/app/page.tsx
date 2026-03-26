@@ -6,57 +6,30 @@ import {
 } from "@/app/actions/activity";
 import { getAllDependencyPairs } from "@/app/actions/dependency-mapping";
 import type { PairEntry } from "@/lib/dependency-mapping-utils";
-import {
-  getAllDailyMovement,
-  getAllPaceByMonth,
-  getLastDataUpdate,
-  getMonthlyXDASHTotals,
-  getPartnerConcentration,
-  getTotalOverviewData,
-} from "@/app/actions/financials";
-import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
+import { getLastDataUpdate, getPartnerConcentration } from "@/app/actions/financials";
 import { getSalesFunnelFromCache } from "@/app/actions/sales-funnel-live";
 import ActivitySummary from "@/app/components/ActivitySummary";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import DashboardTabs from "@/app/components/DashboardTabs";
-import DailyMovementChart from "@/app/components/DailyMovementChart";
+import FinancialTab from "@/app/components/FinancialTab";
 import PartnersFiltered from "@/app/components/PartnersFiltered";
-import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
-import RevenueGoalChart from "@/app/components/RevenueGoalChart";
 import PartnerDistributionCharts from "@/app/components/PartnerDistributionCharts";
 import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
 import AutoSync from "@/app/components/AutoSync";
 import LastSyncLine from "@/app/components/LastSyncLine";
-import TotalOverview from "@/app/components/TotalOverview";
-import {
-  SkeletonCard,
-  SkeletonPacingGrid,
-  SkeletonDonutGrid,
-} from "@/app/components/SkeletonCard";
+import { SkeletonCard, SkeletonDonutGrid } from "@/app/components/SkeletonCard";
 
 /**
- * ISR (300s): aligns with financial unstable_cache TTL — fewer full RSC
- * regenerations on cold Vercel / cache expiry. AutoSync may refresh today after paint.
+ * force-dynamic: every navigation hits the server so the initial render always
+ * shows the latest DB values. The per-query `unstable_cache` (tagged
+ * "financial-data") still deduplicates within a single render and provides a
+ * short TTL safety net; `refreshTodayHome` invalidates the tag after writes.
  */
-export const revalidate = 300;
+export const dynamic = "force-dynamic";
 
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
-const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
-  `2026-${String(i + 1).padStart(2, "0")}-01`
-);
 
 /* ── Skeleton fallbacks per tab ── */
-
-function FinancialSkeleton() {
-  return (
-    <div className="stagger-children flex flex-col gap-8">
-      <SkeletonCard lines={3} />
-      <SkeletonPacingGrid />
-      <SkeletonCard lines={2} />
-      <SkeletonCard lines={4} />
-    </div>
-  );
-}
 
 function PartnersSkeleton() {
   return (
@@ -81,70 +54,6 @@ function SalesSkeleton() {
 async function LastSyncContent() {
   const lastDataUpdate = await getLastDataUpdate();
   return <LastSyncLine syncedAt={lastDataUpdate?.syncedAt ?? null} />;
-}
-
-/** Lightweight: only overview + xdash totals. Renders first so totals paint from cache immediately. */
-async function FinancialOverview() {
-  const [overviewResult, xdashTotalsResult] = await Promise.allSettled([
-    getTotalOverviewData(),
-    getMonthlyXDASHTotals(),
-  ]);
-  const overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
-  const xdashTotals: Record<string, XDASHMonthTotals> =
-    xdashTotalsResult.status === "fulfilled" ? xdashTotalsResult.value : {};
-  const overview = Array.isArray(overviewData) ? overviewData : [];
-  const hasError = overviewResult.status === "rejected";
-
-  return (
-    <div className="flex flex-col gap-8">
-      {hasError && (
-        <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
-          Some financial data could not be loaded.
-        </div>
-      )}
-      <DashboardErrorBoundary sectionName="Total overview">
-        {overview.length > 0 && (
-          <TotalOverview dataByMonth={overview} xdashByMonth={xdashTotals} />
-        )}
-      </DashboardErrorBoundary>
-    </div>
-  );
-}
-
-/** Charts and pacing — heavier; do not block initial paint. */
-async function FinancialCharts() {
-  const [paceResult, dailyResult] = await Promise.allSettled([
-    getAllPaceByMonth(PACING_MONTH_KEYS),
-    getAllDailyMovement(),
-  ]);
-  const paceByMonth: Record<string, FinancialPaceWithTrend> =
-    paceResult.status === "fulfilled" ? paceResult.value : {};
-  const dailyByMonth =
-    dailyResult.status === "fulfilled" ? dailyResult.value : {};
-  const hasError = paceResult.status === "rejected";
-
-  return (
-    <div className="stagger-children flex flex-col gap-8">
-      {hasError && (
-        <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
-          Some pacing data could not be loaded.
-        </div>
-      )}
-      <DashboardErrorBoundary sectionName="Financial pacing">
-        <FinancialPaceFiltered paceByMonth={paceByMonth} />
-      </DashboardErrorBoundary>
-      <DashboardErrorBoundary sectionName="Revenue vs Goal chart">
-        <RevenueGoalChart paceByMonth={paceByMonth} />
-      </DashboardErrorBoundary>
-      <DashboardErrorBoundary sectionName="Daily progress">
-        <DailyMovementChart
-          dailyByMonth={dailyByMonth}
-          monthKeys={PACING_MONTH_KEYS}
-          paceByMonth={paceByMonth}
-        />
-      </DashboardErrorBoundary>
-    </div>
-  );
 }
 
 async function PartnersTab() {
@@ -244,14 +153,7 @@ export default function Home() {
           <LastSyncContent />
         </Suspense>
         <DashboardTabs>
-          <div className="flex flex-col gap-8">
-            <Suspense fallback={<SkeletonCard lines={3} />}>
-              <FinancialOverview />
-            </Suspense>
-            <Suspense fallback={<FinancialSkeleton />}>
-              <FinancialCharts />
-            </Suspense>
-          </div>
+          <FinancialTab />
           <Suspense fallback={<PartnersSkeleton />}>
             <PartnersTab />
           </Suspense>
