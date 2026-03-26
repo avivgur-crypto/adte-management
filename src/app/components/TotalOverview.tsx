@@ -80,37 +80,28 @@ function Collapsible({
 function ProfitMarginCard({
   profit,
   revenue,
-  source,
 }: {
   profit: number;
   revenue: number;
-  source: FinancialDataSource;
 }) {
   const pct = revenue === 0 ? 0 : (profit / revenue) * 100;
   const rounded = Math.round(pct * 10) / 10;
   const display = `${rounded.toFixed(1)}%`;
 
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         <span className="inline sm:hidden">Margin %</span>
         <span className="hidden sm:inline">Profit Margin %</span>
       </h2>
-      <div className="flex min-h-[65px] items-center">
+      <div className="flex min-h-[65px] min-w-0 items-center">
         <span
-          className={`text-[43px] font-semibold tabular-nums ${
+          className={`max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none ${
             rounded >= 0 ? "text-white" : "text-red-400"
           }`}
         >
           {display}
         </span>
-      </div>
-      <div className="text-sm text-white/50">
-        {revenue === 0
-          ? "—"
-          : source === "billing"
-            ? "Profit ÷ Revenue"
-            : "Gross Profit ÷ Revenue"}
       </div>
     </div>
   );
@@ -137,14 +128,14 @@ function RevenueCard({
   );
 
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         Publisher Revenue
       </h2>
-      <div className="flex min-h-[65px] items-center">
+      <div className="flex min-h-[65px] min-w-0 items-center">
         <AnimatedCurrency
           value={totalRevenue}
-          className="w-[230px] text-[43px] font-semibold tabular-nums text-white"
+          className="block w-full min-w-0 max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none text-white"
         />
       </div>
       <Collapsible open={source === "billing"}>
@@ -188,14 +179,14 @@ function CostCard({
   );
 
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         Total Cost
       </h2>
-      <div className="flex min-h-[65px] items-center">
+      <div className="flex min-h-[65px] min-w-0 items-center">
         <AnimatedCurrency
           value={totalCost}
-          className="w-[230px] text-[43px] font-semibold tabular-nums text-white"
+          className="block w-full min-w-0 max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none text-white"
         />
       </div>
       <Collapsible open={source === "billing"}>
@@ -226,15 +217,15 @@ function ProfitCard({
   source: FinancialDataSource;
 }) {
   return (
-    <div className="rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
+    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
       <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
         <span className="sm:hidden">G. Profit</span>
         <span className="hidden sm:inline">Gross Profit</span>
       </h2>
-      <div className="mb-4 flex min-h-[65px] items-center">
+      <div className="mb-4 flex min-h-[65px] min-w-0 items-center">
         <AnimatedCurrency
           value={profit}
-          className={`w-[230px] text-[43px] font-semibold tabular-nums ${
+          className={`block w-full min-w-0 max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none ${
             profit >= 0 ? "text-white" : "text-red-400"
           }`}
         />
@@ -319,15 +310,11 @@ export default function TotalOverview({
         </h2>
         <DataSourceToggle value={source} onChange={setSource} />
       </div>
-      <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid min-w-0 gap-6 sm:grid-cols-2 xl:grid-cols-4">
         <RevenueCard data={filteredData} source={source} />
         <CostCard data={filteredData} source={source} />
         <ProfitCard profit={profitValue} source={source} />
-        <ProfitMarginCard
-          profit={profitValue}
-          revenue={revenueTotal}
-          source={source}
-        />
+        <ProfitMarginCard profit={profitValue} revenue={revenueTotal} />
       </div>
     </section>
   );

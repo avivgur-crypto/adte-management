@@ -166,17 +166,17 @@ function SectionBlock({
 type PaceMetricKey = "total" | "media" | "saas" | "profit";
 
 const PACE_METRIC_DEFAULTS: Record<PaceMetricKey, boolean> = {
+  profit: true,
   total: true,
   media: true,
   saas: true,
-  profit: true,
 };
 
 const PACE_METRIC_OPTIONS: { key: PaceMetricKey; label: string; shortLabel?: string }[] = [
+  { key: "profit", label: "Gross Profit", shortLabel: "G. Profit" },
   { key: "total", label: "Total Revenue" },
   { key: "media", label: "Media Revenue" },
   { key: "saas", label: "SaaS Revenue" },
-  { key: "profit", label: "Gross Profit", shortLabel: "G. Profit" },
 ];
 
 function FinancialPaceCard({
@@ -244,6 +244,19 @@ function FinancialPaceCard({
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {visible.profit && (
+          <SectionBlock
+            title={
+              <>
+                <span className="sm:hidden">G. Profit</span>
+                <span className="hidden sm:inline">Gross Profit</span>
+              </>
+            }
+            section={summary.profit}
+            isMultiMonth={summary.isMultiMonth}
+            showGoalVarianceLine={showGoalVarianceLine}
+          />
+        )}
         {visible.total && (
           <SectionBlock
             title="Total Revenue"
@@ -264,19 +277,6 @@ function FinancialPaceCard({
           <SectionBlock
             title="SaaS Revenue (from Billing)"
             section={summary.saas}
-            isMultiMonth={summary.isMultiMonth}
-            showGoalVarianceLine={showGoalVarianceLine}
-          />
-        )}
-        {visible.profit && (
-          <SectionBlock
-            title={
-              <>
-                <span className="sm:hidden">G. Profit</span>
-                <span className="hidden sm:inline">Gross Profit</span>
-              </>
-            }
-            section={summary.profit}
             isMultiMonth={summary.isMultiMonth}
             showGoalVarianceLine={showGoalVarianceLine}
           />
