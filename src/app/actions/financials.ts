@@ -8,7 +8,7 @@ import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
 import {
   fetchAdServerOverview,
-  fetchHomeForDate,
+  mapAdServerOverviewToHomeTotals,
   type XDashTotals,
 } from "@/lib/xdash-client";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
@@ -761,6 +761,68 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
 
 const REFRESH_STALE_MS = 5 * 60 * 1000; // only refresh if row is >5 min old
 
+/**
+ * Urgent diagnostic: log the full XDASH `/home/overview/adServers` body for today sync.
+ * Does not change mapping — compare revenue/netRevenue/totalRevenue, cost/netCost,
+ * and keys starting with service, fee, or commission vs XDASH UI.
+ */
+function logXdashTodayOverviewRawForDiagnostics(raw: unknown, israelDate: string) {
+  console.log(
+    `\n[xdash-today-raw-diag] ===== full /home/overview/adServers JSON (${israelDate}) =====`,
+  );
+  console.dir(raw, { depth: null });
+  console.log("[xdash-today-raw-diag] ===== end full JSON =====\n");
+
+  const ot = (raw as Record<string, unknown>)?.overviewTotals as Record<string, unknown> | undefined;
+  const sd = ot?.selectedDates as Record<string, unknown> | undefined;
+  const totals = sd?.totals as Record<string, unknown> | undefined;
+
+  if (!totals) {
+    console.warn(
+      "[xdash-today-raw-diag] No overviewTotals.selectedDates.totals — check response shape.",
+    );
+    return;
+  }
+
+  const num = (k: string) => {
+    const v = totals[k];
+    if (v === undefined || v === null) return undefined;
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  console.log("[xdash-today-raw-diag] selectedDates.totals (revenue / cost / profit family):", {
+    revenue: num("revenue"),
+    netRevenue: num("netRevenue"),
+    totalRevenue: num("totalRevenue"),
+    cost: num("cost"),
+    netCost: num("netCost"),
+    grossCost: num("grossCost"),
+    serviceCost: num("serviceCost"),
+    netprofit: num("netprofit"),
+    netProfit: num("netProfit"),
+    net_profit: num("net_profit"),
+    profit: num("profit"),
+  });
+  console.log("[xdash-today-raw-diag] all keys on selectedDates.totals:", Object.keys(totals));
+
+  const matches: { path: string; value: unknown }[] = [];
+  function walk(obj: unknown, path: string, depth: number) {
+    if (depth > 14 || obj == null) return;
+    if (typeof obj !== "object") return;
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      const p = path ? `${path}.${k}` : k;
+      if (/^(service|fee|commission)/i.test(k)) matches.push({ path: p, value: v });
+      if (typeof v === "object" && v !== null) walk(v, p, depth + 1);
+    }
+  }
+  walk(raw, "", 0);
+  console.log(
+    "[xdash-today-raw-diag] deep scan: keys matching /^(service|fee|commission)/i:",
+    matches,
+  );
+}
+
 export type RefreshTodayHomeResult = { updated: boolean };
 
 /** Returns { updated: true } only when today's row was actually refreshed from XDASH. */
@@ -779,7 +841,9 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       if (age < REFRESH_STALE_MS) return { updated: false };
     }
 
-    const { revenue, cost, profit, impressions } = await fetchHomeForDate(today);
+    const raw = await fetchAdServerOverview({ startDate: today, endDate: today });
+    logXdashTodayOverviewRawForDiagnostics(raw, today);
+    const { revenue, cost, profit, impressions } = mapAdServerOverviewToHomeTotals(raw, today);
 
     const syncedAt = new Date().toISOString();
     const { error } = await supabaseAdmin

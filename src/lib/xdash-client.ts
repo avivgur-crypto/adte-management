@@ -678,16 +678,16 @@ export async function fetchAdServerOverview(
 }
 
 /**
- * Fetch Home API totals for a single date. Returns {revenue, cost, profit, impressions}.
- * Uses /home/overview/adServers only — the same source as the XDASH Home dashboard.
+ * Maps a raw `/home/overview/adServers` JSON body to the same numbers as the Home dashboard path.
+ * Use after `fetchAdServerOverview` when you need the raw response for logging (single HTTP call).
  *
  * Cost: (gross cost || net cost) + serviceCost — matches XDASH total cost incl. serving.
  * Profit: revenue − total cost (same bottom-line identity as Net Profit when revenue/cost align).
  */
-export async function fetchHomeForDate(
-  date: string
-): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
-  const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
+export function mapAdServerOverviewToHomeTotals(
+  raw: XDashApiResponse,
+  date: string,
+): { revenue: number; cost: number; profit: number; impressions: number } {
   const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
   const selectedDates = sd?.selectedDates as Record<string, unknown> | undefined;
   const totals = selectedDates?.totals as XDashTotals | undefined;
@@ -709,11 +709,22 @@ export async function fetchHomeForDate(
   const isToday = date === todayIL;
   console.log(
     `[xdash-client] Home ${date}${isToday ? " (live)" : ""}: ` +
-    `rev=$${revenue.toFixed(2)} baseCost=$${baseCost.toFixed(2)} svc=$${serviceCost.toFixed(2)} ` +
-    `totalCost=$${totalActualCost.toFixed(2)} profit=$${profit.toFixed(2)} imp=${impressions}`,
+      `rev=$${revenue.toFixed(2)} baseCost=$${baseCost.toFixed(2)} svc=$${serviceCost.toFixed(2)} ` +
+      `totalCost=$${totalActualCost.toFixed(2)} profit=$${profit.toFixed(2)} imp=${impressions}`,
   );
 
   return { revenue, cost, profit, impressions };
+}
+
+/**
+ * Fetch Home API totals for a single date. Returns {revenue, cost, profit, impressions}.
+ * Uses /home/overview/adServers only — the same source as the XDASH Home dashboard.
+ */
+export async function fetchHomeForDate(
+  date: string,
+): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
+  const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
+  return mapAdServerOverviewToHomeTotals(raw, date);
 }
 
 /**
