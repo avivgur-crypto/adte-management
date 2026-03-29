@@ -29,8 +29,8 @@ async function main() {
   const grossCost = Number(totals?.cost ?? 0);
   const netCost = Number(totals?.netCost ?? 0);
   const serviceCost = Number(totals?.serviceCost ?? 0);
-  const baseCost = grossCost || netCost;
-  const mappedCost = baseCost + serviceCost;
+  const mappedCost =
+    Number(totals?.netCost) || (Number(totals?.cost) + Number(totals?.serviceCost ?? 0));
 
   const out = {
     date,
@@ -44,7 +44,7 @@ async function main() {
     },
     mappedCostAsUpserted: mappedCost,
     sumNetCostPlusServiceCost: netCost + serviceCost,
-    note: "fetchHomeForDate upserts cost = (cost||netCost) + serviceCost.",
+    note: "fetchHomeForDate upserts cost = netCost || (cost + serviceCost); netCost includes service.",
   };
 
   console.log(JSON.stringify(out, null, 2));

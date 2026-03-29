@@ -8,7 +8,7 @@ import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
 import {
   fetchAdServerOverview,
-  mapAdServerOverviewToHomeTotals,
+  fetchHomeForDate,
   type XDashTotals,
 } from "@/lib/xdash-client";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
@@ -754,110 +754,57 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Live refresh: fetch today's Home total from XDASH and upsert into Supabase.
-// Called once on page load so the dashboard shows real-time "today" numbers
-// without waiting for the next 30-minute cron.
+// Live refresh: fetch Home totals for today + yesterday (Israel) and upsert into Supabase.
+// Called on page load so the dashboard stays current without waiting for cron; yesterday is
+// re-fetched so end-of-day totals settle after the calendar flips.
 // ---------------------------------------------------------------------------
 
-const REFRESH_STALE_MS = 5 * 60 * 1000; // only refresh if row is >5 min old
-
-/**
- * Urgent diagnostic: log the full XDASH `/home/overview/adServers` body for today sync.
- * Does not change mapping — compare revenue/netRevenue/totalRevenue, cost/netCost,
- * and keys starting with service, fee, or commission vs XDASH UI.
- */
-function logXdashTodayOverviewRawForDiagnostics(raw: unknown, israelDate: string) {
-  console.log(
-    `\n[xdash-today-raw-diag] ===== full /home/overview/adServers JSON (${israelDate}) =====`,
-  );
-  console.dir(raw, { depth: null });
-  console.log("[xdash-today-raw-diag] ===== end full JSON =====\n");
-
-  const ot = (raw as Record<string, unknown>)?.overviewTotals as Record<string, unknown> | undefined;
-  const sd = ot?.selectedDates as Record<string, unknown> | undefined;
-  const totals = sd?.totals as Record<string, unknown> | undefined;
-
-  if (!totals) {
-    console.warn(
-      "[xdash-today-raw-diag] No overviewTotals.selectedDates.totals — check response shape.",
-    );
-    return;
-  }
-
-  const num = (k: string) => {
-    const v = totals[k];
-    if (v === undefined || v === null) return undefined;
-    const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) ? n : undefined;
-  };
-
-  console.log("[xdash-today-raw-diag] selectedDates.totals (revenue / cost / profit family):", {
-    revenue: num("revenue"),
-    netRevenue: num("netRevenue"),
-    totalRevenue: num("totalRevenue"),
-    cost: num("cost"),
-    netCost: num("netCost"),
-    grossCost: num("grossCost"),
-    serviceCost: num("serviceCost"),
-    netprofit: num("netprofit"),
-    netProfit: num("netProfit"),
-    net_profit: num("net_profit"),
-    profit: num("profit"),
-  });
-  console.log("[xdash-today-raw-diag] all keys on selectedDates.totals:", Object.keys(totals));
-
-  const matches: { path: string; value: unknown }[] = [];
-  function walk(obj: unknown, path: string, depth: number) {
-    if (depth > 14 || obj == null) return;
-    if (typeof obj !== "object") return;
-    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      const p = path ? `${path}.${k}` : k;
-      if (/^(service|fee|commission)/i.test(k)) matches.push({ path: p, value: v });
-      if (typeof v === "object" && v !== null) walk(v, p, depth + 1);
-    }
-  }
-  walk(raw, "", 0);
-  console.log(
-    "[xdash-today-raw-diag] deep scan: keys matching /^(service|fee|commission)/i:",
-    matches,
-  );
-}
+const REFRESH_STALE_MS = 5 * 60 * 1000; // skip if both rows are fresher than this
 
 export type RefreshTodayHomeResult = { updated: boolean };
 
-/** Returns { updated: true } only when today's row was actually refreshed from XDASH. */
+/** Returns { updated: true } when at least one date was upserted from XDASH. */
 export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
   try {
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+    const yesterday = getYesterdayIsraelDate();
+    const dates = [today, yesterday] as const;
 
-    const { data: existing } = await supabaseAdmin
+    const { data: existingRows, error: selectError } = await supabaseAdmin
       .from("daily_home_totals")
-      .select("created_at")
-      .eq("date", today)
-      .maybeSingle();
+      .select("date, created_at")
+      .in("date", [...dates]);
 
-    if (existing?.created_at) {
-      const age = Date.now() - new Date(existing.created_at).getTime();
-      if (age < REFRESH_STALE_MS) return { updated: false };
-    }
-
-    const raw = await fetchAdServerOverview({ startDate: today, endDate: today });
-    logXdashTodayOverviewRawForDiagnostics(raw, today);
-    const { revenue, cost, profit, impressions } = mapAdServerOverviewToHomeTotals(raw, today);
-
-    const syncedAt = new Date().toISOString();
-    const { error } = await supabaseAdmin
-      .from("daily_home_totals")
-      .upsert(
-        { date: today, revenue, cost, profit, impressions, created_at: syncedAt },
-        { onConflict: "date" },
-      );
-    if (error) {
-      console.error("[refreshTodayHome] upsert failed:", error.message);
+    if (selectError) {
+      console.error("[refreshTodayHome] select failed:", selectError.message);
       return { updated: false };
     }
 
-    console.log(`[refreshTodayHome] Updated today (${today}): $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`);
+    const needRefresh = dates.some((d) => {
+      const row = existingRows?.find((r) => String(r.date).slice(0, 10) === d);
+      if (!row?.created_at) return true;
+      return Date.now() - new Date(row.created_at).getTime() >= REFRESH_STALE_MS;
+    });
+
+    if (!needRefresh) return { updated: false };
+
+    const syncedAt = new Date().toISOString();
+
+    for (const date of dates) {
+      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
+      const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
+        { date, revenue, cost, profit, impressions, created_at: syncedAt },
+        { onConflict: "date" },
+      );
+      if (error) {
+        console.error(`[refreshTodayHome] upsert failed (${date}):`, error.message);
+        return { updated: false };
+      }
+      console.log(
+        `[refreshTodayHome] Updated ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
+      );
+    }
+
     revalidateTag(FINANCIAL_TAG, { expire: 0 });
     revalidatePath("/");
     return { updated: true };
@@ -892,9 +839,9 @@ export type DiagnosticXdashHomeCostResult =
         serviceCost: number;
         impressions: number;
       };
-      /** Same as fetchHomeForDate: (cost||netCost) + serviceCost */
+      /** Same as fetchHomeForDate: netCost || (cost + serviceCost) */
       mappedCostAsUpserted: number;
-      /** Legacy: netCost + serviceCost */
+      /** Legacy compare: netCost + serviceCost (double-counts service if netCost already includes it) */
       sumNetCostPlusServiceCost: number;
     }
   | { ok: false; error: string };
@@ -929,15 +876,16 @@ export async function diagnosticXdashHomeCostFields(
     const serviceCost = Number(totals?.serviceCost ?? 0);
     const impressions = Number(totals?.impressions ?? 0);
 
-    const baseCost = grossCost || netCost;
-    const mappedCostAsUpserted = baseCost + serviceCost;
+    const mappedCostAsUpserted =
+      Number(totals?.netCost) ||
+      (Number(totals?.cost) + Number(totals?.serviceCost ?? 0));
     const sumNetCostPlusServiceCost = netCost + serviceCost;
 
     const payload = {
       ok: true as const,
       date,
       note:
-        "mappedCostAsUpserted = (cost||netCost) + serviceCost (fetchHomeForDate). Compare to XDASH main Cost box.",
+        "mappedCostAsUpserted = netCost || (cost + serviceCost) (fetchHomeForDate). netCost includes service in XDASH.",
       rawApiTotals: {
         cost: grossCost,
         netCost,

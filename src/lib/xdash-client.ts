@@ -681,8 +681,9 @@ export async function fetchAdServerOverview(
  * Maps a raw `/home/overview/adServers` JSON body to the same numbers as the Home dashboard path.
  * Use after `fetchAdServerOverview` when you need the raw response for logging (single HTTP call).
  *
- * Cost: (gross cost || net cost) + serviceCost — matches XDASH total cost incl. serving.
- * Profit: revenue − total cost (same bottom-line identity as Net Profit when revenue/cost align).
+ * Cost: `netCost` already includes service cost in XDASH; use it when present. Otherwise gross
+ * `cost` + `serviceCost`. Never add `serviceCost` on top of `netCost` (avoids double-counting).
+ * Profit: revenue − cost.
  */
 export function mapAdServerOverviewToHomeTotals(
   raw: XDashApiResponse,
@@ -693,24 +694,20 @@ export function mapAdServerOverviewToHomeTotals(
   const totals = selectedDates?.totals as XDashTotals | undefined;
 
   const grossRevenue = Number(totals?.revenue ?? 0);
-  const grossCost = Number(totals?.cost ?? 0);
   const netRevenue = Number(totals?.netRevenue ?? 0);
-  const netCost = Number(totals?.netCost ?? 0);
-  const serviceCost = Number(totals?.serviceCost ?? 0);
   const impressions = Number(totals?.impressions ?? 0);
 
   const revenue = grossRevenue || netRevenue;
-  const baseCost = grossCost || netCost;
-  const totalActualCost = baseCost + serviceCost;
-  const cost = totalActualCost;
-  const profit = revenue - totalActualCost;
+  const cost =
+    Number(totals?.netCost) ||
+    (Number(totals?.cost) + Number(totals?.serviceCost ?? 0));
+  const profit = revenue - cost;
 
   const todayIL = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
   const isToday = date === todayIL;
   console.log(
     `[xdash-client] Home ${date}${isToday ? " (live)" : ""}: ` +
-      `rev=$${revenue.toFixed(2)} baseCost=$${baseCost.toFixed(2)} svc=$${serviceCost.toFixed(2)} ` +
-      `totalCost=$${totalActualCost.toFixed(2)} profit=$${profit.toFixed(2)} imp=${impressions}`,
+      `rev=$${revenue.toFixed(2)} cost=$${cost.toFixed(2)} profit=$${profit.toFixed(2)} imp=${impressions}`,
   );
 
   return { revenue, cost, profit, impressions };
