@@ -13,6 +13,7 @@ import {
 } from "@/lib/sync/partner-pairs";
 import { syncFunnelToSupabase } from "@/lib/sync/funnel";
 import { syncBillingData } from "@/lib/sync/billing";
+import { checkPerformance } from "@/app/actions/notifications";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -208,6 +209,9 @@ async function executeSync(params: SyncParams): Promise<void> {
     source, target, force, backfill, daysRaw, singleDate, backfillStart, backfillEnd,
   } = params;
 
+  /** True when XDASH home sync wrote to `daily_home_totals` successfully. */
+  let shouldCheckPerformance = false;
+
   try {
     if (backfill) {
       const end = backfillEnd ?? todayIL();
@@ -219,6 +223,7 @@ async function executeSync(params: SyncParams): Promise<void> {
       } catch (e) {
         xdash = { status: "failed", error: e instanceof Error ? e.message : String(e) };
       }
+      shouldCheckPerformance = xdash.status === "success";
       try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("backfill", { xdash, pairs: SKIP, billing: SKIP, monday: SKIP }, t0, { range: { start: backfillStart, end } });
@@ -239,6 +244,7 @@ async function executeSync(params: SyncParams): Promise<void> {
       } else {
         xdash = await runXdash(days, t0, force);
       }
+      shouldCheckPerformance = xdash.status === "success";
       try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("targeted:xdash-totals", { xdash, pairs: SKIP, billing: SKIP, monday: SKIP }, t0, { days });
@@ -288,6 +294,7 @@ async function executeSync(params: SyncParams): Promise<void> {
       const days = Number.isFinite(daysRaw) && daysRaw >= 1 ? daysRaw : 7;
       console.log(`[auto-sync] manual-recovery: ${days} days (force=${force})`);
       const xdash = await runXdash(days, t0, force);
+      shouldCheckPerformance = xdash.status === "success";
       const pairs = await runPairs();
       const elapsedMs = Date.now() - t0;
       const TIME_BUDGET_MS = 45_000;
@@ -305,6 +312,21 @@ async function executeSync(params: SyncParams): Promise<void> {
     console.warn("[auto-sync] executeSync called with no matching mode (should not happen)");
   } catch (err) {
     console.error("[auto-sync] background sync error:", err instanceof Error ? err.message : err);
+  } finally {
+    if (shouldCheckPerformance) {
+      console.log(
+        "[auto-sync] daily_home_totals sync finished successfully — running checkPerformance()",
+      );
+      try {
+        const r = await checkPerformance();
+        console.log("[auto-sync] checkPerformance completed:", r.log);
+      } catch (e) {
+        console.error(
+          "[auto-sync] checkPerformance failed:",
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
   }
 }
 
