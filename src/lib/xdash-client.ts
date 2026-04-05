@@ -11,6 +11,7 @@
  * IMPORTANT: The auth token expires periodically. Copy a fresh token from the backup site
  * (DevTools > Network > auth-token cookie) and update XDASH_AUTH_TOKEN in `.env.local`.
  */
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 // ============================================================================
 // KILL SWITCH — set XDASH_DISABLED=true in .env.local to block ALL API calls.
@@ -35,13 +36,11 @@ function assertNotDisabled() {
 const XDASH_AUTH_TOKEN = process.env.XDASH_AUTH_TOKEN ?? "";
 const XDASH_ORGANIZATION_ID = process.env.XDASH_ORGANIZATION_ID ?? "";
 const XDASH_API_BASE = process.env.XDASH_API_BASE ?? "https://xdash-for-aviv-temp-txe5v.ondigitalocean.app";
+const XDASH_TOKEN_CACHE_MS = 60_000;
+let _cachedXdashAuthToken: { token: string; expiresAtMs: number } | null = null;
+let _supabaseForXdashAuth: SupabaseClient | null = null;
 
 function assertEnvVars() {
-  if (!XDASH_AUTH_TOKEN) {
-    throw new Error(
-      "Missing XDASH_AUTH_TOKEN. Set it in .env.local (see .env.example)."
-    );
-  }
   if (!XDASH_ORGANIZATION_ID) {
     throw new Error(
       "Missing XDASH_ORGANIZATION_ID. Set it in .env.local (see .env.example)."
@@ -49,6 +48,59 @@ function assertEnvVars() {
   }
 }
 
+function getSupabaseForXdashAuth(): SupabaseClient | null {
+  if (_supabaseForXdashAuth) return _supabaseForXdashAuth;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) return null;
+  _supabaseForXdashAuth = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return _supabaseForXdashAuth;
+}
+
+function tokenFromRow(row: Record<string, unknown> | null): string | null {
+  if (!row) return null;
+  for (const key of ["auth_token", "token", "xdash_auth_token", "value"]) {
+    const raw = row[key];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  return null;
+}
+
+async function getXDashAuthToken(): Promise<string> {
+  // 1. קודם כל בודקים אם יש טוקן ידני ב-ENV
+  const envToken = process.env.XDASH_AUTH_TOKEN;
+  if (envToken && envToken !== 'temp_token') {
+    return envToken;
+  }
+
+  // 2. אם אין, ננסה למשוך מה-Database
+  const supabase = getSupabaseForXdashAuth(); // משתמש בפונקציה ששלחת לי!
+  
+  if (!supabase) {
+    console.error('[xdash-client] Supabase client not initialized (missing keys)');
+    throw new Error("Missing XDASH auth token and Supabase keys.");
+  }
+
+  console.log('[xdash-client] Fetching token from Supabase (xdash_auth.token_value)...');
+
+  const { data, error } = await supabase
+    .from('xdash_auth')
+    .select('token_value')
+    .eq('id', 'current_session')
+    .single();
+
+  if (error) {
+    console.error('[xdash-client] Supabase fetch error:', error.message);
+  }
+
+  if (!data?.token_value) {
+    throw new Error("Missing XDASH auth token: provide XDASH_AUTH_TOKEN in .env.local or run the login bot.");
+  }
+
+  return data.token_value;
+}
 // ============================================================================
 // Types
 // ============================================================================
@@ -355,7 +407,7 @@ export async function fetchReportForDate(
   for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
     const response = await fetchWithRetry(url, {
       method: "POST",
-      headers: buildHeaders(),
+      headers: await buildHeaders(),
       body,
     });
 
@@ -413,7 +465,7 @@ export async function fetchReportPairsForDateRange(
     for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
       const response = await fetchWithRetry(url, {
         method: "POST",
-        headers: buildHeaders(),
+        headers: await buildHeaders(),
         body,
       });
 
@@ -533,9 +585,9 @@ function parseCurrencyValue(v: unknown): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
-/** Build common headers used by every XDASH API call (reads env at call time, not module init) */
-function buildHeaders(): Record<string, string> {
-  const token = process.env.XDASH_AUTH_TOKEN ?? XDASH_AUTH_TOKEN;
+/** Build common headers used by every XDASH API call (DB token first, env fallback). */
+async function buildHeaders(): Promise<Record<string, string>> {
+  const token = await getXDashAuthToken();
   const org = process.env.XDASH_ORGANIZATION_ID ?? XDASH_ORGANIZATION_ID;
   return {
     "Content-Type": "application/json",
@@ -649,7 +701,7 @@ export async function fetchAdServerOverview(
     try {
       const response = await fetchWithRetry(url, {
         method: "POST",
-        headers: buildHeaders(),
+        headers: await buildHeaders(),
         body,
         signal: controller.signal,
       });
@@ -876,7 +928,7 @@ async function _fetchPartners(
   for (let attempt = 1; attempt <= PARTNER_RETRY_ATTEMPTS; attempt++) {
     const response = await fetchWithRetry(url, {
       method: "POST",
-      headers: buildHeaders(),
+      headers: await buildHeaders(),
       body: buildDatePayload(date),
     });
 
