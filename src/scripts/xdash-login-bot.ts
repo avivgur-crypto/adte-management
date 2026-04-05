@@ -86,29 +86,24 @@ async function persistTokenToSupabase(token: string): Promise<void> {
   );
 }
 
-// --- Fixed getXDashAuthToken: fetch token_value, access data.token_value, log if missing ---
 async function getXDashAuthToken(): Promise<string> {
-  // 1. קודם כל בודקים ב-ENV (למקרה חירום)
   const envToken = process.env.XDASH_AUTH_TOKEN;
   if (envToken) return envToken;
 
-  // 2. אם אין ב-ENV, הולכים ל-Supabase
-  console.log('[xdash-client] Fetching token from Supabase (xdash_auth.token_value)...');
-  
-  const { data, error } = await supabase
+  // יצירת קליינט מקומי בתוך הפונקציה כדי ש-Vercel לא יצעק
+  const supabaseClient = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  const { data } = await supabaseClient
     .from('xdash_auth')
     .select('token_value')
     .eq('id', 'current_session')
     .single();
 
-  if (error || !data?.token_value) {
-    console.error('[xdash-client] Supabase fetch error:', error?.message);
-    throw new Error("Missing XDASH auth token: provide XDASH_AUTH_TOKEN in .env.local or xdash_auth.id=current_session in Supabase.");
-  }
-
-  return data.token_value;
+  return data?.token_value || "";
 }
-
 async function main() {
   const username = mustEnv("XDASH_USERNAME");
   const password = mustEnv("XDASH_PASSWORD");
