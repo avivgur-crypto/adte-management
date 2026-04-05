@@ -20,8 +20,8 @@ export default function WebPushSubscribe() {
   const [message, setMessage] = useState<string | null>(null);
 
   const subscribeUser = useCallback(async () => {
-    setStatus("loading");
-    setMessage(null);
+    console.log('📢 [PUSH] Button clicked! Starting process...');
+    setStatus('loading');
 
     try {
       if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
@@ -31,43 +31,52 @@ export default function WebPushSubscribe() {
         throw new Error("Push messaging is not supported in this browser.");
       }
 
-      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim();
-      if (!vapidKey) {
-        throw new Error("NEXT_PUBLIC_VAPID_PUBLIC_KEY is not configured.");
-      }
+      const registration = await navigator.serviceWorker.ready;
+      console.log('📢 [PUSH] Service Worker is ready');
 
-      // Register SW (served from /public/sw.js)
-      const registration = await navigator.serviceWorker.register("/sw.js", {
-        scope: "/",
-      });
-      await registration.update().catch(() => undefined);
+      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      console.log('📢 [PUSH] Using VAPID key:', vapidKey?.slice(0, 10) + '...');
 
-      // Notification permission
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        throw new Error("Notification permission was not granted.");
-      }
-
-      // Subscribe with VAPID key
-      const applicationServerKey = urlBase64ToUint8Array(vapidKey) as BufferSource;
+      // הרשמה למנוי
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey!)
       });
 
-      // Only send endpoint and subscription_json for upsert.
-      const data = {
+      console.log('📢 [PUSH] Raw subscription obtained');
+
+      // 🚨 כאן הקסם: שליפה ידנית של המפתחות כי toJSON לפעמים מזייף
+      const p256dh = btoa(
+        String.fromCharCode.apply(
+          null,
+          Array.from(new Uint8Array(subscription.getKey('p256dh')!)) as any
+        )
+      );
+      const auth = btoa(
+        String.fromCharCode.apply(
+          null,
+          Array.from(new Uint8Array(subscription.getKey('auth')!)) as any
+        )
+      );
+
+      const subData = {
         endpoint: subscription.endpoint,
-        subscription_json: subscription.toJSON(),
+        expirationTime: subscription.expirationTime,
+        keys: {
+          auth: auth.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+          p256dh: p256dh.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+        }
       };
 
-      // Save using server action (should use supabaseAdmin with full permissions)
-      await savePushSubscription(data);
+      console.log('📢 [PUSH] Final object with keys ready to send:', subData);
 
-      setStatus("success");
+      await savePushSubscription(subData);
+      console.log('📢 [PUSH] Success! Saved to Supabase');
+      setStatus('success');
       setMessage("Notifications enabled. You are subscribed.");
     } catch (e) {
-      setStatus("error");
+      console.error('❌ [PUSH] Critical Error:', e);
+      setStatus('error');
       setMessage(e instanceof Error ? e.message : "Something went wrong.");
     }
   }, []);
