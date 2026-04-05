@@ -8,6 +8,7 @@
  * - Monthly goals & pace: `monthly_goals` + MTD logic aligned with `src/lib/pacing.ts` (profit_goal, target ∝ days elapsed).
  * - Yesterday vs day-before: `daily_home_totals` for `getIsraelDateDaysAgo(1)` vs `getIsraelDateDaysAgo(2)`.
  * - Monthly record (daily GP): max(`profit`) over `daily_home_totals` for the same calendar month with `date` < today.
+ * - Milestone dedupe: `sent_notifications` (goal_reached / monthly_record per Israel calendar day).
  */
 
 import {
@@ -16,7 +17,7 @@ import {
   type PushSubscription,
 } from "web-push";
 import { supabaseAdmin } from "@/lib/supabase";
-import { getIsraelDateDaysAgo } from "@/lib/israel-date";
+import { getIsraelDate, getIsraelDateDaysAgo } from "@/lib/israel-date";
 
 // ---------------------------------------------------------------------------
 // Web Push (same contract as src/scripts/test-push.ts)
@@ -221,6 +222,41 @@ async function maxDailyProfitInMonthBefore(
   return Number.isFinite(max) ? max : null;
 }
 
+type MilestoneNotificationType = "goal_reached" | "monthly_record";
+
+async function wasMilestoneNotifiedToday(
+  notificationType: MilestoneNotificationType,
+  sentDateIsrael: string,
+): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from("sent_notifications")
+    .select("id")
+    .eq("notification_type", notificationType)
+    .eq("sent_date", sentDateIsrael)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[notifications] wasMilestoneNotifiedToday", error.message);
+    throw new Error(`sent_notifications: ${error.message}`);
+  }
+  return data != null;
+}
+
+async function recordMilestoneSent(
+  notificationType: MilestoneNotificationType,
+  sentDateIsrael: string,
+): Promise<void> {
+  const { error } = await supabaseAdmin.from("sent_notifications").insert({
+    notification_type: notificationType,
+    sent_date: sentDateIsrael,
+  });
+
+  if (error) {
+    if (error.code === "23505") return;
+    throw new Error(`sent_notifications insert: ${error.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
 // ---------------------------------------------------------------------------
@@ -276,7 +312,7 @@ export async function checkPerformance(): Promise<{
   reasons: string[];
   log: string;
 }> {
-  const today = getIsraelDateDaysAgo(0);
+  const today = getIsraelDate();
   const [y, m] = today.split("-").map(Number);
   const monthStart = `${y}-${String(m).padStart(2, "0")}-01`;
   const dim = daysInMonthYm(y, m);
@@ -317,34 +353,49 @@ export async function checkPerformance(): Promise<{
   let ok = 0;
   let failed = 0;
   const errors: string[] = [];
+  const logExtras: string[] = [];
 
   if (exceededDailyPace) {
-    const dayOfMonthToday = parseInt(today.slice(8, 10), 10);
-    const { profitMtd: mtdActual, targetMtd: mtdTarget } = await profitGoalMetThroughDay(
-      monthStart,
-      dayOfMonthToday,
-      dim,
-    );
-    const r = await sendPushToAllSubscribers(
-      "Goal Reached! 🎯",
-      `Today's GP is Above Pace. MTD Progress: ${formatCurrencyShort(mtdActual)} vs. ${formatCurrencyShort(mtdTarget)} goal. 💰`,
-    );
-    ok += r.ok;
-    failed += r.failed;
-    errors.push(...r.errors);
+    if (await wasMilestoneNotifiedToday("goal_reached", today)) {
+      logExtras.push("goal_skipped_already_sent");
+    } else {
+      const dayOfMonthToday = parseInt(today.slice(8, 10), 10);
+      const { profitMtd: mtdActual, targetMtd: mtdTarget } = await profitGoalMetThroughDay(
+        monthStart,
+        dayOfMonthToday,
+        dim,
+      );
+      const r = await sendPushToAllSubscribers(
+        "Goal Reached! 🎯",
+        `Today's GP is Above Pace. MTD Progress: ${formatCurrencyShort(mtdActual)} vs. ${formatCurrencyShort(mtdTarget)} goal. 💰`,
+      );
+      ok += r.ok;
+      failed += r.failed;
+      errors.push(...r.errors);
+      if (r.ok > 0) {
+        await recordMilestoneSent("goal_reached", today);
+      }
+    }
   }
 
   if (monthlyRecord) {
-    const r = await sendPushToAllSubscribers(
-      "New Monthly Record! 🔥",
-      "Today's GP is your best this month! Keep crushing it.",
-    );
-    ok += r.ok;
-    failed += r.failed;
-    errors.push(...r.errors);
+    if (await wasMilestoneNotifiedToday("monthly_record", today)) {
+      logExtras.push("record_skipped_already_sent");
+    } else {
+      const r = await sendPushToAllSubscribers(
+        "New Monthly Record! 🔥",
+        "Today's GP is your best this month! Keep crushing it.",
+      );
+      ok += r.ok;
+      failed += r.failed;
+      errors.push(...r.errors);
+      if (r.ok > 0) {
+        await recordMilestoneSent("monthly_record", today);
+      }
+    }
   }
 
-  const log = `[checkPerformance] reasons=${reasons.join(",")} push ok=${ok} failed=${failed}${errors.length ? ` ${errors[0]}` : ""}`;
+  const log = `[checkPerformance] reasons=${reasons.join(",")}${logExtras.length ? ` ${logExtras.join(" ")}` : ""} push ok=${ok} failed=${failed}${errors.length ? ` ${errors[0]}` : ""}`;
 
   return { sent: ok > 0, reasons, log };
 }

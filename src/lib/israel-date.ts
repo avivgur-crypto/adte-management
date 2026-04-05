@@ -1,3 +1,8 @@
+/** Today's calendar date (YYYY-MM-DD) in Asia/Jerusalem. */
+export function getIsraelDate(): string {
+  return getIsraelDateDaysAgo(0);
+}
+
 /** YYYY-MM-DD for calendar date N days before today in Asia/Jerusalem. */
 export function getIsraelDateDaysAgo(daysAgo: number): string {
   const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
