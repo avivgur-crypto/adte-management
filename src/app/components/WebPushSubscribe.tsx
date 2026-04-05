@@ -77,6 +77,7 @@ export default function WebPushSubscribe() {
       const json = subscription.toJSON() as Record<string, unknown>;
 
       // D: Save to Supabase
+      // We'll expect savePushSubscription to handle the new endpoint/subscription_json upsert
       console.log("[WebPushSubscribe] Saving subscription to DB…", json);
       await savePushSubscription(json);
       console.log("[WebPushSubscribe] Subscription saved!");
@@ -104,7 +105,7 @@ export default function WebPushSubscribe() {
         type="button"
         onClick={() => void subscribeUser()}
         disabled={status === "loading"}
-        className={`inline-flex items-center justify-center px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-sm transition disabled:opacity-60 disabled:cursor-not-allowed shadow-sm`}
+        className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-sm transition disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
       >
         {status === "loading" ? "…" : "🔔 Enable Notifications"}
       </button>
