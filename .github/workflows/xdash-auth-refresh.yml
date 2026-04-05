@@ -1,0 +1,41 @@
+# Refreshes XDASH auth token via Playwright and writes to Supabase (xdash_auth).
+# Schedule: 00:00 UTC daily (~02:00/03:00 Israel, depending on DST).
+
+name: XDASH auth refresh
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Run XDASH login bot
+        env:
+          XDASH_USERNAME: ${{ secrets.XDASH_USERNAME }}
+          XDASH_PASSWORD: ${{ secrets.XDASH_PASSWORD }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          XDASH_API_BASE: ${{ secrets.XDASH_API_BASE }}
+          XDASH_ORGANIZATION_ID: ${{ secrets.XDASH_ORGANIZATION_ID }}
+          PLAYWRIGHT_HEADLESS: "true"
+        run: npx tsx src/scripts/xdash-login-bot.ts
