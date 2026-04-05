@@ -86,24 +86,6 @@ async function persistTokenToSupabase(token: string): Promise<void> {
   );
 }
 
-async function getXDashAuthToken(): Promise<string> {
-  const envToken = process.env.XDASH_AUTH_TOKEN;
-  if (envToken) return envToken;
-
-  // יצירת קליינט מקומי בתוך הפונקציה כדי ש-Vercel לא יצעק
-  const supabaseClient = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-  const { data } = await supabaseClient
-    .from('xdash_auth')
-    .select('token_value')
-    .eq('id', 'current_session')
-    .single();
-
-  return data?.token_value || "";
-}
 async function main() {
   const username = mustEnv("XDASH_USERNAME");
   const password = mustEnv("XDASH_PASSWORD");
@@ -157,11 +139,6 @@ async function main() {
 
     await persistTokenToSupabase(token);
     console.log("[xdash-login-bot] Done.");
-
-    // Example usage: retrieve the saved token
-    // const savedToken = await getXDashAuthToken();
-    // console.log(`Fetched token_value from Supabase: ${savedToken}`);
-
   } finally {
     await browser.close();
   }

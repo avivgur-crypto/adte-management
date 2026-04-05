@@ -17,6 +17,7 @@ import PartnerDistributionCharts from "@/app/components/PartnerDistributionChart
 import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
 import AutoSync from "@/app/components/AutoSync";
 import LastSyncLine from "@/app/components/LastSyncLine";
+import WebPushSubscribe from "@/app/components/WebPushSubscribe";
 import { SkeletonCard, SkeletonDonutGrid } from "@/app/components/SkeletonCard";
 
 /**
@@ -152,6 +153,7 @@ export default function Home() {
         >
           <LastSyncContent />
         </Suspense>
+        <WebPushSubscribe />
         <DashboardTabs>
           <FinancialTab />
           <Suspense fallback={<PartnersSkeleton />}>
