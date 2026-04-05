@@ -26,46 +26,65 @@ export default function WebPushSubscribe() {
     }
   }, []);
 
+  // Debug subscribeUser function
   const subscribeUser = useCallback(async () => {
     setStatus("loading");
     try {
+      console.log("[WebPushSubscribe] Starting subscribeUser...");
+
       if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
+        console.error("[WebPushSubscribe] Service workers not supported.");
         throw new Error("Service workers are not supported in this browser.");
       }
       if (!("PushManager" in window)) {
+        console.error("[WebPushSubscribe] PushManager not supported in window.");
         throw new Error("Push messaging is not supported in this browser.");
       }
 
       const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim();
-      // Skip showing error to user if VAPID key undefined per instructions
+      if (!vapidKey) {
+        console.error("[WebPushSubscribe] VAPID public key not configured.");
+        // No error exposed to UI per spec
+        throw new Error("VAPID public key is not configured.");
+      }
+      console.log("[WebPushSubscribe] Got VAPID Key:", vapidKey);
 
       // A: Register SW (served from /public/sw.js)
+      console.log("[WebPushSubscribe] Registering service worker /sw.js…");
       const registration = await navigator.serviceWorker.register("/sw.js", {
         scope: "/",
       });
       await registration.update().catch(() => undefined);
+      console.log("[WebPushSubscribe] Service worker registered:", registration);
 
       // B: Notification permission
+      console.log("[WebPushSubscribe] Requesting Notification permission…");
       const permission = await Notification.requestPermission();
+      console.log("[WebPushSubscribe] Notification.permission:", permission);
       if (permission !== "granted") {
         throw new Error("Notification permission was not granted.");
       }
 
       // C: Subscribe with VAPID key
-      const applicationServerKey = urlBase64ToUint8Array(vapidKey!) as BufferSource;
+      console.log("[WebPushSubscribe] Subscribing to pushManager…");
+      const applicationServerKey = urlBase64ToUint8Array(vapidKey) as BufferSource;
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey,
       });
+      console.log("[WebPushSubscribe] Subscription obtained:", subscription);
 
       const json = subscription.toJSON() as Record<string, unknown>;
 
       // D: Save to Supabase
+      console.log("[WebPushSubscribe] Saving subscription to DB…", json);
       await savePushSubscription(json);
+      console.log("[WebPushSubscribe] Subscription saved!");
 
       setStatus("success");
     } catch (e) {
       setStatus("error");
+      console.error("[WebPushSubscribe] Error during subscribeUser:", e);
     }
   }, []);
 
