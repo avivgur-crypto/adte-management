@@ -40,7 +40,7 @@ export default function WebPushSubscribe() {
       // הרשמה למנוי
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidKey!)
+        applicationServerKey: urlBase64ToUint8Array(vapidKey!) as any
       });
 
       console.log('📢 [PUSH] Raw subscription obtained');
