@@ -139,13 +139,22 @@ function daysInMonthYm(year: number, month1: number): number {
   return new Date(year, month1, 0).getDate();
 }
 
-function pctChange(current: number, prior: number): string {
-  if (prior === 0) {
-    return current === 0 ? "0%" : "— (no prior day)";
+/** Percent change for display in push copy; when prior is 0 and current > 0, use 100 as a compact stand-in. */
+function percentChangeVsPrior(current: number, prior: number): number {
+  if (prior === 0) return current === 0 ? 0 : 100;
+  return ((current - prior) / prior) * 100;
+}
+
+/**
+ * Compact currency for notifications: under $1M as $X.XK, $1M+ as $X.XM (1 decimal).
+ */
+function formatCurrencyShort(amount: number): string {
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000) {
+    return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
   }
-  const p = ((current - prior) / prior) * 100;
-  const sign = p >= 0 ? "+" : "";
-  return `${sign}${p.toFixed(1)}%`;
+  return `${sign}$${(abs / 1_000).toFixed(1)}K`;
 }
 
 /** MTD sum of `profit` from daily_home_totals between monthStart and end inclusive. */
@@ -212,15 +221,6 @@ async function maxDailyProfitInMonthBefore(
   return Number.isFinite(max) ? max : null;
 }
 
-function formatUsd(n: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(n);
-}
-
 // ---------------------------------------------------------------------------
 // A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
 // ---------------------------------------------------------------------------
@@ -242,27 +242,24 @@ export async function morningSummary(): Promise<{
   const dRev = dRow?.revenue ?? 0;
   const dGp = dRow?.profit ?? 0;
 
-  const revPct = pctChange(yRev, dRev);
-  const gpPct = pctChange(yGp, dGp);
+  const revChangePercent = percentChangeVsPrior(yRev, dRev);
+  const gpChangePercent = percentChangeVsPrior(yGp, dGp);
 
   const [yY, yM] = yesterday.split("-").map(Number);
   const monthStart = `${yY}-${String(yM).padStart(2, "0")}-01`;
   const dim = daysInMonthYm(yY, yM);
   const dayOfMonth = parseInt(yesterday.slice(8, 10), 10);
-  const { met: goalMet, targetMtd, profitMtd } = await profitGoalMetThroughDay(
+  const { met: goalMet } = await profitGoalMetThroughDay(
     monthStart,
     dayOfMonth,
     dim,
   );
 
-  const title = "Adtex: Daily morning summary";
-  const body = [
-    `Yesterday (${yesterday})`,
-    `Revenue ${formatUsd(yRev)} (${revPct} vs ${dayBefore})`,
-    `Gross profit ${formatUsd(yGp)} (${gpPct} vs ${dayBefore})`,
-    `MTD profit pace: ${formatUsd(profitMtd)} vs target ${formatUsd(targetMtd)}`,
-    goalMet ? "Monthly profit pace: on/above target." : "Monthly profit pace: below target.",
-  ].join("\n");
+  const mtdStatus = goalMet ? "above" : "below";
+  const mtdStatusFormatted = goalMet ? "Above pace" : "Below pace";
+
+  const title = "Adtex Daily Report 📊";
+  const body = `Yesterday: Rev: ${formatCurrencyShort(yRev)} (${revChangePercent.toFixed(1)}% ${revChangePercent > 0 ? "📈" : "📉"}) | GP: ${formatCurrencyShort(yGp)} (${gpChangePercent.toFixed(1)}% ${gpChangePercent > 0 ? "📈" : "📉"}) | MTD Profit: ${mtdStatusFormatted} ${mtdStatus === "above" ? "✅" : "📉"}`;
 
   const { ok, failed, errors } = await sendPushToAllSubscribers(title, body);
   const log = `[morningSummary] push ok=${ok} failed=${failed}${errors.length ? ` errors=${errors.slice(0, 3).join("; ")}` : ""}`;
@@ -317,20 +314,36 @@ export async function checkPerformance(): Promise<{
     };
   }
 
-  const title = "Adtex: Performance milestone";
-  const body = [
-    `Today (${today}) gross profit ${formatUsd(todayGp)}.`,
-    exceededDailyPace
-      ? `Hit or exceeded linear daily profit target (${formatUsd(dailyLinear)}).`
-      : null,
-    monthlyRecord
-      ? `New month-to-date daily gross profit high for ${monthStart.slice(0, 7)}.`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  let ok = 0;
+  let failed = 0;
+  const errors: string[] = [];
 
-  const { ok, failed, errors } = await sendPushToAllSubscribers(title, body);
+  if (exceededDailyPace) {
+    const dayOfMonthToday = parseInt(today.slice(8, 10), 10);
+    const { profitMtd: mtdActual, targetMtd: mtdTarget } = await profitGoalMetThroughDay(
+      monthStart,
+      dayOfMonthToday,
+      dim,
+    );
+    const r = await sendPushToAllSubscribers(
+      "Goal Reached! 🎯",
+      `Today's GP is Above Pace. MTD Progress: ${formatCurrencyShort(mtdActual)} vs. ${formatCurrencyShort(mtdTarget)} goal. 💰`,
+    );
+    ok += r.ok;
+    failed += r.failed;
+    errors.push(...r.errors);
+  }
+
+  if (monthlyRecord) {
+    const r = await sendPushToAllSubscribers(
+      "New Monthly Record! 🔥",
+      "Today's GP is your best this month! Keep crushing it.",
+    );
+    ok += r.ok;
+    failed += r.failed;
+    errors.push(...r.errors);
+  }
+
   const log = `[checkPerformance] reasons=${reasons.join(",")} push ok=${ok} failed=${failed}${errors.length ? ` ${errors[0]}` : ""}`;
 
   return { sent: ok > 0, reasons, log };
