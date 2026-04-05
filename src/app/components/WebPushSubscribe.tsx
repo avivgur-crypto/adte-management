@@ -1,7 +1,21 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { savePushSubscription } from "@/app/actions/push-subscription";
+
+const IS_SUBSCRIBED_KEY = "is_subscribed";
+
+type BannerVisibility = "checking" | "visible" | "hidden";
+
+function readInitialVisibility(): BannerVisibility {
+  if (typeof window === "undefined") return "checking";
+  try {
+    if (localStorage.getItem(IS_SUBSCRIBED_KEY) === "true") return "hidden";
+  } catch {
+    /* ignore */
+  }
+  return "checking";
+}
 
 /** VAPID public key: URL-safe Base64 → Uint8Array for PushManager.subscribe */
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
@@ -16,8 +30,34 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 export default function WebPushSubscribe() {
+  const [visibility, setVisibility] = useState<BannerVisibility>(readInitialVisibility);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      if (localStorage.getItem(IS_SUBSCRIBED_KEY) === "true") {
+        setVisibility("hidden");
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      setVisibility("hidden");
+      try {
+        localStorage.setItem(IS_SUBSCRIBED_KEY, "true");
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    setVisibility("visible");
+  }, []);
 
   const subscribeUser = useCallback(async () => {
     console.log('📢 [PUSH] Button clicked! Starting process...');
@@ -72,6 +112,12 @@ export default function WebPushSubscribe() {
 
       await savePushSubscription(subData);
       console.log('📢 [PUSH] Success! Saved to Supabase');
+      try {
+        localStorage.setItem(IS_SUBSCRIBED_KEY, "true");
+      } catch {
+        /* ignore */
+      }
+      setVisibility("hidden");
       setStatus('success');
       setMessage("Notifications enabled. You are subscribed.");
     } catch (e) {
@@ -80,6 +126,10 @@ export default function WebPushSubscribe() {
       setMessage(e instanceof Error ? e.message : "Something went wrong.");
     }
   }, []);
+
+  if (visibility !== "visible") {
+    return null;
+  }
 
   return (
     <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

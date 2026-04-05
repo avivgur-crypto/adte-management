@@ -20,10 +20,19 @@ const CACHE_TTL = 300;
 // (SQL views were unreliable — migration 015 may not be applied.)
 // ---------------------------------------------------------------------------
 
+/** YYYY-MM-DD for the last calendar day of `month` (1–12) in `year`. */
+function lastDayOfMonthIso(year: number, month: number): string {
+  const d = new Date(year, month, 0);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 async function _getAllDependencyPairs(): Promise<Record<string, PairEntry[]>> {
   const now = new Date();
   const currentMonth = now.getMonth() + 1;
-  const endDate = `2026-${String(currentMonth).padStart(2, "0")}-31`;
+  const endDate = lastDayOfMonthIso(2026, currentMonth);
 
   const allRows: Array<{ date: string; demand_tag: string; supply_tag: string; revenue: number; cost: number; profit: number }> = [];
   let offset = 0;

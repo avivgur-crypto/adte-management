@@ -2,20 +2,17 @@
 
 import { supabaseAdmin } from "@/lib/supabase";
 
-/** Persist Web Push subscription (PushSubscription.toJSON() shape). */
+/** Persist the entire incoming Web Push subscription object. */
 export async function savePushSubscription(subscription: Record<string, unknown>): Promise<void> {
-  const endpoint = typeof subscription.endpoint === "string" ? subscription.endpoint : "";
-  if (!endpoint) {
-    throw new Error("Invalid subscription: missing endpoint.");
-  }
-
+  // Store the exact incoming object, no stripping or sanitizing
   const { error } = await supabaseAdmin.from("push_subscriptions").upsert(
     {
-      endpoint,
+      // This assumes the incoming subscription has an 'endpoint' field—a spec requirement
+      endpoint: (subscription as any).endpoint,
       subscription_json: subscription,
       updated_at: new Date().toISOString(),
     },
-    { onConflict: "endpoint" },
+    { onConflict: "endpoint" }
   );
 
   if (error) {
