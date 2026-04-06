@@ -305,7 +305,7 @@ function GrossProfitGoalBar({ progress }: { progress: GpGoalProgress }) {
         aria-valuenow={Math.round(barWidthPct)}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="Progress toward daily profit pacing target"
+        aria-label="Progress toward daily average profit goal"
       >
         <div
           className={`h-1 rounded-full transition-[width] duration-300 ${fillClass}`}
@@ -356,7 +356,7 @@ export default function TodayFinancialsPulse({
   );
 
   const gpGoalProgress = useMemo((): GpGoalProgress | null => {
-    const target = dailyProfitGoalPace?.dailyPacingTarget;
+    const target = dailyProfitGoalPace?.dailyAverageTarget;
     if (target == null || target <= 0) return null;
     const raw = (profit / target) * 100;
     const displayPercent = Math.round(raw * 10) / 10;

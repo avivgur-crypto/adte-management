@@ -524,16 +524,16 @@ export async function getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonth
   return _cachedMonthlyXDASHTotals();
 }
 
-/** Daily linear MTD target for gross profit: (profit_goal / days_in_month) × day_of_month (Israel). */
+/** Daily average profit quota: monthly profit_goal ÷ days in month (Israel calendar month). */
 export type DailyProfitGoalPace = {
-  /** (monthly profit_goal / days_in_month) × current Israel day-of-month */
-  dailyPacingTarget: number;
+  /** profit_goal / days_in_month — same every day of the month; compare to today’s GP only. */
+  dailyAverageTarget: number;
   monthKey: string;
 };
 
 async function _fetchDailyProfitGoalPaceForIsraelDate(isoDate: string): Promise<DailyProfitGoalPace | null> {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  if (y == null || m == null || d == null) return null;
+  const [y, m] = isoDate.split("-").map(Number);
+  if (y == null || m == null) return null;
   const monthStart = `${y}-${String(m).padStart(2, "0")}-01`;
   const daysInMonth = new Date(y, m, 0).getDate();
   if (daysInMonth <= 0) return null;
@@ -550,13 +550,13 @@ async function _fetchDailyProfitGoalPaceForIsraelDate(isoDate: string): Promise<
   const profitGoal = Number(data?.profit_goal ?? 0);
   if (profitGoal <= 0) return null;
 
-  const dailyPacingTarget = (profitGoal / daysInMonth) * d;
-  return { dailyPacingTarget, monthKey: monthStart };
+  const dailyAverageTarget = profitGoal / daysInMonth;
+  return { dailyAverageTarget, monthKey: monthStart };
 }
 
 /**
- * Linear daily pacing target for today’s gross profit card: (profit_goal / days_in_month) × day_of_month
- * using Asia/Jerusalem calendar. Paired with today’s GP as (todayGp / dailyPacingTarget) × 100 on the client.
+ * Daily average gross-profit target for the pulse card: profit_goal / days_in_month (Israel month).
+ * Client shows (todayGp / dailyAverageTarget) × 100 so the bar resets against a fixed daily quota.
  */
 export async function getDailyProfitGoalPaceIsrael(): Promise<DailyProfitGoalPace | null> {
   const iso = getIsraelDate();
