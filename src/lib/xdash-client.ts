@@ -735,7 +735,7 @@ export async function fetchAdServerOverview(
  *
  * Cost: `netCost` already includes service cost in XDASH; use it when present. Otherwise gross
  * `cost` + `serviceCost`. Never add `serviceCost` on top of `netCost` (avoids double-counting).
- * Profit: revenue − cost.
+ * Profit: revenue − cost (same basis as net cost above — aligns with XDASH net-style totals).
  */
 export function mapAdServerOverviewToHomeTotals(
   raw: XDashApiResponse,

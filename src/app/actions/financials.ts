@@ -2,7 +2,7 @@
 
 import { cache } from "react";
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
-import { getIsraelDateDaysAgo } from "@/lib/israel-date";
+import { getIsraelDate, getIsraelDateDaysAgo } from "@/lib/israel-date";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
@@ -524,6 +524,49 @@ export async function getMonthlyXDASHTotals(): Promise<Record<string, XDASHMonth
   return _cachedMonthlyXDASHTotals();
 }
 
+/** Daily linear MTD target for gross profit: (profit_goal / days_in_month) × day_of_month (Israel). */
+export type DailyProfitGoalPace = {
+  /** (monthly profit_goal / days_in_month) × current Israel day-of-month */
+  dailyPacingTarget: number;
+  monthKey: string;
+};
+
+async function _fetchDailyProfitGoalPaceForIsraelDate(isoDate: string): Promise<DailyProfitGoalPace | null> {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  if (y == null || m == null || d == null) return null;
+  const monthStart = `${y}-${String(m).padStart(2, "0")}-01`;
+  const daysInMonth = new Date(y, m, 0).getDate();
+  if (daysInMonth <= 0) return null;
+
+  const { data, error } = await supabaseAdmin
+    .from("monthly_goals")
+    .select("profit_goal")
+    .eq("month", monthStart)
+    .maybeSingle();
+  if (error) {
+    console.error("[getDailyProfitGoalPaceIsrael]", error.message);
+    return null;
+  }
+  const profitGoal = Number(data?.profit_goal ?? 0);
+  if (profitGoal <= 0) return null;
+
+  const dailyPacingTarget = (profitGoal / daysInMonth) * d;
+  return { dailyPacingTarget, monthKey: monthStart };
+}
+
+/**
+ * Linear daily pacing target for today’s gross profit card: (profit_goal / days_in_month) × day_of_month
+ * using Asia/Jerusalem calendar. Paired with today’s GP as (todayGp / dailyPacingTarget) × 100 on the client.
+ */
+export async function getDailyProfitGoalPaceIsrael(): Promise<DailyProfitGoalPace | null> {
+  const iso = getIsraelDate();
+  return unstable_cache(
+    () => _fetchDailyProfitGoalPaceForIsraelDate(iso),
+    ["daily-profit-goal-pace", iso],
+    { revalidate: CACHE_TTL, tags: [FINANCIAL_TAG] },
+  )();
+}
+
 // ---------------------------------------------------------------------------
 // Shared monthly_goals fetch (used by Overview + Pacing)
 // ---------------------------------------------------------------------------
@@ -700,8 +743,7 @@ async function getHomeRowForDate(isoDate: string): Promise<TodayHomeRow | null> 
  * Stays fresh with force-dynamic + AutoSync / refreshTodayHome.
  */
 export async function getTodayHomeTotals(): Promise<TodayHomeRow | null> {
-  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
-  return getHomeRowForDate(today);
+  return getHomeRowForDate(getIsraelDate());
 }
 
 /** Pulse comparison: today + past rows keyed by day offset (e.g. 1 = yesterday, 7, 28). */
@@ -713,9 +755,14 @@ export type ComparisonData = {
 /**
  * Fetches `daily_home_totals` for today (IL) and for each offset in calendar days ago.
  * Costs include service cost as stored (same as refreshTodayHome / fetchHomeForDate).
+ *
+ * **Today vs yesterday (1d):** `today.date === getIsraelDateDaysAgo(0)` and
+ * `past[1]?.date === getIsraelDateDaysAgo(1)`. Yesterday’s revenue for the pulse UI is
+ * `past[1]?.revenue` — that row’s `revenue` column from `daily_home_totals` for
+ * `date = getIsraelDateDaysAgo(1)` (no pacing; full stored day).
  */
 export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
-  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  const todayKey = getIsraelDateDaysAgo(0);
   const pastKeys = offsets.map((o) => getIsraelDateDaysAgo(o));
   const uniqueDates = Array.from(new Set([todayKey, ...pastKeys]));
 
@@ -766,8 +813,8 @@ export type RefreshTodayHomeResult = { updated: boolean };
 /** Returns { updated: true } when at least one date was upserted from XDASH. */
 export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
   try {
-    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
-    const yesterday = getYesterdayIsraelDate();
+    const today = getIsraelDateDaysAgo(0);
+    const yesterday = getIsraelDateDaysAgo(1);
     const dates = [today, yesterday] as const;
 
     const { data: existingRows, error: selectError } = await supabaseAdmin

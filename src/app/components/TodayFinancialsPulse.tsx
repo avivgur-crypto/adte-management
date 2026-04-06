@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ComparisonData, TodayHomeRow } from "@/app/actions/financials";
+import { useMemo, useState, type ReactNode } from "react";
+import type {
+  ComparisonData,
+  DailyProfitGoalPace,
+  TodayHomeRow,
+} from "@/app/actions/financials";
 
 const PERIODS = [
   { key: 1 as const, label: "1d" },
@@ -18,6 +22,19 @@ function formatCurrency(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(n);
+}
+
+/**
+ * Compact USD for goal labels (aligned with notifications / Master Billing style).
+ * Under $1M as $X.XK; $1M+ as $X.XM (1 decimal).
+ */
+function formatCurrencyShort(amount: number): string {
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000) {
+    return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  }
+  return `${sign}$${(abs / 1_000).toFixed(1)}K`;
 }
 
 /**
@@ -48,8 +65,8 @@ type DeltaKind = "none" | "no_hist" | "na" | "flat" | "pct";
 type DeltaResult = {
   kind: DeltaKind;
   pct?: number;
-  /** pastDay × dayProgress — “paced total” for this clock time on the comparison day */
-  pacedBaseline?: number;
+  /** Full-day value from `daily_home_totals` for the comparison date (the “previous” in % change). */
+  previousValue?: number;
 };
 
 type MarginDeltaResult =
@@ -57,61 +74,29 @@ type MarginDeltaResult =
   | { kind: "na"; pastMarginPct?: number }
   | { kind: "pp"; pp: number; pastMarginPct: number };
 
-/** Fraction [0.01, 1] of Israel calendar day elapsed (linear pacing baseline). */
-function getIsraelDayProgress(): number {
-  const formatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Jerusalem",
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(new Date());
-  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
-  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
-  let frac = (hour + minute / 60) / 24;
-  if (frac <= 0) frac = 0.01;
-  if (frac > 1) frac = 1;
-  return frac;
-}
-
-function useIsraelDayProgress(): number {
-  const [progress, setProgress] = useState(getIsraelDayProgress);
-  useEffect(() => {
-    const tick = () => setProgress(getIsraelDayProgress());
-    tick();
-    const id = setInterval(tick, 60_000);
-    return () => clearInterval(id);
-  }, []);
-  return progress;
-}
-
 /**
- * Linear pace: compare today so far vs (past full-day × dayProgress).
- * % = ((today / (past × dayProgress)) − 1) × 100
+ * Period-over-period change vs the full-day row for the comparison date in Israel time.
+ * % = ((current − previous) / previous) × 100 — same basis as XDASH “vs yesterday”.
  */
 function computeDelta(
   today: number,
   pastRow: TodayHomeRow | null,
   pick: (r: TodayHomeRow) => number,
-  dayProgress: number,
 ): DeltaResult {
   if (!pastRow) return { kind: "no_hist" };
   const past = pick(pastRow);
-  const pacedBaseline = past * dayProgress;
 
   if (today === 0) {
     return {
       kind: "flat",
-      pacedBaseline: past !== 0 ? pacedBaseline : undefined,
+      previousValue: past !== 0 ? past : undefined,
     };
   }
 
   if (past === 0) return { kind: "na" };
 
-  if (pacedBaseline <= 0) return { kind: "na" };
-
-  const pct = (today / pacedBaseline - 1) * 100;
-  return { kind: "pct", pct, pacedBaseline };
+  const pct = ((today - past) / past) * 100;
+  return { kind: "pct", pct, previousValue: past };
 }
 
 /**
@@ -142,8 +127,8 @@ function computeMarginDelta(
   return { kind: "pp", pp, pastMarginPct };
 }
 
-const PACED_TOOLTIP =
-  "Paced total: full-day value for that historical date × today’s day fraction (Israel time). This is the dollar baseline the % compares against.";
+const COMPARISON_TOOLTIP =
+  "Previous period: full-day value from daily_home_totals for the comparison date (Israel calendar). % change = (current − previous) ÷ previous.";
 
 const MARGIN_DELTA_TOOLTIP =
   "Margin change vs that day’s full-day margin (not paced). Shown as percentage points. Value in parentheses is that day’s full-day profit margin.";
@@ -190,18 +175,18 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
     );
   }
   if (delta.kind === "flat") {
-    const pb = delta.pacedBaseline;
+    const pb = delta.previousValue;
     return (
       <ComparisonPill>
         <span
           className="font-medium tabular-nums text-white/45"
-          title={pb != null ? PACED_TOOLTIP : undefined}
+          title={pb != null ? COMPARISON_TOOLTIP : undefined}
         >
           —
           {pb != null && (
             <span className="text-[11px] font-normal text-white/40">
               {" "}
-              (paced {formatCurrencyCompact(pb)})
+              (vs {formatCurrencyCompact(pb)})
             </span>
           )}
         </span>
@@ -220,12 +205,12 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
   const down = pct < 0;
   const tone = deltaToneClasses(up, down);
   const formatted = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
-  const pb = delta.pacedBaseline;
+  const pb = delta.previousValue;
   return (
     <ComparisonPill>
       <span
         className={`inline-flex flex-wrap items-baseline gap-x-1 font-semibold tabular-nums ${tone.main}`}
-        title={PACED_TOOLTIP}
+        title={COMPARISON_TOOLTIP}
       >
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
@@ -294,13 +279,54 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   );
 }
 
+type GpGoalProgress = {
+  barWidthPct: number;
+  displayPercent: number;
+  dailyTargetFormatted: string;
+  atOrAboveGoal: boolean;
+};
+
+function formatGoalPercentLabel(p: number): string {
+  const rounded = Math.round(p * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function GrossProfitGoalBar({ progress }: { progress: GpGoalProgress }) {
+  const { barWidthPct, displayPercent, dailyTargetFormatted, atOrAboveGoal } = progress;
+  const fillClass = atOrAboveGoal
+    ? "bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.45)]"
+    : "bg-amber-500/85";
+
+  return (
+    <div className="mt-2 w-full min-w-0">
+      <div
+        className="h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
+        role="progressbar"
+        aria-valuenow={Math.round(barWidthPct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Progress toward daily profit pacing target"
+      >
+        <div
+          className={`h-1 rounded-full transition-[width] duration-300 ${fillClass}`}
+          style={{ width: `${barWidthPct}%` }}
+        />
+      </div>
+      <p className="mt-1.5 text-[10px] font-medium leading-tight tracking-wide text-white/38 sm:text-[11px]">
+        Goal: {dailyTargetFormatted} ({formatGoalPercentLabel(displayPercent)}%)
+      </p>
+    </div>
+  );
+}
+
 export default function TodayFinancialsPulse({
   comparison,
+  dailyProfitGoalPace,
 }: {
   comparison: ComparisonData | null;
+  dailyProfitGoalPace: DailyProfitGoalPace | null;
 }) {
   const [period, setPeriod] = useState<PeriodKey>(1);
-  const dayProgress = useIsraelDayProgress();
 
   const todayRow = comparison?.today ?? null;
   const revenue = todayRow?.revenue ?? 0;
@@ -313,21 +339,35 @@ export default function TodayFinancialsPulse({
   }, [comparison, period]);
 
   const dRev = useMemo(
-    () => computeDelta(revenue, pastRow, (r) => r.revenue, dayProgress),
-    [revenue, pastRow, dayProgress],
+    () => computeDelta(revenue, pastRow, (r) => r.revenue),
+    [revenue, pastRow],
   );
   const dCost = useMemo(
-    () => computeDelta(cost, pastRow, (r) => r.cost, dayProgress),
-    [cost, pastRow, dayProgress],
+    () => computeDelta(cost, pastRow, (r) => r.cost),
+    [cost, pastRow],
   );
   const dProfit = useMemo(
-    () => computeDelta(profit, pastRow, (r) => r.profit, dayProgress),
-    [profit, pastRow, dayProgress],
+    () => computeDelta(profit, pastRow, (r) => r.profit),
+    [profit, pastRow],
   );
   const dMargin = useMemo(
     () => computeMarginDelta(revenue, profit, pastRow),
     [revenue, profit, pastRow],
   );
+
+  const gpGoalProgress = useMemo((): GpGoalProgress | null => {
+    const target = dailyProfitGoalPace?.dailyPacingTarget;
+    if (target == null || target <= 0) return null;
+    const raw = (profit / target) * 100;
+    const displayPercent = Math.round(raw * 10) / 10;
+    const barWidthPct = Math.min(100, Math.max(0, raw));
+    return {
+      barWidthPct,
+      displayPercent,
+      dailyTargetFormatted: formatCurrencyShort(target),
+      atOrAboveGoal: raw >= 100,
+    };
+  }, [profit, dailyProfitGoalPace]);
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[var(--adte-funnel-bg)] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] sm:p-6">
@@ -402,6 +442,7 @@ export default function TodayFinancialsPulse({
               : "font-semibold text-red-400"
           }
           delta={dProfit}
+          goalProgress={gpGoalProgress ?? undefined}
         />
         <MetricBlock
           label="Profit margin"
@@ -422,6 +463,7 @@ type MetricBlockProps =
       value: string;
       valueClassName: string;
       delta: DeltaResult;
+      goalProgress?: GpGoalProgress;
     }
   | {
       label: string;
@@ -432,6 +474,7 @@ type MetricBlockProps =
 
 function MetricBlock(props: MetricBlockProps) {
   const { label, value, valueClassName } = props;
+  const goalProgress = "goalProgress" in props ? props.goalProgress : undefined;
   return (
     <div className="flex min-w-0 flex-col">
       <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/45 sm:text-[11px]">
@@ -442,6 +485,7 @@ function MetricBlock(props: MetricBlockProps) {
       >
         {value}
       </p>
+      {goalProgress ? <GrossProfitGoalBar progress={goalProgress} /> : null}
       {"marginDelta" in props ? (
         <MarginDeltaSubline delta={props.marginDelta} />
       ) : (

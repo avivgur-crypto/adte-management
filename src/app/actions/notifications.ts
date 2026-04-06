@@ -7,8 +7,7 @@
  * - Per-day Revenue & Gross Profit: `daily_home_totals` (`revenue`, `profit` — same XDASH Home mapping as elsewhere).
  * - Monthly goals & pace: `monthly_goals` + MTD logic aligned with `src/lib/pacing.ts` (profit_goal, target ∝ days elapsed).
  * - Yesterday vs day-before: `daily_home_totals` for `getIsraelDateDaysAgo(1)` vs `getIsraelDateDaysAgo(2)`.
- * - Monthly record (daily GP): max(`profit`) over `daily_home_totals` for the same calendar month with `date` < today.
- * - Milestone dedupe: `sent_notifications` (goal_reached / monthly_record per Israel calendar day).
+ * - Milestone dedupe: `sent_notifications` (daily_goal_reached per Israel day, monthly_total_goal_reached per month).
  */
 
 import {
@@ -200,61 +199,48 @@ async function profitGoalMetThroughDay(
   return { met, profitGoal, profitMtd, targetMtd };
 }
 
-/** Max daily gross profit in month before `beforeDate` (same YYYY-MM). */
-async function maxDailyProfitInMonthBefore(
-  monthStart: string,
-  beforeDate: string,
-): Promise<number | null> {
-  const { data, error } = await supabaseAdmin
-    .from("daily_home_totals")
-    .select("profit")
-    .gte("date", monthStart)
-    .lt("date", beforeDate);
+type NotificationType = "daily_goal_reached" | "monthly_total_goal_reached";
 
-  if (error) {
-    console.error("[notifications] maxDailyProfitInMonthBefore", error.message);
-    return null;
-  }
-  let max = -Infinity;
-  for (const r of data ?? []) {
-    max = Math.max(max, Number(r.profit ?? 0));
-  }
-  return Number.isFinite(max) ? max : null;
-}
-
-type MilestoneNotificationType = "goal_reached" | "monthly_record";
-
-async function wasMilestoneNotifiedToday(
-  notificationType: MilestoneNotificationType,
-  sentDateIsrael: string,
+async function wasAlreadySent(
+  notificationType: NotificationType,
+  sentDate: string,
 ): Promise<boolean> {
   const { data, error } = await supabaseAdmin
     .from("sent_notifications")
     .select("id")
     .eq("notification_type", notificationType)
-    .eq("sent_date", sentDateIsrael)
+    .eq("sent_date", sentDate)
     .maybeSingle();
 
   if (error) {
-    console.error("[notifications] wasMilestoneNotifiedToday", error.message);
+    console.error("[notifications] wasAlreadySent", notificationType, error.message);
     throw new Error(`sent_notifications: ${error.message}`);
   }
   return data != null;
 }
 
-async function recordMilestoneSent(
-  notificationType: MilestoneNotificationType,
-  sentDateIsrael: string,
+async function recordSent(
+  notificationType: NotificationType,
+  sentDate: string,
 ): Promise<void> {
   const { error } = await supabaseAdmin.from("sent_notifications").insert({
     notification_type: notificationType,
-    sent_date: sentDateIsrael,
+    sent_date: sentDate,
   });
 
   if (error) {
     if (error.code === "23505") return;
     throw new Error(`sent_notifications insert: ${error.message}`);
   }
+}
+
+async function fetchMonthlyGoal(monthStart: string): Promise<number> {
+  const { data } = await supabaseAdmin
+    .from("monthly_goals")
+    .select("profit_goal")
+    .eq("month", monthStart)
+    .maybeSingle();
+  return Number(data?.profit_goal ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +290,9 @@ export async function morningSummary(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
-// B. After sync — milestones (daily linear target & monthly daily record)
+// B. After sync — milestones (two independent checks)
+//    1. Daily Goal Reached: today's GP >= daily average target (profit_goal / days_in_month)
+//    2. Monthly Total Goal Reached: MTD total profit >= full monthly goal (once per month)
 // ---------------------------------------------------------------------------
 
 export async function checkPerformance(): Promise<{
@@ -317,36 +305,29 @@ export async function checkPerformance(): Promise<{
   const monthStart = `${y}-${String(m).padStart(2, "0")}-01`;
   const dim = daysInMonthYm(y, m);
 
+  const profitGoal = await fetchMonthlyGoal(monthStart);
+  if (profitGoal <= 0) {
+    return { sent: false, reasons: [], log: "[checkPerformance] no monthly goal set" };
+  }
+
   const todayRow = await fetchDailyRow(today);
   const todayGp = todayRow?.profit ?? 0;
 
-  const { data: goals } = await supabaseAdmin
-    .from("monthly_goals")
-    .select("profit_goal")
-    .eq("month", monthStart)
-    .maybeSingle();
+  const dailyAvgTarget = profitGoal / dim;
+  const dailyGoalReached = todayGp + 1e-6 >= dailyAvgTarget;
 
-  const profitGoal = Number(goals?.profit_goal ?? 0);
-  const dailyLinear = profitGoal > 0 && dim > 0 ? profitGoal / dim : 0;
-
-  const exceededDailyPace =
-    profitGoal > 0 && dailyLinear > 0 && todayGp + 1e-6 >= dailyLinear;
-
-  const maxPrev = await maxDailyProfitInMonthBefore(monthStart, today);
-  const monthlyRecord =
-    maxPrev === null
-      ? todayGp > 0
-      : todayGp > maxPrev + 1e-6;
+  const mtdProfit = await sumProfitMtd(monthStart, today);
+  const monthlyGoalReached = mtdProfit + 1e-6 >= profitGoal;
 
   const reasons: string[] = [];
-  if (exceededDailyPace) reasons.push("daily_linear_pace");
-  if (monthlyRecord) reasons.push("monthly_daily_record");
+  if (dailyGoalReached) reasons.push("daily_goal_reached");
+  if (monthlyGoalReached) reasons.push("monthly_total_goal_reached");
 
   if (reasons.length === 0) {
     return {
       sent: false,
       reasons: [],
-      log: "[checkPerformance] no milestone",
+      log: `[checkPerformance] no milestone (todayGp=${todayGp.toFixed(0)} target=${dailyAvgTarget.toFixed(0)}, mtd=${mtdProfit.toFixed(0)} goal=${profitGoal.toFixed(0)})`,
     };
   }
 
@@ -355,42 +336,36 @@ export async function checkPerformance(): Promise<{
   const errors: string[] = [];
   const logExtras: string[] = [];
 
-  if (exceededDailyPace) {
-    if (await wasMilestoneNotifiedToday("goal_reached", today)) {
-      logExtras.push("goal_skipped_already_sent");
+  if (dailyGoalReached) {
+    if (await wasAlreadySent("daily_goal_reached", today)) {
+      logExtras.push("daily_goal_skipped");
     } else {
-      const dayOfMonthToday = parseInt(today.slice(8, 10), 10);
-      const { profitMtd: mtdActual, targetMtd: mtdTarget } = await profitGoalMetThroughDay(
-        monthStart,
-        dayOfMonthToday,
-        dim,
-      );
       const r = await sendPushToAllSubscribers(
-        "Goal Reached! 🎯",
-        `Today's GP is Above Pace. MTD Progress: ${formatCurrencyShort(mtdActual)} vs. ${formatCurrencyShort(mtdTarget)} goal. 💰`,
+        "Daily Goal Reached! 🎯",
+        `Today's GP: ${formatCurrencyShort(todayGp)} vs. ${formatCurrencyShort(dailyAvgTarget)} daily target. Keep it up! 💰`,
       );
       ok += r.ok;
       failed += r.failed;
       errors.push(...r.errors);
       if (r.ok > 0) {
-        await recordMilestoneSent("goal_reached", today);
+        await recordSent("daily_goal_reached", today);
       }
     }
   }
 
-  if (monthlyRecord) {
-    if (await wasMilestoneNotifiedToday("monthly_record", today)) {
-      logExtras.push("record_skipped_already_sent");
+  if (monthlyGoalReached) {
+    if (await wasAlreadySent("monthly_total_goal_reached", monthStart)) {
+      logExtras.push("monthly_goal_skipped");
     } else {
       const r = await sendPushToAllSubscribers(
-        "New Monthly Record! 🔥",
-        "Today's GP is your best this month! Keep crushing it.",
+        "Monthly Goal Reached! 🔥",
+        `MTD Profit: ${formatCurrencyShort(mtdProfit)} has hit the ${formatCurrencyShort(profitGoal)} monthly goal! 🎉`,
       );
       ok += r.ok;
       failed += r.failed;
       errors.push(...r.errors);
       if (r.ok > 0) {
-        await recordMilestoneSent("monthly_record", today);
+        await recordSent("monthly_total_goal_reached", monthStart);
       }
     }
   }

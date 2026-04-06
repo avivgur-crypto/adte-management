@@ -23,6 +23,9 @@ function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
   if (!expected) return { ok: true };
   const received = getReceivedSecret(request);
   if (received === expected) return { ok: true };
+  console.log(
+    `[morning-summary] auth fail: received ${received.length} chars, expected ${expected.length} chars`,
+  );
   return {
     ok: false,
     detail: `Secret mismatch (${received.length} vs ${expected.length} chars)`,

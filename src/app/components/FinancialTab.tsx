@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import {
   getAllDailyMovement,
   getComparisonData,
+  getDailyProfitGoalPaceIsrael,
   getDualPaceByMonth,
   getMonthlyXDASHTotals,
   getTotalOverviewData,
@@ -31,10 +32,11 @@ function FinancialSkeleton() {
 }
 
 async function FinancialOverview() {
-  const [overviewResult, xdashTotalsResult, comparisonResult] = await Promise.allSettled([
+  const [overviewResult, xdashTotalsResult, comparisonResult, goalPaceResult] = await Promise.allSettled([
     getTotalOverviewData(),
     getMonthlyXDASHTotals(),
     getComparisonData([1, 7, 28]),
+    getDailyProfitGoalPaceIsrael(),
   ]);
   const overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
   const xdashTotals: Record<string, XDASHMonthTotals> =
@@ -43,10 +45,12 @@ async function FinancialOverview() {
   const hasError = overviewResult.status === "rejected";
   const comparison =
     comparisonResult.status === "fulfilled" ? comparisonResult.value : null;
+  const dailyProfitGoalPace =
+    goalPaceResult.status === "fulfilled" ? goalPaceResult.value : null;
 
   return (
     <div className="flex flex-col gap-8">
-      <TodayFinancialsPulse comparison={comparison} />
+      <TodayFinancialsPulse comparison={comparison} dailyProfitGoalPace={dailyProfitGoalPace} />
       {hasError && (
         <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
           Some financial data could not be loaded.

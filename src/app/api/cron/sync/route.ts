@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
@@ -7,23 +7,37 @@ import { syncXDASHData } from "@/lib/sync/xdash";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-function assertCronSecret(request: Request): void {
-  const authHeader = request.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    throw new Error("CRON_SECRET is not set");
-  }
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    throw new Error("Unauthorized");
-  }
+function getReceivedSecret(request: NextRequest): string {
+  const q = request.nextUrl.searchParams.get("secret");
+  if (q != null && String(q).trim() !== "") return String(q).trim();
+  const auth = request.headers.get("authorization") ?? "";
+  return auth.replace(/^Bearer\s+/i, "").trim();
 }
 
-export async function GET(request: Request) {
-  try {
-    assertCronSecret(request);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unauthorized";
-    return NextResponse.json({ error: message }, { status: 401 });
+function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
+  const expected = (process.env.CRON_SECRET ?? "").trim();
+  if (!expected) {
+    console.log("[cron/sync] CRON_SECRET not set — rejecting request");
+    return { ok: false, detail: "CRON_SECRET not configured" };
+  }
+  const received = getReceivedSecret(request);
+  if (received === expected) return { ok: true };
+  console.log(
+    `[cron/sync] auth fail: received ${received.length} chars, expected ${expected.length} chars`,
+  );
+  return {
+    ok: false,
+    detail: `Secret mismatch (${received.length} vs ${expected.length} chars)`,
+  };
+}
+
+export async function GET(request: NextRequest) {
+  const auth = checkAuth(request);
+  if (!auth.ok) {
+    return NextResponse.json(
+      { error: "Unauthorized", detail: auth.detail },
+      { status: 401 },
+    );
   }
 
   const summary: {
@@ -91,6 +105,6 @@ export async function GET(request: Request) {
   return NextResponse.json({ ok, summary }, { status: ok ? 200 : 500 });
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   return GET(request);
 }

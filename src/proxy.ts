@@ -7,6 +7,7 @@ export async function proxy(request: NextRequest) {
   // API routes with their own auth — bypass completely
   if (
     pathname.startsWith("/api/cron/sync") ||
+    pathname.startsWith("/api/cron/morning-summary") ||
     pathname.startsWith("/api/auto-sync") ||
     pathname.startsWith("/api/last-sync") ||
     pathname.startsWith("/api/funnel-report")
