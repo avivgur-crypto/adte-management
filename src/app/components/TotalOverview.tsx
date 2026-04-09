@@ -2,19 +2,9 @@
 
 import type { ReactNode } from "react";
 import { useMemo, useRef, useEffect, useState } from "react";
-import {
-  Check,
-  CircleDollarSign,
-  Coins,
-  Percent,
-  TrendingUp,
-} from "lucide-react";
+import { CircleDollarSign, Coins, Percent, TrendingUp } from "lucide-react";
 import { useFilter } from "@/app/context/FilterContext";
-import type {
-  DailyProfitGoalPace,
-  MonthOverview,
-  XDASHMonthTotals,
-} from "@/app/actions/financials";
+import type { MonthOverview, XDASHMonthTotals } from "@/app/actions/financials";
 import {
   DataSourceToggle,
   type FinancialDataSource,
@@ -82,6 +72,16 @@ function metricCopy(source: FinancialDataSource) {
 
 type SubPart = { key: string; label: string; value: number };
 
+/** Shared shell so Revenue / Cost / Profit / Margin primary lines align pixel-consistent. */
+const STAT_ROW =
+  "border-b border-white/[0.07] bg-white/5 px-3 py-2 last:border-b-0";
+const STAT_PRIMARY =
+  "flex min-h-[2.25rem] min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1";
+
+function marginPctToneClass(pct: number): string {
+  return pct >= 0 ? "text-emerald-400" : "text-red-400";
+}
+
 function MetricRow({
   icon: Icon,
   title,
@@ -89,8 +89,6 @@ function MetricRow({
   valueClassName,
   subParts,
   subNote,
-  leadingBeforeIcon,
-  valueSuffix,
 }: {
   icon: typeof CircleDollarSign;
   title: ReactNode;
@@ -98,15 +96,11 @@ function MetricRow({
   valueClassName: string;
   subParts: SubPart[];
   subNote?: string;
-  /** e.g. daily goal ring — sits left of the dim metric icon, same row height as other cards. */
-  leadingBeforeIcon?: ReactNode;
-  valueSuffix?: ReactNode;
 }) {
   return (
-    <div className="border-b border-white/[0.07] bg-white/5 px-3 py-2 last:border-b-0">
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <div className="flex min-w-0 items-center gap-1.5">
-          {leadingBeforeIcon}
+    <div className={STAT_ROW}>
+      <div className={STAT_PRIMARY}>
+        <div className="flex min-w-0 items-center gap-2">
           <Icon
             className="h-3.5 w-3.5 shrink-0 text-white/35"
             strokeWidth={2}
@@ -116,13 +110,10 @@ function MetricRow({
             {title}
           </span>
         </div>
-        <div className="flex shrink-0 items-baseline gap-0">
-          <AnimatedCurrency
-            value={value}
-            className={`text-xl font-bold tabular-nums leading-none ${valueClassName}`}
-          />
-          {valueSuffix}
-        </div>
+        <AnimatedCurrency
+          value={value}
+          className={`shrink-0 text-xl font-bold tabular-nums leading-none ${valueClassName}`}
+        />
       </div>
       {subParts.length > 0 && (
         <div className="mt-1.5 min-w-0 pl-5 sm:pl-6">
@@ -158,73 +149,12 @@ function profitToneClass(value: number): string {
   return "text-white/80";
 }
 
-function formatGoalPercentLabel(p: number): string {
-  const rounded = Math.round(p * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-}
-
-/** 16×16 ring: daily goal fill; solid + check when ≥100%. */
-function ProfitGoalRing({
-  ringFillPct,
-  reached,
-}: {
-  ringFillPct: number;
-  reached: boolean;
-}) {
-  const r = 5;
-  const c = 2 * Math.PI * r;
-  const dash = (Math.min(100, Math.max(0, ringFillPct)) / 100) * c;
-
-  if (reached) {
-    return (
-      <span
-        className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center"
-        aria-hidden
-      >
-        <span className="absolute inset-0 rounded-full bg-emerald-500" />
-        <Check
-          className="relative z-10 h-2.5 w-2.5 text-emerald-950"
-          strokeWidth={3}
-          aria-hidden
-        />
-      </span>
-    );
-  }
-
-  return (
-    <svg className="h-4 w-4 shrink-0" viewBox="0 0 16 16" aria-hidden>
-      <circle
-        cx="8"
-        cy="8"
-        r={r}
-        className="fill-none stroke-white/10"
-        strokeWidth="2"
-      />
-      <circle
-        cx="8"
-        cy="8"
-        r={r}
-        className="fill-none stroke-emerald-500"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeDasharray={`${dash} ${c}`}
-        transform="rotate(-90 8 8)"
-      />
-    </svg>
-  );
-}
-
 export default function TotalOverview({
   dataByMonth,
   xdashByMonth,
-  dailyProfitGoalPace = null,
-  todayGrossProfit = null,
 }: {
   dataByMonth: MonthOverview[];
   xdashByMonth?: Record<string, XDASHMonthTotals>;
-  /** Today’s GP vs daily quota (profit_goal ÷ days in month) — same basis as the former pulse bar. */
-  dailyProfitGoalPace?: DailyProfitGoalPace | null;
-  todayGrossProfit?: number | null;
 }) {
   const { selectedMonths } = useFilter();
   const [source, setSource] = useState<FinancialDataSource>("xdash");
@@ -283,23 +213,13 @@ export default function TotalOverview({
   }, [dataByMonth, selectedMonths, source, xdashByMonth]);
 
   const labels = metricCopy(source);
+  const showBreakdown = source === "billing";
 
   const marginPct = useMemo(() => {
     const { profitValue, revenueTotal } = metrics;
     if (revenueTotal === 0) return 0;
     return Math.round((profitValue / revenueTotal) * 1000) / 10;
   }, [metrics]);
-
-  const dailyGoalProgress = useMemo(() => {
-    const target = dailyProfitGoalPace?.dailyAverageTarget;
-    if (target == null || target <= 0 || todayGrossProfit == null) return null;
-    const raw = (todayGrossProfit / target) * 100;
-    return {
-      displayPercent: Math.round(raw * 10) / 10,
-      ringFillPct: Math.min(100, Math.max(0, raw)),
-      reached: raw >= 100,
-    };
-  }, [dailyProfitGoalPace, todayGrossProfit]);
 
   if (metrics.filteredData.length === 0) {
     return (
@@ -311,24 +231,29 @@ export default function TotalOverview({
     );
   }
 
-  const revenueSubs: SubPart[] = [
-    { key: "r1", label: `${labels.revenueFirst}:`, value: metrics.mediaRev },
-    { key: "r2", label: `${labels.revenueSecond}:`, value: metrics.saasRev },
-  ];
+  const revenueSubs: SubPart[] = showBreakdown
+    ? [
+        { key: "r1", label: `${labels.revenueFirst}:`, value: metrics.mediaRev },
+        { key: "r2", label: `${labels.revenueSecond}:`, value: metrics.saasRev },
+      ]
+    : [];
 
-  const costSubs: SubPart[] = [
-    { key: "c1", label: `${labels.costFirst}:`, value: metrics.mediaCost },
-    { key: "c2", label: `${labels.costSecond}:`, value: metrics.techCost },
-    { key: "c3", label: `${labels.bs}:`, value: metrics.bsCost },
-  ];
+  const costSubs: SubPart[] = showBreakdown
+    ? [
+        { key: "c1", label: `${labels.costFirst}:`, value: metrics.mediaCost },
+        { key: "c2", label: `${labels.costSecond}:`, value: metrics.techCost },
+        { key: "c3", label: `${labels.bs}:`, value: metrics.bsCost },
+      ]
+    : [];
 
-  const profitSubs: SubPart[] = [
-    { key: "p1", label: `${labels.profitFirst}:`, value: metrics.mediaPL },
-    { key: "p2", label: `${labels.profitSecond}:`, value: metrics.saasPL },
-  ];
+  const profitSubs: SubPart[] = showBreakdown
+    ? [
+        { key: "p1", label: `${labels.profitFirst}:`, value: metrics.mediaPL },
+        { key: "p2", label: `${labels.profitSecond}:`, value: metrics.saasPL },
+      ]
+    : [];
 
-  const profitNote =
-    source === "billing" ? "Revenue − cost (all buckets)." : undefined;
+  const profitNote = showBreakdown ? "Revenue − cost (all buckets)." : undefined;
 
   return (
     <section className="mb-8">
@@ -366,30 +291,9 @@ export default function TotalOverview({
           valueClassName={profitToneClass(metrics.profitValue)}
           subParts={profitSubs}
           subNote={profitNote}
-          leadingBeforeIcon={
-            dailyGoalProgress ? (
-              <span
-                className="inline-flex shrink-0"
-                title="Today vs daily gross-profit target"
-                aria-label={`Daily goal progress about ${formatGoalPercentLabel(dailyGoalProgress.displayPercent)} percent`}
-              >
-                <ProfitGoalRing
-                  ringFillPct={dailyGoalProgress.ringFillPct}
-                  reached={dailyGoalProgress.reached}
-                />
-              </span>
-            ) : undefined
-          }
-          valueSuffix={
-            dailyGoalProgress ? (
-              <span className="ml-1 text-xs tabular-nums text-white/40">
-                ({formatGoalPercentLabel(dailyGoalProgress.displayPercent)}%)
-              </span>
-            ) : undefined
-          }
         />
-        <div className="border-b border-white/[0.07] bg-white/5 px-3 py-2 last:border-b-0">
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className={STAT_ROW}>
+          <div className={STAT_PRIMARY}>
             <div className="flex min-w-0 items-center gap-2">
               <Percent
                 className="h-3.5 w-3.5 shrink-0 text-white/35"
@@ -402,9 +306,7 @@ export default function TotalOverview({
               </span>
             </div>
             <span
-              className={`shrink-0 text-xl font-bold tabular-nums leading-none ${
-                marginPct >= 0 ? "text-emerald-400" : "text-red-400"
-              }`}
+              className={`shrink-0 text-xl font-bold tabular-nums leading-none ${marginPctToneClass(marginPct)}`}
             >
               {marginPct.toFixed(1)}%
             </span>

@@ -1,7 +1,12 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import type { ComparisonData, TodayHomeRow } from "@/app/actions/financials";
+import { Check } from "lucide-react";
+import type {
+  ComparisonData,
+  DailyProfitGoalPace,
+  TodayHomeRow,
+} from "@/app/actions/financials";
 
 const PERIODS = [
   { key: 1 as const, label: "1d" },
@@ -130,6 +135,68 @@ function deltaToneClasses(up: boolean, down: boolean) {
     };
   }
   return { main: "text-white/50", muted: "text-white/40" };
+}
+
+/** 16×16 daily GP vs daily target — only visual goal progress in the dashboard (Pulse). */
+function DailyProfitGoalRing({
+  profit,
+  dailyTarget,
+}: {
+  profit: number;
+  dailyTarget: number;
+}) {
+  if (dailyTarget <= 0) return null;
+
+  const raw = (profit / dailyTarget) * 100;
+  const r = 5;
+  const c = 2 * Math.PI * r;
+  const ringFillPct = Math.min(100, Math.max(0, raw));
+  const dash = (ringFillPct / 100) * c;
+  const reached = raw >= 100;
+
+  if (reached) {
+    return (
+      <span
+        className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center"
+        aria-hidden
+        title="Daily gross-profit target reached"
+      >
+        <span className="absolute inset-0 rounded-full bg-emerald-500" />
+        <Check
+          className="relative z-10 h-2.5 w-2.5 text-emerald-950"
+          strokeWidth={3}
+          aria-hidden
+        />
+      </span>
+    );
+  }
+
+  return (
+    <svg
+      className="h-4 w-4 shrink-0"
+      viewBox="0 0 16 16"
+      role="img"
+      aria-label={`About ${Math.round(raw * 10) / 10} percent of daily gross-profit target`}
+    >
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        className="fill-none stroke-white/10"
+        strokeWidth="2"
+      />
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        className="fill-none stroke-emerald-500"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray={`${dash} ${c}`}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  );
 }
 
 function ComparisonPill({ children }: { children: ReactNode }) {
@@ -264,8 +331,10 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
 
 export default function TodayFinancialsPulse({
   comparison,
+  dailyProfitGoalPace,
 }: {
   comparison: ComparisonData | null;
+  dailyProfitGoalPace: DailyProfitGoalPace | null;
 }) {
   const [period, setPeriod] = useState<PeriodKey>(1);
 
@@ -295,6 +364,12 @@ export default function TodayFinancialsPulse({
     () => computeMarginDelta(revenue, profit, pastRow),
     [revenue, profit, pastRow],
   );
+
+  const dailyTarget = dailyProfitGoalPace?.dailyAverageTarget ?? 0;
+  const profitGoalRing =
+    dailyTarget > 0 ? (
+      <DailyProfitGoalRing profit={profit} dailyTarget={dailyTarget} />
+    ) : null;
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[var(--adte-funnel-bg)] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] sm:p-6">
@@ -362,6 +437,7 @@ export default function TodayFinancialsPulse({
         />
         <MetricBlock
           label="Gross profit"
+          labelPrefix={profitGoalRing}
           value={formatCurrency(profit)}
           valueClassName={
             profit >= 0
@@ -386,6 +462,8 @@ export default function TodayFinancialsPulse({
 type MetricBlockProps =
   | {
       label: string;
+      /** e.g. daily goal ring — left of label (Pulse gross profit only). */
+      labelPrefix?: ReactNode;
       value: string;
       valueClassName: string;
       delta: DeltaResult;
@@ -399,10 +477,12 @@ type MetricBlockProps =
 
 function MetricBlock(props: MetricBlockProps) {
   const { label, value, valueClassName } = props;
+  const labelPrefix = "delta" in props ? props.labelPrefix : undefined;
   return (
     <div className="flex min-w-0 flex-col">
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/45 sm:text-[11px]">
-        {label}
+      <p className="mb-1.5 flex min-h-[1.125rem] items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/45 sm:min-h-[1.25rem] sm:text-[11px]">
+        {labelPrefix ? <span className="shrink-0">{labelPrefix}</span> : null}
+        <span>{label}</span>
       </p>
       <p
         className={`min-h-[1.75rem] truncate font-sans text-xl font-bold tabular-nums tracking-tight sm:min-h-[2rem] sm:text-2xl lg:text-[1.65rem] ${valueClassName}`}

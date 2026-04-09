@@ -73,8 +73,6 @@ export default function SettingsModal({
     setInitialLoad(true);
     setErrorBanner(null);
 
-    console.log("[SettingsModal] Re-fetching settings from DB...");
-
     void (async () => {
       const s = await getNotificationSettings();
       if (cancelled) return;
