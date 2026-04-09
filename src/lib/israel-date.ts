@@ -3,6 +3,17 @@ export function getIsraelDate(): string {
   return getIsraelDateDaysAgo(0);
 }
 
+/** Local hour 0–23 in Asia/Jerusalem (for cron / notification windows). */
+export function getIsraelHour(): number {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jerusalem",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const h = parts.find((p) => p.type === "hour")?.value;
+  return h != null ? parseInt(h, 10) : 0;
+}
+
 /** YYYY-MM-DD for calendar date N days before today in Asia/Jerusalem. */
 export function getIsraelDateDaysAgo(daysAgo: number): string {
   const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
