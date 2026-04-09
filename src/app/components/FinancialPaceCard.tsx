@@ -56,7 +56,7 @@ function SectionBlock({
 
   return (
     <div className="rounded-xl border border-white/[0.08] bg-black/30 p-4">
-      <h3 className="mb-3 text-sm font-semibold text-white/50">
+      <h3 className="mb-3 min-h-[1.25rem] text-sm font-semibold leading-tight text-white/50">
         {title}
       </h3>
       <div className="space-y-3">
@@ -267,7 +267,7 @@ function FinancialPaceCard({
         )}
         {visible.media && (
           <SectionBlock
-            title="Media Revenue (from Xdash)"
+            title="Media Revenue (Xdash)"
             section={summary.media}
             isMultiMonth={summary.isMultiMonth}
             showGoalVarianceLine={showGoalVarianceLine}
@@ -275,7 +275,7 @@ function FinancialPaceCard({
         )}
         {visible.saas && (
           <SectionBlock
-            title="SaaS Revenue (from Billing)"
+            title="SaaS Revenue (Billing)"
             section={summary.saas}
             isMultiMonth={summary.isMultiMonth}
             showGoalVarianceLine={showGoalVarianceLine}
