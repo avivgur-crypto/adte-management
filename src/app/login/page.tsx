@@ -21,7 +21,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       <div className="animate-adte-in flex w-full max-w-sm flex-col items-center gap-8">
         <div className="flex w-full min-h-0 max-w-full flex-col items-center gap-4 text-center sm:gap-5">
           <div className="flex min-h-0 w-full max-w-full flex-row items-center justify-center gap-4 sm:gap-6">
-            <LogoMark size="lg" className="shrink-0" />
+            <LogoMark variant="login" size="lg" className="shrink-0" />
             <div className="flex flex-col items-center justify-center gap-0.5 sm:items-start">
               <p className="text-2xl font-bold tracking-[-0.02em] text-white">
                 Adtex

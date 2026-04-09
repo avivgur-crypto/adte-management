@@ -1,6 +1,7 @@
 "use client";
 
 type LogoMarkSize = "sm" | "md" | "lg";
+export type LogoMarkVariant = "header" | "login";
 
 /**
  * קופסה בגודל קבוע — התמונה (512×512 אינטרינסית) חייבת להיכנס בפנים בלבד.
@@ -26,25 +27,51 @@ const MARK_IMG_CLASS: Record<LogoMarkSize, string> = {
   lg: "h-[80px] w-[80px]",
 };
 
-/** סמל המותג — icon-512 על רקע כהה שקוף */
+/** לוגו ורוד (PWA) — דף לוגין בלבד */
+const LOGIN_SRC = "/icon-512.png";
+
+/** לוגו מלא על רקע שכור — כותרת האפליקציה בלבד */
+const HEADER_SRC = "/logo-header-inapp.png";
+
 export function LogoMark({
   size = "md",
+  variant = "header",
   className = "",
 }: {
   size?: LogoMarkSize;
+  variant?: LogoMarkVariant;
   className?: string;
 }) {
+  if (variant === "login") {
+    return (
+      <div
+        className={`flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/[0.04] p-px ring-1 ring-white/[0.1] ${MARK_BOX[size]} ${className}`}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={LOGIN_SRC}
+          alt=""
+          width={MARK_IMG_DIMS[size].w}
+          height={MARK_IMG_DIMS[size].h}
+          className={`max-h-full max-w-full rounded-[10px] object-contain ${MARK_IMG_CLASS[size]}`}
+          loading="eager"
+          decoding="async"
+        />
+      </div>
+    );
+  }
+
   return (
     <div
-      className={`flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/[0.04] p-px ring-1 ring-white/[0.1] ${MARK_BOX[size]} ${className}`}
+      className={`flex shrink-0 items-center justify-start overflow-hidden ${className}`}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/icon-512.png"
+        src={HEADER_SRC}
         alt=""
-        width={MARK_IMG_DIMS[size].w}
-        height={MARK_IMG_DIMS[size].h}
-        className={`max-h-full max-w-full rounded-[10px] object-contain ${MARK_IMG_CLASS[size]}`}
+        width={200}
+        height={96}
+        className="h-[88px] w-auto max-h-[88px] max-w-[min(100%,260px)] object-contain object-left md:h-[96px] md:max-h-[96px]"
         loading="eager"
         decoding="async"
       />
@@ -63,22 +90,19 @@ export default function AdteLogo({ size = "md", className = "" }: AdteLogoProps)
       className={`flex min-h-0 w-full max-w-full flex-col items-center gap-2 overflow-hidden ${className}`}
       aria-label="Adtex"
     >
-      <LogoMark size={size} />
+      <LogoMark variant="header" size={size} />
     </div>
   );
 }
 
-/** כותרת דשבורד: לוגו + שם + כיתוב */
+/** כותרת דשבורד: לוגו (כולל wordmark בתוך התמונה) + כיתוב */
 export function AdteLogoHeader({ className = "" }: { className?: string }) {
   return (
     <div
-      className={`relative flex min-h-[88px] min-w-0 items-center gap-4 md:min-h-[96px] md:gap-5 ${className}`}
+      className={`flex min-h-[88px] min-w-0 flex-wrap items-center gap-3 md:min-h-[96px] md:gap-4 ${className}`}
     >
-      <LogoMark size="md" className="shrink-0" />
-      <h1 className="absolute left-[130px] top-[40px] m-0 text-[30px] font-extrabold leading-tight tracking-tight text-white">
-        Adtex
-      </h1>
-      <p className="absolute left-[130px] top-[70px] m-0 flex w-[130px] flex-wrap text-[13px] font-medium leading-[18px] text-zinc-500">
+      <LogoMark variant="header" size="md" className="shrink-0" />
+      <p className="m-0 max-w-[160px] text-[13px] font-medium leading-[18px] text-zinc-500">
         Management App
       </p>
     </div>
