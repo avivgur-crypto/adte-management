@@ -1,6 +1,6 @@
 "use client";
 
-import { Funnel, LayoutDashboard, LogOut, Menu, Users } from "lucide-react";
+import { Funnel, LayoutDashboard, LogOut, Menu, Settings, Users } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import AdminSyncPanel from "./AdminSyncPanel";
 import { useAuth } from "@/app/context/AuthContext";
@@ -12,6 +12,10 @@ import {
   type FilterState,
   type AppScreen,
 } from "@/app/context/FilterContext";
+import {
+  getNotificationSettings,
+  setLowMarginEnabled as updateLowMarginSetting,
+} from "@/app/actions/notification-settings";
 
 const SCREENS: { key: AppScreen; label: string; icon: typeof LayoutDashboard }[] = [
   { key: "financial", label: "Financial", icon: LayoutDashboard },
@@ -69,6 +73,63 @@ function ScreenNav({ onNavigate }: { onNavigate?: () => void }) {
         );
       })}
     </nav>
+  );
+}
+
+function NotificationSettingsSection() {
+  const { user } = useAuth();
+  const [lowMarginEnabled, setLowMarginEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [pending, startTransition] = useTransition();
+
+  useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const s = await getNotificationSettings();
+      if (!cancelled && s) setLowMarginEnabled(s.low_margin_enabled);
+      if (!cancelled) setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  if (!user) return null;
+
+  return (
+    <div className="mb-3 border-b border-white/10 pb-3">
+      <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        <Settings className="h-3 w-3" aria-hidden />
+        Settings
+      </p>
+      <label className="flex cursor-pointer items-start gap-2.5 rounded-lg px-0.5 py-1 transition-colors hover:bg-white/5">
+        <input
+          type="checkbox"
+          checked={lowMarginEnabled}
+          disabled={loading || pending}
+          onChange={(e) => {
+            const next = e.target.checked;
+            const prev = lowMarginEnabled;
+            setLowMarginEnabled(next);
+            startTransition(async () => {
+              const r = await updateLowMarginSetting(next);
+              if (!r.ok) setLowMarginEnabled(prev);
+            });
+          }}
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-emerald-500/50 disabled:opacity-50"
+        />
+        <span className="text-xs leading-snug text-zinc-400">
+          <span className="font-medium text-zinc-300">Low margin alerts</span>
+          <span className="block text-[11px] text-zinc-500">
+            Notify when margin stays below 33% for 3 consecutive syncs (after 12:00 IL).
+          </span>
+        </span>
+      </label>
+    </div>
   );
 }
 
@@ -198,6 +259,7 @@ function DesktopSidebar() {
     >
       <div className="flex-1 overflow-y-auto p-3">
         <ScreenNav />
+        <NotificationSettingsSection />
         <h2 className="mb-2 text-sm font-semibold tracking-tight text-zinc-200">
           Filters
         </h2>
@@ -334,6 +396,7 @@ function MobileMenuPanel() {
       >
         <div className="flex flex-1 flex-col overflow-y-auto p-4 pb-safe">
           <ScreenNav onNavigate={() => setOpen(false)} />
+          <NotificationSettingsSection />
           <h3 className="mb-2.5 mt-2 text-sm font-semibold tracking-tight text-zinc-200">
             Filters
           </h3>

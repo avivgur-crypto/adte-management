@@ -7,8 +7,9 @@
  * - Per-day Revenue & Gross Profit: `daily_home_totals` (`revenue`, `profit` — same XDASH Home mapping as elsewhere).
  * - Monthly goals & pace: `monthly_goals` + MTD logic aligned with `src/lib/pacing.ts` (profit_goal, target ∝ days elapsed).
  * - Yesterday vs day-before: `daily_home_totals` for `getIsraelDateDaysAgo(1)` vs `getIsraelDateDaysAgo(2)`.
- * - Milestone dedupe: `sent_notifications` (daily_goal_reached per Israel day, monthly_total_goal_reached per month).
+ * - Milestone dedupe: `sent_notifications` (daily_goal_reached & low_margin_alert per Israel day, monthly_total_goal_reached per month).
  * - Daily goal crossing: `daily_goal_sync_snapshot` last_seen_profit vs current row; no daily notify 00:00–07:59 IL.
+ * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 33% margin (Israel 12:00+); gated by `profiles.notification_settings`.
  */
 
 import {
@@ -205,7 +206,10 @@ async function profitGoalMetThroughDay(
   return { met, profitGoal, profitMtd, targetMtd };
 }
 
-type NotificationType = "daily_goal_reached" | "monthly_total_goal_reached";
+type NotificationType =
+  | "daily_goal_reached"
+  | "monthly_total_goal_reached"
+  | "low_margin_alert";
 
 async function wasAlreadySent(
   notificationType: NotificationType,
@@ -266,10 +270,17 @@ async function getDailyGoalSnapshot(israelDate: string): Promise<number | null> 
 }
 
 async function upsertDailyGoalSnapshot(israelDate: string, profit: number): Promise<void> {
+  const { data: existing } = await supabaseAdmin
+    .from("daily_goal_sync_snapshot")
+    .select("consecutive_low_margin_count")
+    .eq("israel_date", israelDate)
+    .maybeSingle();
+
   const { error } = await supabaseAdmin.from("daily_goal_sync_snapshot").upsert(
     {
       israel_date: israelDate,
       last_seen_profit: profit,
+      consecutive_low_margin_count: existing?.consecutive_low_margin_count ?? 0,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "israel_date" },
@@ -277,6 +288,122 @@ async function upsertDailyGoalSnapshot(israelDate: string, profit: number): Prom
   if (error) {
     throw new Error(`daily_goal_sync_snapshot upsert: ${error.message}`);
   }
+}
+
+async function anyProfileWantsLowMarginAlerts(): Promise<boolean> {
+  const { data, error } = await supabaseAdmin.from("profiles").select("notification_settings");
+  if (error) {
+    console.error("[notifications] anyProfileWantsLowMarginAlerts", error.message);
+    return true;
+  }
+  if (!data?.length) return true;
+  return data.some((row) => {
+    const s = row.notification_settings as { low_margin_enabled?: boolean } | null | undefined;
+    if (s == null) return true;
+    return s.low_margin_enabled !== false;
+  });
+}
+
+async function resetLowMarginCount(israelDate: string): Promise<void> {
+  const { data: row } = await supabaseAdmin
+    .from("daily_goal_sync_snapshot")
+    .select("israel_date")
+    .eq("israel_date", israelDate)
+    .maybeSingle();
+  if (!row) return;
+  const { error } = await supabaseAdmin
+    .from("daily_goal_sync_snapshot")
+    .update({ consecutive_low_margin_count: 0 })
+    .eq("israel_date", israelDate);
+  if (error) {
+    console.error("[notifications] resetLowMarginCount", error.message);
+  }
+}
+
+/**
+ * Low margin streak: margin = (profit/revenue)*100. Only evaluates when israelHour >= 12.
+ * Persists streak in `daily_goal_sync_snapshot.consecutive_low_margin_count`.
+ */
+export async function checkLowMarginAlert(
+  revenue: number,
+  profit: number,
+  israelHour: number,
+  israelDate: string,
+): Promise<{ sent: boolean; log: string }> {
+  if (israelHour < 12) {
+    return { sent: false, log: "[lowMargin] skipped hour<12" };
+  }
+
+  if (revenue <= 0) {
+    await resetLowMarginCount(israelDate);
+    return { sent: false, log: "[lowMargin] revenue<=0 reset" };
+  }
+
+  const marginPct = (profit / revenue) * 100;
+
+  if (marginPct >= 33) {
+    await resetLowMarginCount(israelDate);
+    return { sent: false, log: `[lowMargin] ok margin=${marginPct.toFixed(1)}%` };
+  }
+
+  const { data: row, error: selErr } = await supabaseAdmin
+    .from("daily_goal_sync_snapshot")
+    .select("last_seen_profit, consecutive_low_margin_count")
+    .eq("israel_date", israelDate)
+    .maybeSingle();
+
+  if (selErr) {
+    console.error("[notifications] checkLowMarginAlert select", selErr.message);
+    return { sent: false, log: `[lowMargin] err ${selErr.message}` };
+  }
+
+  const currentCount = row?.consecutive_low_margin_count ?? 0;
+  const nextCount = currentCount >= 3 ? 3 : currentCount + 1;
+  const lastSeen = row?.last_seen_profit ?? profit;
+
+  const { error: upErr } = await supabaseAdmin.from("daily_goal_sync_snapshot").upsert(
+    {
+      israel_date: israelDate,
+      last_seen_profit: lastSeen,
+      consecutive_low_margin_count: nextCount,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "israel_date" },
+  );
+
+  if (upErr) {
+    console.error("[notifications] checkLowMarginAlert upsert", upErr.message);
+    return { sent: false, log: `[lowMargin] upsert ${upErr.message}` };
+  }
+
+  if (nextCount < 3) {
+    return {
+      sent: false,
+      log: `[lowMargin] count=${nextCount} margin=${marginPct.toFixed(1)}%`,
+    };
+  }
+
+  if (!(await anyProfileWantsLowMarginAlerts())) {
+    await resetLowMarginCount(israelDate);
+    return { sent: false, log: "[lowMargin] all profiles disabled reset" };
+  }
+
+  if (await wasAlreadySent("low_margin_alert", israelDate)) {
+    return { sent: false, log: "[lowMargin] already_sent_today" };
+  }
+
+  const r = await sendPushToAllSubscribers(
+    "Low Margin Warning ⚠️",
+    "Low Margin Warning ⚠️: Margin has been below 33% for the last 1.5 hours.",
+  );
+  if (r.ok > 0) {
+    await recordSent("low_margin_alert", israelDate);
+    await resetLowMarginCount(israelDate);
+  }
+  return {
+    sent: r.ok > 0,
+    log: `[lowMargin] alert push ok=${r.ok} failed=${r.failed}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -341,20 +468,26 @@ export async function checkPerformance(): Promise<{
   log: string;
 }> {
   const today = getIsraelDate();
+  const hourIL = getIsraelHour();
+  const todayRow = await fetchDailyRow(today);
+  const todayGp = todayRow?.profit ?? 0;
+  const todayRev = todayRow?.revenue ?? 0;
+
   const [y, m] = today.split("-").map(Number);
   const monthStart = `${y}-${String(m).padStart(2, "0")}-01`;
   const dim = daysInMonthYm(y, m);
 
   const profitGoal = await fetchMonthlyGoal(monthStart);
   if (profitGoal <= 0) {
-    return { sent: false, reasons: [], log: "[checkPerformance] no monthly goal set" };
+    const low = await checkLowMarginAlert(todayRev, todayGp, hourIL, today);
+    return {
+      sent: low.sent,
+      reasons: [],
+      log: `[checkPerformance] no monthly goal set ${low.log}`,
+    };
   }
 
-  const todayRow = await fetchDailyRow(today);
-  const todayGp = todayRow?.profit ?? 0;
-
   const dailyAvgTarget = dim > 0 ? profitGoal / dim : 0;
-  const hourIL = getIsraelHour();
   const dailyGoalQuietHours = hourIL >= 0 && hourIL < DAILY_GOAL_QUIET_HOUR_END;
 
   const mtdProfit = await sumProfitMtd(monthStart, today);
@@ -421,7 +554,10 @@ export async function checkPerformance(): Promise<{
     }
   }
 
-  const log = `[checkPerformance] israelDate=${today} hourIL=${hourIL}${dailyGoalQuietHours ? " [daily quiet]" : ""} reasons=${reasons.join(",") || "none"}${logExtras.length ? ` ${logExtras.join(" ")}` : ""} push ok=${ok} failed=${failed}${errors.length ? ` ${errors[0]}` : ""} todayGp=${todayGp.toFixed(0)} dailyTarget=${dailyAvgTarget.toFixed(0)} mtd=${mtdProfit.toFixed(0)}`;
+  const lowMargin = await checkLowMarginAlert(todayRev, todayGp, hourIL, today);
+  if (lowMargin.sent) reasons.push("low_margin_alert");
 
-  return { sent: ok > 0, reasons, log };
+  const log = `[checkPerformance] israelDate=${today} hourIL=${hourIL}${dailyGoalQuietHours ? " [daily quiet]" : ""} reasons=${reasons.join(",") || "none"}${logExtras.length ? ` ${logExtras.join(" ")}` : ""} push ok=${ok} failed=${failed}${errors.length ? ` ${errors[0]}` : ""} todayGp=${todayGp.toFixed(0)} dailyTarget=${dailyAvgTarget.toFixed(0)} mtd=${mtdProfit.toFixed(0)} ${lowMargin.log}`;
+
+  return { sent: ok > 0 || lowMargin.sent, reasons, log };
 }
