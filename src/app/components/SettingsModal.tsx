@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, Bell } from "lucide-react";
 import { useAuth } from "@/app/context/AuthContext";
@@ -56,24 +56,62 @@ export default function SettingsModal({
 }) {
   const { user } = useAuth();
   const [settings, setSettings] = useState<NotificationSettings>(DEFAULT);
-  const [loading, setLoading] = useState(true);
+  const [initialLoad, setInitialLoad] = useState(true);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const errorClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => setMounted(true), []);
 
+  // Every time the modal opens (`open === true`), refetch from the server so toggles
+  // match the DB (e.g. changes from another device). `user?.id` gates the fetch without
+  // re-running on unrelated `user` object identity churn.
   useEffect(() => {
-    if (!open || !user) return;
+    if (!open || !user?.id) return;
+
     let cancelled = false;
-    setLoading(true);
+    setInitialLoad(true);
+    setErrorBanner(null);
+
+    console.log("[SettingsModal] Re-fetching settings from DB...");
+
     void (async () => {
       const s = await getNotificationSettings();
-      if (!cancelled && s) setSettings(s);
-      if (!cancelled) setLoading(false);
+      if (cancelled) return;
+      // Full replace with server snapshot (or defaults if the action returned null).
+      setSettings(s ?? DEFAULT);
+      setInitialLoad(false);
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [open, user]);
+  }, [open, user?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (errorClearTimer.current) clearTimeout(errorClearTimer.current);
+    };
+  }, []);
+
+  function showError(message: string) {
+    setErrorBanner(message);
+    if (errorClearTimer.current) clearTimeout(errorClearTimer.current);
+    errorClearTimer.current = setTimeout(() => setErrorBanner(null), 4500);
+  }
+
+  function handleToggle(key: NotificationSettingKey, next: boolean) {
+    const prev = settings[key];
+    setSettings((s) => ({ ...s, [key]: next }));
+
+    void (async () => {
+      const r = await updateNotificationSetting(key, next);
+      if (!r.ok) {
+        setSettings((s) => ({ ...s, [key]: prev }));
+        showError(r.error ?? "Could not save settings. Please try again.");
+      }
+    })();
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -124,14 +162,26 @@ export default function SettingsModal({
             Notification Preferences
           </div>
 
-          <div className="flex flex-col gap-1">
+          {errorBanner && (
+            <div
+              role="alert"
+              className="mb-3 rounded-lg border border-red-500/30 bg-red-950/50 px-3 py-2 text-sm text-red-200/95"
+            >
+              {errorBanner}
+            </div>
+          )}
+
+          <div
+            className={`flex flex-col gap-1 ${initialLoad ? "pointer-events-none opacity-60" : ""}`}
+            aria-busy={initialLoad}
+          >
             {TOGGLES.map((t) => (
               <SettingToggle
                 key={t.key}
                 toggle={t}
                 checked={settings[t.key]}
-                disabled={loading}
-                onChange={(v) => setSettings((s) => ({ ...s, [t.key]: v }))}
+                disabled={initialLoad}
+                onToggle={handleToggle}
               />
             ))}
           </div>
@@ -146,37 +196,29 @@ function SettingToggle({
   toggle,
   checked,
   disabled,
-  onChange,
+  onToggle,
 }: {
   toggle: Toggle;
   checked: boolean;
   disabled: boolean;
-  onChange: (v: boolean) => void;
+  onToggle: (key: NotificationSettingKey, next: boolean) => void;
 }) {
-  const [pending, startTransition] = useTransition();
-
   return (
     <label className="flex cursor-pointer items-start gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-white/5">
       <span className="relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center">
         <input
           type="checkbox"
           checked={checked}
-          disabled={disabled || pending}
+          disabled={disabled}
           onChange={(e) => {
-            const next = e.target.checked;
-            const prev = checked;
-            onChange(next);
-            startTransition(async () => {
-              const r = await updateNotificationSetting(toggle.key, next);
-              if (!r.ok) onChange(prev);
-            });
+            onToggle(toggle.key, e.target.checked);
           }}
           className="peer sr-only"
         />
         <span
           className={`block h-5 w-9 rounded-full transition-colors duration-200 ${
             checked ? "bg-emerald-500" : "bg-zinc-700"
-          } ${disabled || pending ? "opacity-50" : ""}`}
+          } ${disabled ? "opacity-50" : ""}`}
         />
         <span
           className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${

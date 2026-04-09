@@ -50,7 +50,7 @@ async function FinancialOverview() {
 
   return (
     <div className="flex flex-col gap-8">
-      <TodayFinancialsPulse comparison={comparison} dailyProfitGoalPace={dailyProfitGoalPace} />
+      <TodayFinancialsPulse comparison={comparison} />
       {hasError && (
         <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
           Some financial data could not be loaded.
@@ -58,7 +58,12 @@ async function FinancialOverview() {
       )}
       <DashboardErrorBoundary sectionName="Total overview">
         {overview.length > 0 && (
-          <TotalOverview dataByMonth={overview} xdashByMonth={xdashTotals} />
+          <TotalOverview
+            dataByMonth={overview}
+            xdashByMonth={xdashTotals}
+            dailyProfitGoalPace={dailyProfitGoalPace}
+            todayGrossProfit={comparison?.today?.profit ?? null}
+          />
         )}
       </DashboardErrorBoundary>
     </div>

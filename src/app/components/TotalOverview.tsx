@@ -1,8 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { useMemo, useRef, useEffect, useState } from "react";
+import {
+  Check,
+  CircleDollarSign,
+  Coins,
+  Percent,
+  TrendingUp,
+} from "lucide-react";
 import { useFilter } from "@/app/context/FilterContext";
-import type { MonthOverview, XDASHMonthTotals } from "@/app/actions/financials";
+import type {
+  DailyProfitGoalPace,
+  MonthOverview,
+  XDASHMonthTotals,
+} from "@/app/actions/financials";
 import {
   DataSourceToggle,
   type FinancialDataSource,
@@ -56,243 +68,240 @@ function AnimatedCurrency({
   );
 }
 
-/** Collapsible wrapper: animates height + opacity via grid‑row trick. */
-function Collapsible({
-  open,
-  children,
-}: {
-  open: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="grid transition-[grid-template-rows,opacity] duration-300 ease-in-out"
-      style={{
-        gridTemplateRows: open ? "1fr" : "0fr",
-        opacity: open ? 1 : 0,
-      }}
-    >
-      <div className="overflow-hidden">{children}</div>
-    </div>
-  );
+function metricCopy(source: FinancialDataSource) {
+  return {
+    revenueFirst: source === "billing" ? "Ad Network" : "Media",
+    revenueSecond: "SaaS",
+    costFirst: "Media",
+    costSecond: "Tech",
+    profitFirst: source === "billing" ? "Ad Network" : "Media",
+    profitSecond: "SaaS",
+    bs: "Brand Safety",
+  } as const;
 }
 
-function ProfitMarginCard({
-  profit,
-  revenue,
+type SubPart = { key: string; label: string; value: number };
+
+function MetricRow({
+  icon: Icon,
+  title,
+  value,
+  valueClassName,
+  subParts,
+  subNote,
+  leadingBeforeIcon,
+  valueSuffix,
 }: {
-  profit: number;
-  revenue: number;
+  icon: typeof CircleDollarSign;
+  title: ReactNode;
+  value: number;
+  valueClassName: string;
+  subParts: SubPart[];
+  subNote?: string;
+  /** e.g. daily goal ring — sits left of the dim metric icon, same row height as other cards. */
+  leadingBeforeIcon?: ReactNode;
+  valueSuffix?: ReactNode;
 }) {
-  const pct = revenue === 0 ? 0 : (profit / revenue) * 100;
-  const rounded = Math.round(pct * 10) / 10;
-  const display = `${rounded.toFixed(1)}%`;
-
   return (
-    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
-        <span className="inline sm:hidden">Margin %</span>
-        <span className="hidden sm:inline">Profit Margin %</span>
-      </h2>
-      <div className="flex min-h-[65px] min-w-0 items-center">
-        <span
-          className={`max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none ${
-            rounded >= 0 ? "text-white" : "text-red-400"
-          }`}
-        >
-          {display}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function RevenueCard({
-  data,
-  source,
-}: {
-  data: MonthOverview[];
-  source: FinancialDataSource;
-}) {
-  const totalRevenue = useMemo(
-    () => data.reduce((s, d) => s + d.mediaRevenue + d.saasRevenue, 0),
-    [data],
-  );
-  const mediaTotal = useMemo(
-    () => data.reduce((s, d) => s + d.mediaRevenue, 0),
-    [data],
-  );
-  const saasTotal = useMemo(
-    () => data.reduce((s, d) => s + d.saasRevenue, 0),
-    [data],
-  );
-
-  return (
-    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
-        Publisher Revenue
-      </h2>
-      <div className="flex min-h-[65px] min-w-0 items-center">
-        <AnimatedCurrency
-          value={totalRevenue}
-          className="block w-full min-w-0 max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none text-white"
-        />
-      </div>
-      <Collapsible open={source === "billing"}>
-        <div className="mt-4 grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-sm">
-          <span className="font-medium text-white/50">Media</span>
-          <span className="text-right tabular-nums text-white/90">
-            {formatCurrency(mediaTotal)}
-          </span>
-          <span className="font-medium text-white/50">SaaS</span>
-          <span className="text-right tabular-nums text-white/90">
-            {formatCurrency(saasTotal)}
+    <div className="border-b border-white/[0.07] bg-white/5 px-3 py-2 last:border-b-0">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {leadingBeforeIcon}
+          <Icon
+            className="h-3.5 w-3.5 shrink-0 text-white/35"
+            strokeWidth={2}
+            aria-hidden
+          />
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-white/45">
+            {title}
           </span>
         </div>
-      </Collapsible>
-    </div>
-  );
-}
-
-function CostCard({
-  data,
-  source,
-}: {
-  data: MonthOverview[];
-  source: FinancialDataSource;
-}) {
-  const totalCost = useMemo(
-    () => data.reduce((s, d) => s + d.mediaCost + d.techCost + d.bsCost, 0),
-    [data],
-  );
-  const mediaCost = useMemo(
-    () => data.reduce((s, d) => s + d.mediaCost, 0),
-    [data],
-  );
-  const techCost = useMemo(
-    () => data.reduce((s, d) => s + d.techCost, 0),
-    [data],
-  );
-  const bsCost = useMemo(
-    () => data.reduce((s, d) => s + d.bsCost, 0),
-    [data],
-  );
-
-  return (
-    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
-        Total Cost
-      </h2>
-      <div className="flex min-h-[65px] min-w-0 items-center">
-        <AnimatedCurrency
-          value={totalCost}
-          className="block w-full min-w-0 max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none text-white"
-        />
-      </div>
-      <Collapsible open={source === "billing"}>
-        <div className="mt-4 grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-sm">
-          <span className="font-medium text-white/50">Media</span>
-          <span className="text-right tabular-nums text-white/90">
-            {formatCurrency(mediaCost)}
-          </span>
-          <span className="font-medium text-white/50">Tech</span>
-          <span className="text-right tabular-nums text-white/90">
-            {formatCurrency(techCost)}
-          </span>
-          <span className="font-medium text-white/50">Brand Safety</span>
-          <span className="text-right tabular-nums text-white/90">
-            {formatCurrency(bsCost)}
-          </span>
+        <div className="flex shrink-0 items-baseline gap-0">
+          <AnimatedCurrency
+            value={value}
+            className={`text-xl font-bold tabular-nums leading-none ${valueClassName}`}
+          />
+          {valueSuffix}
         </div>
-      </Collapsible>
-    </div>
-  );
-}
-
-function ProfitCard({
-  profit,
-  source,
-}: {
-  profit: number;
-  source: FinancialDataSource;
-}) {
-  return (
-    <div className="min-w-0 rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] p-6">
-      <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">
-        <span className="sm:hidden">G. Profit</span>
-        <span className="hidden sm:inline">Gross Profit</span>
-      </h2>
-      <div className="mb-4 flex min-h-[65px] min-w-0 items-center">
-        <AnimatedCurrency
-          value={profit}
-          className={`block w-full min-w-0 max-w-full text-[clamp(1.25rem,calc(0.45rem+2.4vw),2.125rem)] font-semibold tabular-nums leading-none ${
-            profit >= 0 ? "text-white" : "text-red-400"
-          }`}
-        />
       </div>
-      {source === "billing" && (
-        <div className="text-sm text-white/50">Revenue − Cost</div>
+      {subParts.length > 0 && (
+        <div className="mt-1.5 min-w-0 pl-5 sm:pl-6">
+          <p className="text-[11px] leading-snug text-white/55 sm:text-xs">
+            <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5 [word-break:break-word]">
+              {subParts.map((p, i) => (
+                <span key={p.key} className="inline min-w-0 max-w-full">
+                  {i > 0 && (
+                    <span className="mr-2 text-white/25" aria-hidden>
+                      |
+                    </span>
+                  )}
+                  <span className="text-white/40">{p.label}</span>
+                  <span className="ml-0.5 tabular-nums text-white/75">
+                    {formatCurrency(p.value)}
+                  </span>
+                </span>
+              ))}
+            </span>
+          </p>
+        </div>
       )}
+      {subNote ? (
+        <p className="mt-1 pl-5 text-[10px] text-white/35 sm:pl-6">{subNote}</p>
+      ) : null}
     </div>
+  );
+}
+
+function profitToneClass(value: number): string {
+  if (value > 0) return "text-emerald-400";
+  if (value < 0) return "text-red-400";
+  return "text-white/80";
+}
+
+function formatGoalPercentLabel(p: number): string {
+  const rounded = Math.round(p * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/** 16×16 ring: daily goal fill; solid + check when ≥100%. */
+function ProfitGoalRing({
+  ringFillPct,
+  reached,
+}: {
+  ringFillPct: number;
+  reached: boolean;
+}) {
+  const r = 5;
+  const c = 2 * Math.PI * r;
+  const dash = (Math.min(100, Math.max(0, ringFillPct)) / 100) * c;
+
+  if (reached) {
+    return (
+      <span
+        className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center"
+        aria-hidden
+      >
+        <span className="absolute inset-0 rounded-full bg-emerald-500" />
+        <Check
+          className="relative z-10 h-2.5 w-2.5 text-emerald-950"
+          strokeWidth={3}
+          aria-hidden
+        />
+      </span>
+    );
+  }
+
+  return (
+    <svg className="h-4 w-4 shrink-0" viewBox="0 0 16 16" aria-hidden>
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        className="fill-none stroke-white/10"
+        strokeWidth="2"
+      />
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        className="fill-none stroke-emerald-500"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray={`${dash} ${c}`}
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
   );
 }
 
 export default function TotalOverview({
   dataByMonth,
   xdashByMonth,
+  dailyProfitGoalPace = null,
+  todayGrossProfit = null,
 }: {
   dataByMonth: MonthOverview[];
   xdashByMonth?: Record<string, XDASHMonthTotals>;
+  /** Today’s GP vs daily quota (profit_goal ÷ days in month) — same basis as the former pulse bar. */
+  dailyProfitGoalPace?: DailyProfitGoalPace | null;
+  todayGrossProfit?: number | null;
 }) {
   const { selectedMonths } = useFilter();
   const [source, setSource] = useState<FinancialDataSource>("xdash");
 
-  const { filteredData, profitValue, revenueTotal } = useMemo(() => {
+  const metrics = useMemo(() => {
     const billing = dataByMonth.filter((d) => selectedMonths.has(d.month));
 
-    // Billing profit: total revenue − total cost (all buckets)
-    const billingProfit = billing.reduce(
-      (s, d) => s + d.mediaRevenue + d.saasRevenue - d.mediaCost - d.techCost - d.bsCost,
+    const filteredData =
+      source === "billing" || !xdashByMonth
+        ? billing
+        : billing.map((d) => {
+            const xdash = xdashByMonth[d.month];
+            if (!xdash || (xdash.mediaRevenue === 0 && xdash.mediaCost === 0)) {
+              return d;
+            }
+            return {
+              ...d,
+              mediaRevenue: xdash.mediaRevenue,
+              mediaCost: xdash.mediaCost,
+            };
+          });
+
+    const revenueTotal = filteredData.reduce(
+      (s, d) => s + d.mediaRevenue + d.saasRevenue,
       0,
     );
+    const mediaRev = filteredData.reduce((s, d) => s + d.mediaRevenue, 0);
+    const saasRev = filteredData.reduce((s, d) => s + d.saasRevenue, 0);
+    const mediaCost = filteredData.reduce((s, d) => s + d.mediaCost, 0);
+    const techCost = filteredData.reduce((s, d) => s + d.techCost, 0);
+    const bsCost = filteredData.reduce((s, d) => s + d.bsCost, 0);
+    const mediaPL = filteredData.reduce(
+      (s, d) => s + (d.mediaRevenue - d.mediaCost),
+      0,
+    );
+    const saasPL = filteredData.reduce(
+      (s, d) => s + (d.saasRevenue - d.techCost - d.bsCost),
+      0,
+    );
+    const profitValue = mediaPL + saasPL;
 
-    // XDASH profit: sum of synced netRevenue − netCost per month
-    const xdashProfit = xdashByMonth
-      ? billing.reduce((s, d) => s + (xdashByMonth[d.month]?.mediaProfit ?? 0), 0)
-      : billingProfit;
-
-    const profit = source === "billing" ? billingProfit : xdashProfit;
-
-    const revenueFromRows = (rows: MonthOverview[]) =>
-      rows.reduce((s, d) => s + d.mediaRevenue + d.saasRevenue, 0);
-
-    if (source === "billing" || !xdashByMonth) {
-      return {
-        filteredData: billing,
-        profitValue: profit,
-        revenueTotal: revenueFromRows(billing),
-      };
-    }
-
-    const mapped = billing.map((d) => {
-      const xdash = xdashByMonth[d.month];
-      if (!xdash || (xdash.mediaRevenue === 0 && xdash.mediaCost === 0)) {
-        return d;
-      }
-      return {
-        ...d,
-        mediaRevenue: xdash.mediaRevenue,
-        mediaCost: xdash.mediaCost,
-      };
-    });
     return {
-      filteredData: mapped,
-      profitValue: profit,
-      revenueTotal: revenueFromRows(mapped),
+      filteredData,
+      profitValue,
+      revenueTotal,
+      totalRevenue: mediaRev + saasRev,
+      mediaRev,
+      saasRev,
+      totalCost: mediaCost + techCost + bsCost,
+      mediaCost,
+      techCost,
+      bsCost,
+      mediaPL,
+      saasPL,
     };
   }, [dataByMonth, selectedMonths, source, xdashByMonth]);
 
-  if (filteredData.length === 0) {
+  const labels = metricCopy(source);
+
+  const marginPct = useMemo(() => {
+    const { profitValue, revenueTotal } = metrics;
+    if (revenueTotal === 0) return 0;
+    return Math.round((profitValue / revenueTotal) * 1000) / 10;
+  }, [metrics]);
+
+  const dailyGoalProgress = useMemo(() => {
+    const target = dailyProfitGoalPace?.dailyAverageTarget;
+    if (target == null || target <= 0 || todayGrossProfit == null) return null;
+    const raw = (todayGrossProfit / target) * 100;
+    return {
+      displayPercent: Math.round(raw * 10) / 10,
+      ringFillPct: Math.min(100, Math.max(0, raw)),
+      reached: raw >= 100,
+    };
+  }, [dailyProfitGoalPace, todayGrossProfit]);
+
+  if (metrics.filteredData.length === 0) {
     return (
       <section className="mb-8">
         <p className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/60">
@@ -302,6 +311,25 @@ export default function TotalOverview({
     );
   }
 
+  const revenueSubs: SubPart[] = [
+    { key: "r1", label: `${labels.revenueFirst}:`, value: metrics.mediaRev },
+    { key: "r2", label: `${labels.revenueSecond}:`, value: metrics.saasRev },
+  ];
+
+  const costSubs: SubPart[] = [
+    { key: "c1", label: `${labels.costFirst}:`, value: metrics.mediaCost },
+    { key: "c2", label: `${labels.costSecond}:`, value: metrics.techCost },
+    { key: "c3", label: `${labels.bs}:`, value: metrics.bsCost },
+  ];
+
+  const profitSubs: SubPart[] = [
+    { key: "p1", label: `${labels.profitFirst}:`, value: metrics.mediaPL },
+    { key: "p2", label: `${labels.profitSecond}:`, value: metrics.saasPL },
+  ];
+
+  const profitNote =
+    source === "billing" ? "Revenue − cost (all buckets)." : undefined;
+
   return (
     <section className="mb-8">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -310,11 +338,78 @@ export default function TotalOverview({
         </h2>
         <DataSourceToggle value={source} onChange={setSource} />
       </div>
-      <div className="grid min-w-0 gap-6 sm:grid-cols-2 xl:grid-cols-4">
-        <RevenueCard data={filteredData} source={source} />
-        <CostCard data={filteredData} source={source} />
-        <ProfitCard profit={profitValue} source={source} />
-        <ProfitMarginCard profit={profitValue} revenue={revenueTotal} />
+
+      <div className="overflow-hidden rounded-xl border border-white/[0.08]">
+        <MetricRow
+          icon={CircleDollarSign}
+          title="Publisher revenue"
+          value={metrics.totalRevenue}
+          valueClassName="text-white"
+          subParts={revenueSubs}
+        />
+        <MetricRow
+          icon={Coins}
+          title="Total cost"
+          value={metrics.totalCost}
+          valueClassName="text-white"
+          subParts={costSubs}
+        />
+        <MetricRow
+          icon={TrendingUp}
+          title={
+            <>
+              <span className="sm:hidden">G. profit</span>
+              <span className="hidden sm:inline">Gross profit</span>
+            </>
+          }
+          value={metrics.profitValue}
+          valueClassName={profitToneClass(metrics.profitValue)}
+          subParts={profitSubs}
+          subNote={profitNote}
+          leadingBeforeIcon={
+            dailyGoalProgress ? (
+              <span
+                className="inline-flex shrink-0"
+                title="Today vs daily gross-profit target"
+                aria-label={`Daily goal progress about ${formatGoalPercentLabel(dailyGoalProgress.displayPercent)} percent`}
+              >
+                <ProfitGoalRing
+                  ringFillPct={dailyGoalProgress.ringFillPct}
+                  reached={dailyGoalProgress.reached}
+                />
+              </span>
+            ) : undefined
+          }
+          valueSuffix={
+            dailyGoalProgress ? (
+              <span className="ml-1 text-xs tabular-nums text-white/40">
+                ({formatGoalPercentLabel(dailyGoalProgress.displayPercent)}%)
+              </span>
+            ) : undefined
+          }
+        />
+        <div className="border-b border-white/[0.07] bg-white/5 px-3 py-2 last:border-b-0">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <Percent
+                className="h-3.5 w-3.5 shrink-0 text-white/35"
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-white/45">
+                <span className="inline sm:hidden">Margin %</span>
+                <span className="hidden sm:inline">Profit margin %</span>
+              </span>
+            </div>
+            <span
+              className={`shrink-0 text-xl font-bold tabular-nums leading-none ${
+                marginPct >= 0 ? "text-emerald-400" : "text-red-400"
+              }`}
+            >
+              {marginPct.toFixed(1)}%
+            </span>
+          </div>
+        </div>
       </div>
     </section>
   );

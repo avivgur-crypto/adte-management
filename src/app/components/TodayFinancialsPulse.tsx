@@ -1,11 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import type {
-  ComparisonData,
-  DailyProfitGoalPace,
-  TodayHomeRow,
-} from "@/app/actions/financials";
+import type { ComparisonData, TodayHomeRow } from "@/app/actions/financials";
 
 const PERIODS = [
   { key: 1 as const, label: "1d" },
@@ -22,19 +18,6 @@ function formatCurrency(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(n);
-}
-
-/**
- * Compact USD for goal labels (aligned with notifications / Master Billing style).
- * Under $1M as $X.XK; $1M+ as $X.XM (1 decimal).
- */
-function formatCurrencyShort(amount: number): string {
-  const sign = amount < 0 ? "-" : "";
-  const abs = Math.abs(amount);
-  if (abs >= 1_000_000) {
-    return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  }
-  return `${sign}$${(abs / 1_000).toFixed(1)}K`;
 }
 
 /**
@@ -279,52 +262,10 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   );
 }
 
-type GpGoalProgress = {
-  barWidthPct: number;
-  displayPercent: number;
-  dailyTargetFormatted: string;
-  atOrAboveGoal: boolean;
-};
-
-function formatGoalPercentLabel(p: number): string {
-  const rounded = Math.round(p * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-}
-
-function GrossProfitGoalBar({ progress }: { progress: GpGoalProgress }) {
-  const { barWidthPct, displayPercent, dailyTargetFormatted, atOrAboveGoal } = progress;
-  const fillClass = atOrAboveGoal
-    ? "bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.45)]"
-    : "bg-amber-500/85";
-
-  return (
-    <div className="mt-2 w-full min-w-0">
-      <div
-        className="h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
-        role="progressbar"
-        aria-valuenow={Math.round(barWidthPct)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label="Progress toward daily average profit goal"
-      >
-        <div
-          className={`h-1 rounded-full transition-[width] duration-300 ${fillClass}`}
-          style={{ width: `${barWidthPct}%` }}
-        />
-      </div>
-      <p className="mt-1.5 text-[10px] font-medium leading-tight tracking-wide text-white/38 sm:text-[11px]">
-        Goal: {dailyTargetFormatted} ({formatGoalPercentLabel(displayPercent)}%)
-      </p>
-    </div>
-  );
-}
-
 export default function TodayFinancialsPulse({
   comparison,
-  dailyProfitGoalPace,
 }: {
   comparison: ComparisonData | null;
-  dailyProfitGoalPace: DailyProfitGoalPace | null;
 }) {
   const [period, setPeriod] = useState<PeriodKey>(1);
 
@@ -354,20 +295,6 @@ export default function TodayFinancialsPulse({
     () => computeMarginDelta(revenue, profit, pastRow),
     [revenue, profit, pastRow],
   );
-
-  const gpGoalProgress = useMemo((): GpGoalProgress | null => {
-    const target = dailyProfitGoalPace?.dailyAverageTarget;
-    if (target == null || target <= 0) return null;
-    const raw = (profit / target) * 100;
-    const displayPercent = Math.round(raw * 10) / 10;
-    const barWidthPct = Math.min(100, Math.max(0, raw));
-    return {
-      barWidthPct,
-      displayPercent,
-      dailyTargetFormatted: formatCurrencyShort(target),
-      atOrAboveGoal: raw >= 100,
-    };
-  }, [profit, dailyProfitGoalPace]);
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[var(--adte-funnel-bg)] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] sm:p-6">
@@ -442,7 +369,6 @@ export default function TodayFinancialsPulse({
               : "font-semibold text-red-400"
           }
           delta={dProfit}
-          goalProgress={gpGoalProgress ?? undefined}
         />
         <MetricBlock
           label="Profit margin"
@@ -463,7 +389,6 @@ type MetricBlockProps =
       value: string;
       valueClassName: string;
       delta: DeltaResult;
-      goalProgress?: GpGoalProgress;
     }
   | {
       label: string;
@@ -474,7 +399,6 @@ type MetricBlockProps =
 
 function MetricBlock(props: MetricBlockProps) {
   const { label, value, valueClassName } = props;
-  const goalProgress = "goalProgress" in props ? props.goalProgress : undefined;
   return (
     <div className="flex min-w-0 flex-col">
       <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/45 sm:text-[11px]">
@@ -485,7 +409,6 @@ function MetricBlock(props: MetricBlockProps) {
       >
         {value}
       </p>
-      {goalProgress ? <GrossProfitGoalBar progress={goalProgress} /> : null}
       {"marginDelta" in props ? (
         <MarginDeltaSubline delta={props.marginDelta} />
       ) : (
