@@ -2,7 +2,7 @@
 
 import { cache } from "react";
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
-import { getIsraelDate, getIsraelDateDaysAgo } from "@/lib/israel-date";
+import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
@@ -788,10 +788,20 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
     byDate.set(key, mapDailyHomeRow(r));
   }
 
+  // Same-time comparison for ALL offsets: try the hourly snapshot at the
+  // current Israel hour for each comparison date.  Each lookup is a primary-key
+  // hit (date, hour) so the batch is cheap.  Falls back to the full-day row
+  // when no snapshot exists yet (first 24 h of collection, or gaps).
+  const snapshotDates = offsets.map((o) => getIsraelDateDaysAgo(o));
+  const snapshots = await Promise.all(
+    snapshotDates.map((d) => getHourlyBaselineForDate(d)),
+  );
+
   const past: Record<number, TodayHomeRow | null> = {};
-  for (const o of offsets) {
-    const k = getIsraelDateDaysAgo(o);
-    past[o] = byDate.get(k) ?? null;
+  for (let i = 0; i < offsets.length; i++) {
+    const o = offsets[i]!;
+    const fullDay = byDate.get(snapshotDates[i]!) ?? null;
+    past[o] = snapshots[i] ?? fullDay;
   }
 
   return {
@@ -837,6 +847,8 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
 
     const syncedAt = new Date().toISOString();
 
+    let todayValues: { revenue: number; cost: number; profit: number; impressions: number } | null = null;
+
     for (const date of dates) {
       const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
       const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
@@ -850,6 +862,15 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       console.log(
         `[refreshTodayHome] Updated ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
       );
+      if (date === today) todayValues = { revenue, cost, profit, impressions };
+    }
+
+    // Fire-and-forget: record an hourly snapshot for "today" so same-time
+    // comparisons can be made tomorrow.  Never blocks or delays the main sync.
+    if (todayValues) {
+      recordHourlySnapshot(today, todayValues).catch((e) => {
+        console.warn("[refreshTodayHome] hourly snapshot (non-fatal):", e instanceof Error ? e.message : e);
+      });
     }
 
     revalidateTag(FINANCIAL_TAG, { expire: 0 });
@@ -859,6 +880,74 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
     console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
     return { updated: false };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Hourly snapshots — additive, never blocks the main sync
+// ---------------------------------------------------------------------------
+
+/**
+ * Upsert a single snapshot row into `hourly_snapshots` for the current Israel
+ * hour.  Called fire-and-forget after `daily_home_totals` is written; failures
+ * are logged but never propagated.
+ */
+async function recordHourlySnapshot(
+  date: string,
+  values: { revenue: number; cost: number; profit: number; impressions: number },
+): Promise<void> {
+  const hour = getIsraelHour();
+  const { error } = await supabaseAdmin.from("hourly_snapshots").upsert(
+    {
+      date,
+      hour,
+      revenue: values.revenue,
+      cost: values.cost,
+      profit: values.profit,
+      impressions: values.impressions,
+    },
+    { onConflict: "date,hour" },
+  );
+  if (error) {
+    console.warn(`[hourlySnapshot] upsert (${date} h${hour}) failed:`, error.message);
+  } else {
+    console.log(
+      `[hourlySnapshot] ${date} h${hour}: rev=$${values.revenue.toFixed(2)} profit=$${values.profit.toFixed(2)}`,
+    );
+  }
+}
+
+/**
+ * Same-time-of-day baseline for comparison.
+ *
+ * Tries to find yesterday's snapshot at the **current** Israel hour.
+ * If a snapshot exists, it returns that partial-day row so the Pulse % reflects
+ * "today at 14:00 vs yesterday at 14:00."
+ *
+ * **CRITICAL fallback:** when no snapshot is found (first 24 h, gaps, etc.),
+ * returns `null` so the caller uses the existing full-day baseline — the UI
+ * never breaks.
+ */
+async function getHourlyBaselineForDate(isoDate: string): Promise<TodayHomeRow | null> {
+  const hour = getIsraelHour();
+  const { data, error } = await supabaseAdmin
+    .from("hourly_snapshots")
+    .select("date, revenue, cost, profit, impressions")
+    .eq("date", isoDate)
+    .eq("hour", hour)
+    .maybeSingle();
+
+  if (error) {
+    console.warn("[getHourlyBaselineForDate]", isoDate, `h${hour}`, error.message);
+    return null;
+  }
+  if (!data) return null;
+  return {
+    date: String(data.date),
+    revenue: Number(data.revenue ?? 0),
+    cost: Number(data.cost ?? 0),
+    profit: Number(data.profit ?? 0),
+    impressions: Number(data.impressions ?? 0),
+  };
 }
 
 /** Calendar yesterday in Asia/Jerusalem as YYYY-MM-DD */

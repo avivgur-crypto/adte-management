@@ -26,6 +26,7 @@ import {
 } from "@/lib/xdash-client";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabase";
+import { getIsraelHour } from "@/lib/israel-date";
 
 const TABLE = "daily_partner_performance";
 
@@ -409,6 +410,32 @@ export async function syncHomeTotalsForDates(
     console.error("[xdash-sync] Read-back failed:", proofErr);
   } else {
     console.log(`[xdash-sync] READ-BACK 2026-01-01:`, JSON.stringify(proof));
+  }
+
+  // Additive: record an hourly snapshot for today (fire-and-forget).
+  const todayEntry = pending.find((r) => r.date === today);
+  if (todayEntry) {
+    const hour = getIsraelHour();
+    supabaseAdmin
+      .from("hourly_snapshots")
+      .upsert(
+        {
+          date: todayEntry.date,
+          hour,
+          revenue: todayEntry.revenue,
+          cost: todayEntry.cost,
+          profit: todayEntry.profit,
+          impressions: todayEntry.impressions,
+        },
+        { onConflict: "date,hour" },
+      )
+      .then(({ error: snapErr }) => {
+        if (snapErr) {
+          console.warn(`[xdash-sync] hourly snapshot (${todayEntry.date} h${hour}) failed:`, snapErr.message);
+        } else {
+          console.log(`[xdash-sync] hourly snapshot ${todayEntry.date} h${hour} recorded`);
+        }
+      });
   }
 
   return written;
