@@ -7,9 +7,11 @@
  * - Per-day Revenue & Gross Profit: `daily_home_totals` (`revenue`, `profit` — same XDASH Home mapping as elsewhere).
  * - Monthly goals & pace: `monthly_goals` + MTD logic aligned with `src/lib/pacing.ts` (profit_goal, target ∝ days elapsed).
  * - Yesterday vs day-before: `daily_home_totals` for `getIsraelDateDaysAgo(1)` vs `getIsraelDateDaysAgo(2)`.
- * - Milestone dedupe: `sent_notifications` (daily_goal_reached & low_margin_alert per Israel day, monthly_total_goal_reached per month).
+ * - Milestone dedupe: `sent_notifications` per user (UNIQUE user_id + notification_type + sent_date).
  * - Daily goal crossing: `daily_goal_sync_snapshot` last_seen_profit vs current row; no daily notify 00:00–07:59 IL.
- * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 33% margin (Israel 12:00+); gated by `profiles.notification_settings`.
+ * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 33% margin (Israel 12:00+).
+ * - Per-user targeting: each push type sent only to users whose `profiles.notification_settings` has the flag enabled.
+ *   Legacy subscriptions (user_id IS NULL) receive all notifications.
  */
 
 import {
@@ -19,6 +21,7 @@ import {
 } from "web-push";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
+import type { NotificationSettingKey } from "@/app/actions/notification-settings";
 
 // ---------------------------------------------------------------------------
 // Web Push (same contract as src/scripts/test-push.ts)
@@ -50,27 +53,53 @@ function ensureWebPushConfigured(): void {
   setVapidDetails(vapidContact(mail), pub, priv);
 }
 
-async function sendPushToAllSubscribers(title: string, body: string): Promise<{
-  ok: number;
-  failed: number;
-  errors: string[];
-}> {
-  ensureWebPushConfigured();
-  const payload = JSON.stringify({ title, body });
+type PushResult = { ok: number; failed: number; errors: string[] };
 
-  const { data: rows, error } = await supabaseAdmin
-    .from("push_subscriptions")
-    .select("id, subscription_json");
+type NotificationSettingsRow = {
+  morning_summary_enabled?: boolean;
+  daily_goal_reached_enabled?: boolean;
+  monthly_goal_reached_enabled?: boolean;
+  low_margin_enabled?: boolean;
+};
 
+type UserProfile = {
+  id: string;
+  notification_settings: NotificationSettingsRow;
+};
+
+function normalizeFlag(
+  settings: NotificationSettingsRow | null | undefined,
+  key: NotificationSettingKey,
+): boolean {
+  if (!settings) return true;
+  return (settings as Record<string, unknown>)[key] !== false;
+}
+
+/** Load all profiles with their notification preferences. */
+async function loadUserProfiles(): Promise<UserProfile[]> {
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .select("id, notification_settings");
   if (error) {
-    throw new Error(`push_subscriptions: ${error.message}`);
+    console.error("[notifications] loadUserProfiles", error.message);
+    return [];
   }
+  return (data ?? []).map((r) => ({
+    id: String(r.id),
+    notification_settings: (r.notification_settings ?? {}) as NotificationSettingsRow,
+  }));
+}
 
+/** Send push to specific subscription rows. */
+async function sendPushToRows(
+  rows: { id: string; subscription_json: unknown }[],
+  payload: string,
+): Promise<PushResult> {
   let ok = 0;
   let failed = 0;
   const errors: string[] = [];
 
-  for (const row of rows ?? []) {
+  for (const row of rows) {
     const raw = row.subscription_json;
     let sub: unknown = raw;
     if (typeof raw === "string") {
@@ -102,6 +131,57 @@ async function sendPushToAllSubscribers(title: string, body: string): Promise<{
       errors.push(
         `${row.id}: ${e instanceof Error ? e.message : String(e)}`,
       );
+    }
+  }
+
+  return { ok, failed, errors };
+}
+
+type SentNotificationType =
+  | "morning_summary"
+  | "daily_goal_reached"
+  | "monthly_total_goal_reached"
+  | "low_margin_alert";
+
+/**
+ * For each profile with `settingKey` enabled: skip if already deduped for this user/date;
+ * send only to that user's push_subscriptions; record after ≥1 successful delivery.
+ */
+async function sendPushTargetedWithDedupe(
+  title: string,
+  body: string,
+  settingKey: NotificationSettingKey,
+  dedupe: { type: SentNotificationType; sentDate: string },
+): Promise<PushResult> {
+  ensureWebPushConfigured();
+  const payload = JSON.stringify({ title, body });
+
+  const profiles = await loadUserProfiles();
+  let ok = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const p of profiles) {
+    if (!normalizeFlag(p.notification_settings, settingKey)) continue;
+    if (await wasAlreadySent(dedupe.type, dedupe.sentDate, p.id)) continue;
+
+    const { data: rows, error } = await supabaseAdmin
+      .from("push_subscriptions")
+      .select("id, subscription_json")
+      .eq("user_id", p.id);
+
+    if (error) {
+      errors.push(`${p.id}: ${error.message}`);
+      continue;
+    }
+    if (!rows?.length) continue;
+
+    const r = await sendPushToRows(rows, payload);
+    ok += r.ok;
+    failed += r.failed;
+    errors.push(...r.errors);
+    if (r.ok > 0) {
+      await recordSent(dedupe.type, dedupe.sentDate, p.id);
     }
   }
 
@@ -206,20 +286,17 @@ async function profitGoalMetThroughDay(
   return { met, profitGoal, profitMtd, targetMtd };
 }
 
-type NotificationType =
-  | "daily_goal_reached"
-  | "monthly_total_goal_reached"
-  | "low_margin_alert";
-
 async function wasAlreadySent(
-  notificationType: NotificationType,
+  notificationType: SentNotificationType,
   sentDate: string,
+  userId: string,
 ): Promise<boolean> {
   const { data, error } = await supabaseAdmin
     .from("sent_notifications")
     .select("id")
     .eq("notification_type", notificationType)
     .eq("sent_date", sentDate)
+    .eq("user_id", userId)
     .maybeSingle();
 
   if (error) {
@@ -230,12 +307,14 @@ async function wasAlreadySent(
 }
 
 async function recordSent(
-  notificationType: NotificationType,
+  notificationType: SentNotificationType,
   sentDate: string,
+  userId: string,
 ): Promise<void> {
   const { error } = await supabaseAdmin.from("sent_notifications").insert({
     notification_type: notificationType,
     sent_date: sentDate,
+    user_id: userId,
   });
 
   if (error) {
@@ -290,19 +369,6 @@ async function upsertDailyGoalSnapshot(israelDate: string, profit: number): Prom
   }
 }
 
-async function anyProfileWantsLowMarginAlerts(): Promise<boolean> {
-  const { data, error } = await supabaseAdmin.from("profiles").select("notification_settings");
-  if (error) {
-    console.error("[notifications] anyProfileWantsLowMarginAlerts", error.message);
-    return true;
-  }
-  if (!data?.length) return true;
-  return data.some((row) => {
-    const s = row.notification_settings as { low_margin_enabled?: boolean } | null | undefined;
-    if (s == null) return true;
-    return s.low_margin_enabled !== false;
-  });
-}
 
 async function resetLowMarginCount(israelDate: string): Promise<void> {
   const { data: row } = await supabaseAdmin
@@ -383,23 +449,12 @@ export async function checkLowMarginAlert(
     };
   }
 
-  if (!(await anyProfileWantsLowMarginAlerts())) {
-    await resetLowMarginCount(israelDate);
-    return { sent: false, log: "[lowMargin] all profiles disabled reset" };
-  }
-
-  if (await wasAlreadySent("low_margin_alert", israelDate)) {
-    return { sent: false, log: "[lowMargin] already_sent_today" };
-  }
-
-  const r = await sendPushToAllSubscribers(
+  const r = await sendPushTargetedWithDedupe(
     "Low Margin Warning ⚠️",
     "Low Margin Warning ⚠️: Margin has been below 33% for the last 1.5 hours.",
+    "low_margin_enabled",
+    { type: "low_margin_alert", sentDate: israelDate },
   );
-  if (r.ok > 0) {
-    await recordSent("low_margin_alert", israelDate);
-    await resetLowMarginCount(israelDate);
-  }
   return {
     sent: r.ok > 0,
     log: `[lowMargin] alert push ok=${r.ok} failed=${r.failed}`,
@@ -448,7 +503,13 @@ export async function morningSummary(): Promise<{
     `MTD Profit: ${formatCurrencyShort(mtdActual)} vs ${formatCurrencyShort(mtdTarget)} Goal ${mtdEmoji}`,
   ].join("\n");
 
-  const { ok, failed, errors } = await sendPushToAllSubscribers(title, body);
+  const reportDayIsrael = getIsraelDate();
+  const { ok, failed, errors } = await sendPushTargetedWithDedupe(
+    title,
+    body,
+    "morning_summary_enabled",
+    { type: "morning_summary", sentDate: reportDayIsrael },
+  );
   const log = `[morningSummary] push ok=${ok} failed=${failed}${errors.length ? ` errors=${errors.slice(0, 3).join("; ")}` : ""}`;
 
   return { sent: ok > 0, log };
@@ -514,22 +575,19 @@ export async function checkPerformance(): Promise<{
         await upsertDailyGoalSnapshot(today, todayGp);
       } else if (crossed) {
         reasons.push("daily_goal_reached");
-        if (await wasAlreadySent("daily_goal_reached", today)) {
-          logExtras.push("daily_goal_skipped_already_sent");
-          await upsertDailyGoalSnapshot(today, todayGp);
-        } else {
-          const r = await sendPushToAllSubscribers(
-            "Daily Goal Reached! 🎯",
-            `Today's GP: ${formatCurrencyShort(todayGp)} vs. ${formatCurrencyShort(dailyAvgTarget)} daily target. Keep it up! 💰`,
-          );
-          ok += r.ok;
-          failed += r.failed;
-          errors.push(...r.errors);
-          if (r.ok > 0) {
-            await recordSent("daily_goal_reached", today);
-            await upsertDailyGoalSnapshot(today, todayGp);
-          }
+        const r = await sendPushTargetedWithDedupe(
+          "Daily Goal Reached! 🎯",
+          `Today's GP: ${formatCurrencyShort(todayGp)} vs. ${formatCurrencyShort(dailyAvgTarget)} daily target. Keep it up! 💰`,
+          "daily_goal_reached_enabled",
+          { type: "daily_goal_reached", sentDate: today },
+        );
+        ok += r.ok;
+        failed += r.failed;
+        errors.push(...r.errors);
+        if (r.ok === 0) {
+          logExtras.push("daily_goal_no_delivery");
         }
+        await upsertDailyGoalSnapshot(today, todayGp);
       } else {
         await upsertDailyGoalSnapshot(today, todayGp);
       }
@@ -538,19 +596,17 @@ export async function checkPerformance(): Promise<{
 
   if (monthlyGoalReached) {
     reasons.push("monthly_total_goal_reached");
-    if (await wasAlreadySent("monthly_total_goal_reached", monthStart)) {
-      logExtras.push("monthly_goal_skipped");
-    } else {
-      const r = await sendPushToAllSubscribers(
-        "Monthly Goal Reached! 🔥",
-        `MTD Profit: ${formatCurrencyShort(mtdProfit)} has hit the ${formatCurrencyShort(profitGoal)} monthly goal! 🎉`,
-      );
-      ok += r.ok;
-      failed += r.failed;
-      errors.push(...r.errors);
-      if (r.ok > 0) {
-        await recordSent("monthly_total_goal_reached", monthStart);
-      }
+    const r = await sendPushTargetedWithDedupe(
+      "Monthly Goal Reached! 🔥",
+      `MTD Profit: ${formatCurrencyShort(mtdProfit)} has hit the ${formatCurrencyShort(profitGoal)} monthly goal! 🎉`,
+      "monthly_goal_reached_enabled",
+      { type: "monthly_total_goal_reached", sentDate: monthStart },
+    );
+    ok += r.ok;
+    failed += r.failed;
+    errors.push(...r.errors);
+    if (r.ok === 0) {
+      logExtras.push("monthly_goal_no_delivery");
     }
   }
 
