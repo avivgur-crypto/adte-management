@@ -1,9 +1,8 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { Funnel, LayoutDashboard, LogOut, Menu, Settings, Users } from "lucide-react";
 import { logout } from "@/app/actions/auth";
-import AdminSyncPanel from "./AdminSyncPanel";
-import SettingsModal from "./SettingsModal";
 import { useAuth } from "@/app/context/AuthContext";
 import { useState, useCallback, useEffect, useTransition } from "react";
 import { createPortal } from "react-dom";
@@ -13,6 +12,16 @@ import {
   type FilterState,
   type AppScreen,
 } from "@/app/context/FilterContext";
+
+const AdminSyncPanel = dynamic(() => import("./AdminSyncPanel"), {
+  loading: () => (
+    <div className="h-10 animate-pulse rounded-lg bg-white/5" aria-hidden />
+  ),
+});
+
+const SettingsModal = dynamic(() => import("./SettingsModal"), {
+  ssr: false,
+});
 
 const SCREENS: { key: AppScreen; label: string; icon: typeof LayoutDashboard }[] = [
   { key: "financial", label: "Financial", icon: LayoutDashboard },
@@ -237,7 +246,9 @@ function DesktopSidebar() {
           </div>
         </div>
       )}
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {settingsOpen && (
+        <SettingsModal open onClose={() => setSettingsOpen(false)} />
+      )}
     </aside>
   );
 }
@@ -384,7 +395,9 @@ function MobileMenuPanel() {
               </button>
             </div>
           )}
-          <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          {settingsOpen && (
+            <SettingsModal open onClose={() => setSettingsOpen(false)} />
+          )}
         </div>
       </div>
     </div>,

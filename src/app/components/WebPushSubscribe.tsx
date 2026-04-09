@@ -37,30 +37,43 @@ export default function WebPushSubscribe() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    try {
-      if (localStorage.getItem(IS_SUBSCRIBED_KEY) === "true") {
-        setVisibility("hidden");
-        return;
-      }
-    } catch {
-      /* ignore */
-    }
-
-    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      setVisibility("hidden");
+    const apply = () => {
       try {
-        localStorage.setItem(IS_SUBSCRIBED_KEY, "true");
+        if (localStorage.getItem(IS_SUBSCRIBED_KEY) === "true") {
+          setVisibility("hidden");
+          return;
+        }
       } catch {
         /* ignore */
       }
-      return;
-    }
 
-    setVisibility("visible");
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        setVisibility("hidden");
+        try {
+          localStorage.setItem(IS_SUBSCRIBED_KEY, "true");
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+
+      setVisibility("visible");
+    };
+
+    let cancelScheduled: () => void;
+    if (typeof requestIdleCallback !== "undefined") {
+      const id = requestIdleCallback(apply, { timeout: 2000 });
+      cancelScheduled = () => {
+        cancelIdleCallback(id);
+      };
+    } else {
+      const t = window.setTimeout(apply, 0);
+      cancelScheduled = () => clearTimeout(t);
+    }
+    return cancelScheduled;
   }, []);
 
   const subscribeUser = useCallback(async () => {
-    console.log('📢 [PUSH] Button clicked! Starting process...');
     setStatus('loading');
 
     try {
@@ -72,20 +85,15 @@ export default function WebPushSubscribe() {
       }
 
       const registration = await navigator.serviceWorker.ready;
-      console.log('📢 [PUSH] Service Worker is ready');
 
       const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      console.log('📢 [PUSH] Using VAPID key:', vapidKey?.slice(0, 10) + '...');
 
-      // הרשמה למנוי
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidKey!) as any
       });
 
-      console.log('📢 [PUSH] Raw subscription obtained');
-
-      // 🚨 כאן הקסם: שליפה ידנית של המפתחות כי toJSON לפעמים מזייף
+      // Manual key extraction — toJSON can omit keys in some browsers
       const p256dh = btoa(
         String.fromCharCode.apply(
           null,
@@ -108,10 +116,7 @@ export default function WebPushSubscribe() {
         }
       };
 
-      console.log('📢 [PUSH] Final object with keys ready to send:', subData);
-
       await savePushSubscription(subData);
-      console.log('📢 [PUSH] Success! Saved to Supabase');
       try {
         localStorage.setItem(IS_SUBSCRIBED_KEY, "true");
       } catch {
@@ -121,7 +126,9 @@ export default function WebPushSubscribe() {
       setStatus('success');
       setMessage("Notifications enabled. You are subscribed.");
     } catch (e) {
-      console.error('❌ [PUSH] Critical Error:', e);
+      if (process.env.NODE_ENV === "development") {
+        console.error("[WebPushSubscribe]", e);
+      }
       setStatus('error');
       setMessage(e instanceof Error ? e.message : "Something went wrong.");
     }

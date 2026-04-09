@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  startTransition,
   useCallback,
   useContext,
   useEffect,
@@ -29,16 +30,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     try {
       const session = await getSessionUser();
-      setUser(session);
+      startTransition(() => {
+        setUser(session);
+        setLoading(false);
+      });
     } catch {
-      setUser(null);
-    } finally {
-      setLoading(false);
+      startTransition(() => {
+        setUser(null);
+        setLoading(false);
+      });
     }
   }, []);
 
+  /** Defer session read until after first paint so shell/sidebar stay interactive. */
   useEffect(() => {
-    refresh();
+    const id = requestAnimationFrame(() => {
+      void refresh();
+    });
+    return () => cancelAnimationFrame(id);
   }, [refresh]);
 
   return (

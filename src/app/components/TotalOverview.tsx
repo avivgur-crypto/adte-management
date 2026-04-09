@@ -78,22 +78,20 @@ const STAT_ROW =
 const STAT_PRIMARY =
   "flex min-h-[2.25rem] min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1";
 
-function marginPctToneClass(pct: number): string {
-  return pct >= 0 ? "text-emerald-400" : "text-red-400";
-}
+/** Ledger-style: all headline figures neutral white (no sign-based color). */
+const PRIMARY_FIGURE =
+  "shrink-0 text-xl font-bold tabular-nums leading-none text-white";
 
 function MetricRow({
   icon: Icon,
   title,
   value,
-  valueClassName,
   subParts,
   subNote,
 }: {
   icon: typeof CircleDollarSign;
   title: ReactNode;
   value: number;
-  valueClassName: string;
   subParts: SubPart[];
   subNote?: string;
 }) {
@@ -110,10 +108,7 @@ function MetricRow({
             {title}
           </span>
         </div>
-        <AnimatedCurrency
-          value={value}
-          className={`shrink-0 text-xl font-bold tabular-nums leading-none ${valueClassName}`}
-        />
+        <AnimatedCurrency value={value} className={PRIMARY_FIGURE} />
       </div>
       {subParts.length > 0 && (
         <div className="mt-1.5 min-w-0 pl-5 sm:pl-6">
@@ -141,12 +136,6 @@ function MetricRow({
       ) : null}
     </div>
   );
-}
-
-function profitToneClass(value: number): string {
-  if (value > 0) return "text-emerald-400";
-  if (value < 0) return "text-red-400";
-  return "text-white/80";
 }
 
 export default function TotalOverview({
@@ -269,14 +258,12 @@ export default function TotalOverview({
           icon={CircleDollarSign}
           title="Publisher revenue"
           value={metrics.totalRevenue}
-          valueClassName="text-white"
           subParts={revenueSubs}
         />
         <MetricRow
           icon={Coins}
           title="Total cost"
           value={metrics.totalCost}
-          valueClassName="text-white"
           subParts={costSubs}
         />
         <MetricRow
@@ -288,7 +275,6 @@ export default function TotalOverview({
             </>
           }
           value={metrics.profitValue}
-          valueClassName={profitToneClass(metrics.profitValue)}
           subParts={profitSubs}
           subNote={profitNote}
         />
@@ -305,11 +291,7 @@ export default function TotalOverview({
                 <span className="hidden sm:inline">Profit margin %</span>
               </span>
             </div>
-            <span
-              className={`shrink-0 text-xl font-bold tabular-nums leading-none ${marginPctToneClass(marginPct)}`}
-            >
-              {marginPct.toFixed(1)}%
-            </span>
+            <span className={PRIMARY_FIGURE}>{marginPct.toFixed(1)}%</span>
           </div>
         </div>
       </div>

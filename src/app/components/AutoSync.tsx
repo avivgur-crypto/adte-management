@@ -22,6 +22,7 @@ export default function AutoSync() {
     ran.current = true;
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let idleHandle: number | undefined;
 
     const scheduleRetry = () => {
       if (retryAttempted.current) return;
@@ -35,17 +36,29 @@ export default function AutoSync() {
       }, RETRY_MS);
     };
 
-    refreshTodayHome()
-      .then((result) => {
-        if (result?.updated === true) router.refresh();
-        else scheduleRetry();
-      })
-      .catch(() => {
-        scheduleRetry();
-      });
+    const run = () => {
+      refreshTodayHome()
+        .then((result) => {
+          if (result?.updated === true) router.refresh();
+          else scheduleRetry();
+        })
+        .catch(() => {
+          scheduleRetry();
+        });
+    };
+
+    // De-prioritize vs input/paint: run after the browser is idle (fallback ~300ms).
+    if (typeof requestIdleCallback !== "undefined") {
+      idleHandle = requestIdleCallback(run, { timeout: 3000 });
+    } else {
+      timeoutId = setTimeout(run, 300);
+    }
 
     return () => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (idleHandle !== undefined && typeof cancelIdleCallback !== "undefined") {
+        cancelIdleCallback(idleHandle);
+      }
     };
   }, [router]);
 
