@@ -18,7 +18,7 @@ import SalesFunnelFiltered from "@/app/components/SalesFunnelFiltered";
 import AutoSync from "@/app/components/AutoSync";
 import LastSyncLine from "@/app/components/LastSyncLine";
 import WebPushSubscribe from "@/app/components/WebPushSubscribe";
-import { SkeletonCard, SkeletonDonutGrid } from "@/app/components/SkeletonCard";
+import { SkeletonCard, SkeletonDonutGrid, SkeletonPacingGrid } from "@/app/components/SkeletonCard";
 
 /**
  * force-dynamic: every navigation hits the server so the initial render always
@@ -31,6 +31,17 @@ export const dynamic = "force-dynamic";
 const CONCENTRATION_MONTHS = ["2026-01-01", "2026-02-01"];
 
 /* ── Skeleton fallbacks per tab ── */
+
+function FinancialSkeleton() {
+  return (
+    <div className="stagger-children flex flex-col gap-8">
+      <SkeletonCard lines={3} />
+      <SkeletonPacingGrid />
+      <SkeletonCard lines={2} />
+      <SkeletonCard lines={4} />
+    </div>
+  );
+}
 
 function PartnersSkeleton() {
   return (
@@ -155,7 +166,9 @@ export default function Home() {
         </Suspense>
         <WebPushSubscribe />
         <DashboardTabs>
-          <FinancialTab />
+          <Suspense fallback={<FinancialSkeleton />}>
+            <FinancialTab />
+          </Suspense>
           <Suspense fallback={<PartnersSkeleton />}>
             <PartnersTab />
           </Suspense>

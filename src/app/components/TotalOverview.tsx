@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useMemo, useRef, useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { CircleDollarSign, Coins, Percent, TrendingUp } from "lucide-react";
 import { useFilter } from "@/app/context/FilterContext";
 import type { MonthOverview, XDASHMonthTotals } from "@/app/actions/financials";
@@ -9,6 +9,7 @@ import {
   DataSourceToggle,
   type FinancialDataSource,
 } from "@/app/components/DataSourceToggle";
+import { AnimatedCurrency } from "@/app/components/AnimatedCurrency";
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -17,45 +18,6 @@ function formatCurrency(n: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(n);
-}
-
-/** Smoothly animates a number from its previous value to the new one. */
-function AnimatedCurrency({
-  value,
-  className,
-}: {
-  value: number;
-  className?: string;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const prev = useRef(value);
-  const raf = useRef(0);
-
-  useEffect(() => {
-    const from = prev.current;
-    const to = value;
-    prev.current = to;
-    if (from === to) return;
-
-    const duration = 400;
-    const start = performance.now();
-
-    const tick = (now: number) => {
-      const t = Math.min((now - start) / duration, 1);
-      const ease = 1 - Math.pow(1 - t, 3); // easeOutCubic
-      const current = from + (to - from) * ease;
-      if (ref.current) ref.current.textContent = formatCurrency(current);
-      if (t < 1) raf.current = requestAnimationFrame(tick);
-    };
-    raf.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf.current);
-  }, [value]);
-
-  return (
-    <span ref={ref} className={className}>
-      {formatCurrency(value)}
-    </span>
-  );
 }
 
 function metricCopy(source: FinancialDataSource) {

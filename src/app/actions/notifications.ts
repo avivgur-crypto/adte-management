@@ -21,6 +21,7 @@ import {
 } from "web-push";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
+import { fetchHomeForDate } from "@/lib/xdash-client";
 import type { NotificationSettingKey } from "@/app/actions/notification-settings";
 
 // ---------------------------------------------------------------------------
@@ -462,6 +463,33 @@ export async function checkLowMarginAlert(
 }
 
 // ---------------------------------------------------------------------------
+// Settle helper: re-fetch a date from XDASH and upsert into daily_home_totals
+// so the morning summary reads the final end-of-day numbers (force=true
+// equivalent — bypasses the "already has profit" skip optimisation in cron sync).
+// Gracefully no-ops when XDASH is disabled or the API is unreachable.
+// ---------------------------------------------------------------------------
+
+async function settleDateFromXdash(isoDate: string): Promise<void> {
+  try {
+    const { revenue, cost, profit, impressions } = await fetchHomeForDate(isoDate);
+    if (revenue === 0 && cost === 0 && profit === 0 && impressions === 0) return;
+
+    const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
+      { date: isoDate, revenue, cost, profit, impressions, created_at: new Date().toISOString() },
+      { onConflict: "date" },
+    );
+    if (error) {
+      console.error(`[morningSummary] settle upsert (${isoDate}):`, error.message);
+    }
+  } catch (e) {
+    console.warn(
+      `[morningSummary] settle ${isoDate} skipped (XDASH unavailable):`,
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
 // ---------------------------------------------------------------------------
 
@@ -471,6 +499,15 @@ export async function morningSummary(): Promise<{
 }> {
   const yesterday = getIsraelDateDaysAgo(1);
   const dayBefore = getIsraelDateDaysAgo(2);
+
+  // Settle both dates from XDASH so we read the final end-of-day numbers,
+  // not the stale partial snapshot left by the last evening auto-sync.
+  // Bypasses the cron "skip if profit != 0" optimisation (force equivalent).
+  // Gracefully no-ops when XDASH is disabled or the API is unreachable.
+  await Promise.all([
+    settleDateFromXdash(yesterday),
+    settleDateFromXdash(dayBefore),
+  ]);
 
   const [yRow, dRow] = await Promise.all([
     fetchDailyRow(yesterday),

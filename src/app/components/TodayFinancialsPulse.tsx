@@ -2,6 +2,10 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
+import {
+  AnimatedCurrency,
+  AnimatedNumberText,
+} from "@/app/components/AnimatedCurrency";
 import type {
   ComparisonData,
   DailyProfitGoalPace,
@@ -37,10 +41,23 @@ function formatCurrencyCompact(n: number): string {
   return `${sign}$${Math.round(abs)}`;
 }
 
-function marginPct(revenue: number, profit: number): string {
-  if (revenue === 0) return "0.0%";
-  const p = (profit / revenue) * 100;
-  return `${(Math.round(p * 10) / 10).toFixed(1)}%`;
+/** Stable formatters for AnimatedNumberText (must not be recreated each render). */
+function fmtDeltaPct(n: number): string {
+  return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+}
+
+function fmtMarginPp(n: number): string {
+  const r = Math.round(n * 10) / 10;
+  if (r === 0) return "0.0%";
+  return `${r > 0 ? "+" : ""}${r.toFixed(1)}%`;
+}
+
+/** Main figure typography — must match pre-animation pulse layout (weight differs for profit). */
+const PULSE_VALUE_BASE =
+  "min-h-[1.75rem] truncate font-sans text-xl tabular-nums tracking-tight sm:min-h-[2rem] sm:text-2xl lg:text-[1.65rem]";
+
+function fmtMarginPctMain(n: number): string {
+  return `${(Math.round(n * 10) / 10).toFixed(1)}%`;
 }
 
 /** One-decimal margin % for comparison line (matches main margin display). */
@@ -254,7 +271,6 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
   const up = pct > 0;
   const down = pct < 0;
   const tone = deltaToneClasses(up, down);
-  const formatted = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
   const pb = delta.previousValue;
   return (
     <ComparisonPill>
@@ -265,11 +281,17 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
           {up && <span aria-hidden>↑</span>}
-          <span>{formatted}</span>
+          <AnimatedNumberText value={pct} format={fmtDeltaPct} className="inline" />
         </span>
         {pb != null && (
           <span className={`text-[11px] font-medium tabular-nums ${tone.muted}`}>
-            (vs {formatCurrencyCompact(pb)})
+            (vs{" "}
+            <AnimatedNumberText
+              value={pb}
+              format={formatCurrencyCompact}
+              className="inline"
+            />
+            )
           </span>
         )}
       </span>
@@ -308,8 +330,6 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   const up = pp > 0;
   const down = pp < 0;
   const tone = deltaToneClasses(up, down);
-  const formatted =
-    pp === 0 ? "0.0%" : `${pp > 0 ? "+" : ""}${pp.toFixed(1)}%`;
   return (
     <ComparisonPill>
       <span
@@ -319,7 +339,7 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
           {up && <span aria-hidden>↑</span>}
-          <span>{formatted}</span>
+          <AnimatedNumberText value={pp} format={fmtMarginPp} className="inline" />
         </span>
         <span className={`text-[11px] font-medium tabular-nums ${tone.muted}`}>
           (vs {formatMarginPctDisplay(pastMarginPct)})
@@ -419,38 +439,58 @@ export default function TodayFinancialsPulse({
         </div>
       </div>
 
-      <div
-        key={period}
-        className="animate-adte-in relative grid grid-cols-2 gap-x-5 gap-y-7 sm:gap-x-6 lg:grid-cols-4 lg:gap-x-7 lg:gap-y-8"
-      >
+      <div className="animate-adte-in relative grid grid-cols-2 gap-x-5 gap-y-7 sm:gap-x-6 lg:grid-cols-4 lg:gap-x-7 lg:gap-y-8">
         <MetricBlock
           label="Today's revenue"
-          value={formatCurrency(revenue)}
-          valueClassName="text-white"
+          primary={
+            <AnimatedCurrency
+              value={revenue}
+              className={`${PULSE_VALUE_BASE} font-bold text-white`}
+              minimumFractionDigits={2}
+              maximumFractionDigits={2}
+            />
+          }
           delta={dRev}
         />
         <MetricBlock
           label="Total cost"
-          value={formatCurrency(cost)}
-          valueClassName="text-white"
+          primary={
+            <AnimatedCurrency
+              value={cost}
+              className={`${PULSE_VALUE_BASE} font-bold text-white`}
+              minimumFractionDigits={2}
+              maximumFractionDigits={2}
+            />
+          }
           delta={dCost}
         />
         <MetricBlock
           label="Gross profit"
           labelPrefix={profitGoalRing}
-          value={formatCurrency(profit)}
-          valueClassName={
-            profit >= 0
-              ? "font-semibold text-white [text-shadow:0_0_24px_rgba(74,222,128,0.25)]"
-              : "font-semibold text-red-400"
+          primary={
+            <AnimatedCurrency
+              value={profit}
+              className={`${PULSE_VALUE_BASE} ${
+                profit >= 0
+                  ? "font-semibold text-white [text-shadow:0_0_24px_rgba(74,222,128,0.25)]"
+                  : "font-semibold text-red-400"
+              }`}
+              minimumFractionDigits={2}
+              maximumFractionDigits={2}
+            />
           }
           delta={dProfit}
         />
         <MetricBlock
           label="Profit margin"
-          value={marginPct(revenue, profit)}
-          valueClassName={
-            profit >= 0 ? "text-emerald-300/95" : "text-red-400"
+          primary={
+            <AnimatedNumberText
+              value={revenue === 0 ? 0 : (profit / revenue) * 100}
+              format={fmtMarginPctMain}
+              className={`${PULSE_VALUE_BASE} font-bold ${
+                profit >= 0 ? "text-emerald-300/95" : "text-red-400"
+              }`}
+            />
           }
           marginDelta={dMargin}
         />
@@ -464,19 +504,17 @@ type MetricBlockProps =
       label: string;
       /** e.g. daily goal ring — left of label (Pulse gross profit only). */
       labelPrefix?: ReactNode;
-      value: string;
-      valueClassName: string;
+      primary: ReactNode;
       delta: DeltaResult;
     }
   | {
       label: string;
-      value: string;
-      valueClassName: string;
+      primary: ReactNode;
       marginDelta: MarginDeltaResult;
     };
 
 function MetricBlock(props: MetricBlockProps) {
-  const { label, value, valueClassName } = props;
+  const { label, primary } = props;
   const labelPrefix = "delta" in props ? props.labelPrefix : undefined;
   return (
     <div className="flex min-w-0 flex-col">
@@ -484,11 +522,7 @@ function MetricBlock(props: MetricBlockProps) {
         {labelPrefix ? <span className="shrink-0">{labelPrefix}</span> : null}
         <span>{label}</span>
       </p>
-      <p
-        className={`min-h-[1.75rem] truncate font-sans text-xl font-bold tabular-nums tracking-tight sm:min-h-[2rem] sm:text-2xl lg:text-[1.65rem] ${valueClassName}`}
-      >
-        {value}
-      </p>
+      <div className="min-w-0">{primary}</div>
       {"marginDelta" in props ? (
         <MarginDeltaSubline delta={props.marginDelta} />
       ) : (
