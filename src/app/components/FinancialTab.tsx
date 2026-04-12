@@ -1,5 +1,4 @@
 import { Suspense } from "react";
-import dynamic from "next/dynamic";
 import {
   getAllDailyMovement,
   getComparisonData,
@@ -10,30 +9,11 @@ import {
 } from "@/app/actions/financials";
 import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
+import { DailyMovementChart, RevenueGoalChart } from "@/app/components/FinancialChartsDynamic";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import TodayFinancialsPulse from "@/app/components/TodayFinancialsPulse";
 import TotalOverview from "@/app/components/TotalOverview";
 import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard";
-
-const RevenueGoalChart = dynamic(
-  () => import("@/app/components/RevenueGoalChart"),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="h-[340px] w-full animate-pulse rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)]" />
-    ),
-  },
-);
-
-const DailyMovementChart = dynamic(
-  () => import("@/app/components/DailyMovementChart"),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="h-[340px] w-full animate-pulse rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)]" />
-    ),
-  },
-);
 
 const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
   `2026-${String(i + 1).padStart(2, "0")}-01`,
