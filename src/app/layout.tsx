@@ -28,13 +28,8 @@ export const metadata: Metadata = {
   description: "Adtex — Adte's management app",
   manifest: "/manifest.json",
   icons: {
-    icon: [
-      { url: "/favicon.png", sizes: "192x192", type: "image/png" },
-      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
-    ],
-    apple: [
-      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
-    ],
+    icon: [{ url: "/favicon.png", type: "image/png", sizes: "48x48" }],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
   },
   appleWebApp: {
     capable: true,
