@@ -15,7 +15,7 @@ import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 
 /**
- * Short TTL: page is force-dynamic so every navigation re-renders, but
+ * Short TTL: page uses revalidate=0 so every navigation re-renders, but
  * unstable_cache still deduplicates within a burst of concurrent requests.
  * refreshTodayHome / cron sync invalidate the tag immediately after writes,
  * so 60s is only a safety-net, not the primary freshness mechanism.
@@ -740,7 +740,7 @@ async function getHomeRowForDate(isoDate: string): Promise<TodayHomeRow | null> 
 
 /**
  * Today’s row in `daily_home_totals` (Israel calendar date). Returns null if missing.
- * Stays fresh with force-dynamic + AutoSync / refreshTodayHome.
+ * Stays fresh via revalidateTag(FINANCIAL_TAG) + AutoSync / refreshTodayHome.
  */
 export async function getTodayHomeTotals(): Promise<TodayHomeRow | null> {
   return getHomeRowForDate(getIsraelDate());

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { startTransition, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { refreshTodayHome } from "@/app/actions/financials";
+import { invalidatePrefetch } from "@/lib/tab-prefetch";
 
 const RETRY_MS = 60_000;
 
@@ -10,7 +11,10 @@ const RETRY_MS = 60_000;
  * Silent refresh: user sees cached/stale Supabase data immediately.
  * After mount, may upsert today's row from XDASH; router.refresh() only if
  * { updated: true } — never blocks first paint.
- * One retry after 60s if the first attempt returns { updated: false } or throws.
+ *
+ * `startTransition` wraps the refresh so React keeps the current UI visible
+ * while the new RSC payload streams in, eliminating the "page jump" that a
+ * bare `router.refresh()` causes.
  */
 export default function AutoSync() {
   const router = useRouter();
@@ -24,13 +28,20 @@ export default function AutoSync() {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let idleHandle: number | undefined;
 
+    const applyRefresh = () => {
+      invalidatePrefetch();
+      startTransition(() => {
+        router.refresh();
+      });
+    };
+
     const scheduleRetry = () => {
       if (retryAttempted.current) return;
       retryAttempted.current = true;
       timeoutId = setTimeout(() => {
         refreshTodayHome()
           .then((result) => {
-            if (result?.updated === true) router.refresh();
+            if (result?.updated === true) applyRefresh();
           })
           .catch(() => {});
       }, RETRY_MS);
@@ -39,7 +50,7 @@ export default function AutoSync() {
     const run = () => {
       refreshTodayHome()
         .then((result) => {
-          if (result?.updated === true) router.refresh();
+          if (result?.updated === true) applyRefresh();
           else scheduleRetry();
         })
         .catch(() => {
@@ -47,7 +58,6 @@ export default function AutoSync() {
         });
     };
 
-    // De-prioritize vs input/paint: run after the browser is idle (fallback ~300ms).
     if (typeof requestIdleCallback !== "undefined") {
       idleHandle = requestIdleCallback(run, { timeout: 3000 });
     } else {

@@ -12,9 +12,16 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useFilter } from "@/app/context/FilterContext";
-import type { FinancialPaceWithTrend } from "@/app/actions/financials";
 
 export type RevenueChartFilter = "total" | "media" | "saas" | "profit";
+
+type SectionGoal = { actual: number; goal: number };
+export type GoalChartPace = {
+  total: SectionGoal;
+  media: SectionGoal;
+  saas: SectionGoal;
+  profit: SectionGoal;
+};
 
 const MONTH_LABELS = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -83,7 +90,7 @@ function CustomTooltip({
 export default function RevenueGoalChart({
   paceByMonth,
 }: {
-  paceByMonth: Record<string, FinancialPaceWithTrend>;
+  paceByMonth: Record<string, GoalChartPace>;
 }) {
   const { selectedMonths } = useFilter();
   const [revenueFilter, setRevenueFilter] = useState<RevenueChartFilter>("profit");

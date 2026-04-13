@@ -12,7 +12,6 @@ import {
 } from "recharts";
 import { useFilter } from "@/app/context/FilterContext";
 import type { DailyMovementDay } from "@/app/actions/financials";
-import type { FinancialPaceWithTrend } from "@/app/actions/financials";
 
 function formatCurrency(n: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -75,11 +74,9 @@ type SeriesKey = (typeof SERIES)[number]["key"];
 export default function DailyMovementChart({
   dailyByMonth,
   monthKeys,
-  paceByMonth,
 }: {
   dailyByMonth: Record<string, DailyMovementDay[]>;
   monthKeys: string[];
-  paceByMonth: Record<string, FinancialPaceWithTrend>;
 }) {
   const { selectedMonths } = useFilter();
   const [visible, setVisible] = useState<Set<SeriesKey>>(

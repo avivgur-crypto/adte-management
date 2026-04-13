@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { Funnel, LayoutDashboard, LogOut, Menu, Settings, Users } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { useAuth } from "@/app/context/AuthContext";
-import { useState, useCallback, useEffect, useTransition } from "react";
+import { useState, useCallback, useEffect, useRef, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   useFilter,
@@ -257,12 +257,13 @@ function MobileMenuPanel() {
   const globalState = useFilter();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const [portalVisible, setPortalVisible] = useState(false);
+  const [animateIn, setAnimateIn] = useState(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const portalAlive = useRef(false);
   const [loggingOut, startLogout] = useTransition();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localMonths, setLocalMonths] = useState<Set<string>>(globalState.selectedMonths);
-
-  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (open) setLocalMonths(new Set(globalState.selectedMonths));
@@ -275,6 +276,25 @@ function MobileMenuPanel() {
     return () => {
       document.body.style.overflow = prev;
     };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      clearTimeout(closeTimerRef.current);
+      setPortalVisible(true);
+      portalAlive.current = true;
+      const raf = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setAnimateIn(true));
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+    if (!portalAlive.current) return;
+    setAnimateIn(false);
+    closeTimerRef.current = setTimeout(() => {
+      setPortalVisible(false);
+      portalAlive.current = false;
+    }, 300);
+    return () => clearTimeout(closeTimerRef.current);
   }, [open]);
 
   const apply = useCallback(() => {
@@ -334,76 +354,6 @@ function MobileMenuPanel() {
     isQuarterSelected: (q) => QUARTER_KEYS[q].every((k) => localMonths.has(k)),
   };
 
-  const panel = mounted && createPortal(
-    <div
-      className={`fixed inset-0 z-40 lg:hidden ${open ? "" : "pointer-events-none"}`}
-      aria-modal={open}
-      role="dialog"
-      aria-hidden={!open}
-    >
-      {/* Backdrop: smooth fade, tap to close */}
-      <div
-        className={`absolute inset-0 bg-black/40 backdrop-blur-[2px] transition-opacity duration-300 ease-out ${
-          open ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-        onClick={() => setOpen(false)}
-        aria-hidden
-      />
-      {/* Panel: slide in from right */}
-      <div
-        className="absolute right-0 top-0 h-full w-full max-w-[min(100vw,320px)] flex flex-col border-l border-white/10 bg-zinc-900/98 shadow-2xl backdrop-blur-xl transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]"
-        style={{
-          transform: open ? "translateX(0)" : "translateX(100%)",
-          willChange: "transform",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex flex-1 flex-col overflow-y-auto p-4 pb-safe">
-          <ScreenNav onNavigate={() => setOpen(false)} />
-          <h3 className="mb-2.5 mt-2 text-sm font-semibold tracking-tight text-zinc-200">
-            Filters
-          </h3>
-          <FilterFormContent state={localState} isMobile onApply={apply} />
-          {user?.isAdmin && (
-            <div className="mt-4 border-t border-white/10 pt-3">
-              <AdminSyncPanel />
-            </div>
-          )}
-          {user && (
-            <div className="mt-4 flex gap-2 border-t border-white/10 pt-3">
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(true)}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200"
-                aria-label="Account settings"
-              >
-                <Settings className="h-4 w-4 shrink-0" />
-                <span>Settings</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  startLogout(async () => {
-                    await logout();
-                  });
-                }}
-                disabled={loggingOut}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200 disabled:opacity-60"
-              >
-                <LogOut className="h-4 w-4 shrink-0" />
-                <span>{loggingOut ? "…" : "Sign out"}</span>
-              </button>
-            </div>
-          )}
-          {settingsOpen && (
-            <SettingsModal open onClose={() => setSettingsOpen(false)} />
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-
   return (
     <>
       <button
@@ -415,7 +365,74 @@ function MobileMenuPanel() {
       >
         <Menu className="h-5 w-5" />
       </button>
-      {panel}
+      {portalVisible &&
+        createPortal(
+          <div
+            className={`fixed inset-0 z-40 lg:hidden ${animateIn ? "" : "pointer-events-none"}`}
+            aria-modal={animateIn}
+            role="dialog"
+            aria-hidden={!animateIn}
+          >
+            <div
+              className={`absolute inset-0 bg-black/40 backdrop-blur-[2px] transition-opacity duration-300 ease-out ${
+                animateIn ? "opacity-100" : "pointer-events-none opacity-0"
+              }`}
+              onClick={() => setOpen(false)}
+              aria-hidden
+            />
+            <div
+              className="absolute right-0 top-0 h-full w-full max-w-[min(100vw,320px)] flex flex-col border-l border-white/10 bg-zinc-900/98 shadow-2xl backdrop-blur-xl transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]"
+              style={{
+                transform: animateIn ? "translateX(0)" : "translateX(100%)",
+                willChange: "transform",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex flex-1 flex-col overflow-y-auto p-4 pb-safe">
+                <ScreenNav onNavigate={() => setOpen(false)} />
+                <h3 className="mb-2.5 mt-2 text-sm font-semibold tracking-tight text-zinc-200">
+                  Filters
+                </h3>
+                <FilterFormContent state={localState} isMobile onApply={apply} />
+                {user?.isAdmin && (
+                  <div className="mt-4 border-t border-white/10 pt-3">
+                    <AdminSyncPanel />
+                  </div>
+                )}
+                {user && (
+                  <div className="mt-4 flex gap-2 border-t border-white/10 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setSettingsOpen(true)}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200"
+                      aria-label="Account settings"
+                    >
+                      <Settings className="h-4 w-4 shrink-0" />
+                      <span>Settings</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        startLogout(async () => {
+                          await logout();
+                        });
+                      }}
+                      disabled={loggingOut}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200 disabled:opacity-60"
+                    >
+                      <LogOut className="h-4 w-4 shrink-0" />
+                      <span>{loggingOut ? "…" : "Sign out"}</span>
+                    </button>
+                  </div>
+                )}
+                {settingsOpen && (
+                  <SettingsModal open onClose={() => setSettingsOpen(false)} />
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

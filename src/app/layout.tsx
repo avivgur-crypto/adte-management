@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/react";
+import { getSessionUser } from "@/app/actions/auth";
 import ConditionalShell from "@/app/components/ConditionalShell";
 import ServiceWorkerRegister from "@/app/components/ServiceWorkerRegister";
 import "./globals.css";
@@ -38,11 +39,13 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const initialUser = await getSessionUser();
+
   return (
     <html
       lang="en"
@@ -57,7 +60,7 @@ export default function RootLayout({
           minHeight: "100%",
         }}
       >
-        <ConditionalShell>{children}</ConditionalShell>
+        <ConditionalShell initialUser={initialUser}>{children}</ConditionalShell>
         <ServiceWorkerRegister />
         <Analytics />
       </body>

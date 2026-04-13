@@ -6,11 +6,13 @@ import {
   AnimatedCurrency,
   AnimatedNumberText,
 } from "@/app/components/AnimatedCurrency";
-import type {
-  ComparisonData,
-  DailyProfitGoalPace,
-  TodayHomeRow,
-} from "@/app/actions/financials";
+import type { DailyProfitGoalPace } from "@/app/actions/financials";
+
+export type PulseRow = { date: string; revenue: number; cost: number; profit: number };
+export type PulseComparison = {
+  today: PulseRow | null;
+  past: Record<number, PulseRow | null>;
+};
 
 const PERIODS = [
   { key: 1 as const, label: "1d" },
@@ -85,8 +87,8 @@ type MarginDeltaResult =
  */
 function computeDelta(
   today: number,
-  pastRow: TodayHomeRow | null,
-  pick: (r: TodayHomeRow) => number,
+  pastRow: PulseRow | null,
+  pick: (r: PulseRow) => number,
 ): DeltaResult {
   if (!pastRow) return { kind: "no_hist" };
   const past = pick(pastRow);
@@ -111,7 +113,7 @@ function computeDelta(
 function computeMarginDelta(
   todayRev: number,
   todayProfit: number,
-  pastRow: TodayHomeRow | null,
+  pastRow: PulseRow | null,
 ): MarginDeltaResult {
   if (!pastRow) return { kind: "no_hist" };
 
@@ -353,7 +355,7 @@ export default function TodayFinancialsPulse({
   comparison,
   dailyProfitGoalPace,
 }: {
-  comparison: ComparisonData | null;
+  comparison: PulseComparison | null;
   dailyProfitGoalPace: DailyProfitGoalPace | null;
 }) {
   const [period, setPeriod] = useState<PeriodKey>(1);

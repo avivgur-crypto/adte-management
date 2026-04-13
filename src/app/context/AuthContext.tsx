@@ -23,9 +23,23 @@ const AuthContext = createContext<AuthState>({
   refresh: async () => {},
 });
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<SessionUser>(null);
-  const [loading, setLoading] = useState(true);
+/**
+ * Provides auth identity to the client tree.
+ *
+ * When `initialUser` is supplied (resolved server-side in layout.tsx), the
+ * provider initialises immediately — no post-hydration fetch.  When omitted
+ * (e.g. tests), it falls back to a client-side fetch after first paint.
+ */
+export function AuthProvider({
+  children,
+  initialUser,
+}: {
+  children: ReactNode;
+  initialUser?: SessionUser;
+}) {
+  const serverResolved = initialUser !== undefined;
+  const [user, setUser] = useState<SessionUser>(initialUser ?? null);
+  const [loading, setLoading] = useState(!serverResolved);
 
   const refresh = useCallback(async () => {
     try {
@@ -42,13 +56,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  /** Defer session read until after first paint so shell/sidebar stay interactive. */
   useEffect(() => {
+    if (serverResolved) return;
     const id = requestAnimationFrame(() => {
       void refresh();
     });
     return () => cancelAnimationFrame(id);
-  }, [refresh]);
+  }, [refresh, serverResolved]);
 
   return (
     <AuthContext.Provider value={{ user, loading, refresh }}>
