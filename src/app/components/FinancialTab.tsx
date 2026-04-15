@@ -7,12 +7,11 @@ import {
   getMonthlyXDASHTotals,
   getTotalOverviewData,
 } from "@/app/actions/financials";
-import type { ComparisonData, FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
+import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
 import { DailyMovementChart, RevenueGoalChart } from "@/app/components/FinancialChartsDynamic";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import TodayFinancialsPulse from "@/app/components/TodayFinancialsPulse";
-import type { PulseComparison } from "@/app/components/TodayFinancialsPulse";
 import TotalOverview from "@/app/components/TotalOverview";
 import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard";
 import type { GoalChartPace } from "@/app/components/RevenueGoalChart";
@@ -20,18 +19,6 @@ import type { GoalChartPace } from "@/app/components/RevenueGoalChart";
 const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
   `2026-${String(i + 1).padStart(2, "0")}-01`,
 );
-
-/** Server-side projection: strip impressions before RSC serialization. */
-function slimComparison(data: ComparisonData): PulseComparison {
-  const strip = (r: { date: string; revenue: number; cost: number; profit: number } | null) =>
-    r ? { date: r.date, revenue: r.revenue, cost: r.cost, profit: r.profit } : null;
-  return {
-    today: strip(data.today),
-    past: Object.fromEntries(
-      Object.entries(data.past).map(([k, v]) => [Number(k), strip(v)]),
-    ) as PulseComparison["past"],
-  };
-}
 
 /** Server-side projection: keep only actual/goal per section for the chart. */
 function slimPaceForChart(
@@ -80,7 +67,7 @@ async function FinancialOverview() {
   return (
     <div className="flex flex-col gap-8">
       <TodayFinancialsPulse
-        comparison={comparison ? slimComparison(comparison) : null}
+        comparison={comparison}
         dailyProfitGoalPace={dailyProfitGoalPace}
       />
       {hasError && (
