@@ -223,7 +223,8 @@ const REPORT_PATH_404_FALLBACKS = ["/reports", "/reports/run", "/api/report", "/
 /** Report payload shape required by XDASH API: dimensions camelCase, aggregationPeriod, metrics include profit. */
 const REPORT_DIMENSIONS = ["supplyTag", "demandTag"] as const;
 const REPORT_AGGREGATION_PERIOD = "sum";
-const REPORT_METRICS = ["revenue", "cost", "impressions", "profit", "netprofit"];
+/** Enum values for POST /report `metrics` — use camelCase `netProfit` (lowercase `netprofit` returns 400). */
+const REPORT_METRICS = ["revenue", "cost", "impressions", "profit", "netProfit"] as const;
 
 function buildReportPayload(date: string): string {
   return JSON.stringify({
