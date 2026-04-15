@@ -891,8 +891,16 @@ export async function refreshTodayHome(
       });
     }
 
-    revalidateTag(FINANCIAL_TAG, { expire: 0 });
-    revalidatePath("/");
+    try {
+      revalidateTag(FINANCIAL_TAG, { expire: 0 });
+      revalidatePath("/");
+    } catch (revErr) {
+      // e.g. CLI/scripts have no Next.js cache store — DB upsert still succeeded.
+      console.warn(
+        "[refreshTodayHome] revalidateTag/revalidatePath (non-fatal):",
+        revErr instanceof Error ? revErr.message : revErr,
+      );
+    }
     return { updated: true };
   } catch (e) {
     console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
