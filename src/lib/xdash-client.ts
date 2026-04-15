@@ -772,7 +772,8 @@ export async function fetchAdServerOverview(
  *
  * Cost: `netCost` already includes service cost in XDASH; use it when present. Otherwise gross
  * `cost` + `serviceCost`. Never add `serviceCost` on top of `netCost` (avoids double-counting).
- * Profit: revenue − cost (same basis as net cost above — aligns with XDASH net-style totals).
+ * Profit: prefer explicit `netProfit` / `netprofit` on `totals` when the API sends them;
+ * otherwise revenue − cost (same basis as net cost — matches XDASH when those fields are absent).
  */
 export function mapHomeOverviewToHomeTotals(
   raw: unknown,
@@ -792,7 +793,17 @@ export function mapHomeOverviewToHomeTotals(
   const cost =
     Number(totals.netCost) ||
     (Number(totals.cost) + Number(totals.serviceCost ?? 0));
-  const profit = revenue - cost;
+
+  const rec = totals as unknown as Record<string, unknown>;
+  let explicitProfit: number | null = null;
+  for (const key of NET_PROFIT_KEYS) {
+    const v = presentNumber(rec[key]);
+    if (v !== null) {
+      explicitProfit = v;
+      break;
+    }
+  }
+  const profit = explicitProfit !== null ? explicitProfit : revenue - cost;
 
   const todayIL = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
   const isToday = date === todayIL;

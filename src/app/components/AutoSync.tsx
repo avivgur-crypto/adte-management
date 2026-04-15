@@ -8,8 +8,11 @@ import { invalidatePrefetch } from "@/lib/tab-prefetch";
 
 /** If the first idle refresh is skipped (rows still inside stale window), retry once after 1 minute. */
 const RETRY_MS = 60_000;
-/** Poll XDASH Home → Supabase so intraday totals stay near real time while the tab is open. */
-const POLL_MS = 5 * 60 * 1000;
+/**
+ * Poll XDASH Home → Supabase while the tab is open. Must be ≤ `REFRESH_STALE_MS_TODAY`
+ * in `refreshTodayHome` (60s); a 5m poll previously let `daily_home_totals` lag XDASH for minutes.
+ */
+const POLL_MS = 60_000;
 
 /**
  * Silent refresh: user sees cached/stale Supabase data immediately.
