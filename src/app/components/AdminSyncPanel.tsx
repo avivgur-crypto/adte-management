@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { BarChart3, CalendarSync } from "lucide-react";
+import { refreshTodayHome } from "@/app/actions/financials";
 import { useSyncStatus } from "@/app/context/SyncStatusContext";
 
 const API_BASE = "/api/auto-sync";
@@ -46,6 +48,7 @@ async function fetchOneDay(
 }
 
 export default function AdminSyncPanel() {
+  const router = useRouter();
   const syncStatus = useSyncStatus();
 
   const [xdashLabel, setXdashLabel] = useState<string | null>(null);
@@ -158,7 +161,14 @@ export default function AdminSyncPanel() {
       setXdashFeedback({ type: "success", message: "Synced!" });
     }
     if (lastSyncedAt) syncStatus?.setLastSyncedAt(lastSyncedAt);
-  }, [syncStatus]);
+
+    try {
+      const home = await refreshTodayHome({ force: true });
+      if (home.updated) router.refresh();
+    } catch (e) {
+      console.error("[AdminSyncPanel] refreshTodayHome(force):", e);
+    }
+  }, [syncStatus, router]);
 
   const handleMondaySync = useCallback(async () => {
     setMondaySyncing(true);

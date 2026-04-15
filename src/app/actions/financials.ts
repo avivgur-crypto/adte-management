@@ -812,17 +812,31 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
 
 // ---------------------------------------------------------------------------
 // Live refresh: fetch Home totals for today + yesterday (Israel) and upsert into Supabase.
-// Called on page load so the dashboard stays current without waiting for cron; yesterday is
-// re-fetched so end-of-day totals settle after the calendar flips.
+// AutoSync calls this on idle: today’s row is considered stale after 60s (intraday); yesterday
+// after 5 minutes. Manual “Sync XDASH” passes force:true to bypass stale checks entirely.
 // ---------------------------------------------------------------------------
 
-const REFRESH_STALE_MS = 5 * 60 * 1000; // skip if both rows are fresher than this
+/** Yesterday’s row: avoid hammering XDASH when the calendar day is settled. */
+const REFRESH_STALE_MS_YESTERDAY = 5 * 60 * 1000;
+/** Today’s intraday row: keep Pulse within ~1 minute of XDASH Home. */
+const REFRESH_STALE_MS_TODAY = 60 * 1000;
 
 export type RefreshTodayHomeResult = { updated: boolean };
 
-/** Returns { updated: true } when at least one date was upserted from XDASH. */
-export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
+export type RefreshTodayHomeOptions = {
+  /** When true (e.g. manual “Sync XDASH”), skip stale checks and always fetch today + yesterday from XDASH. */
+  force?: boolean;
+};
+
+/**
+ * Returns { updated: true } when at least one date was upserted from XDASH.
+ * Default stale rules: today must be older than 60s or missing; yesterday 5m or missing.
+ */
+export async function refreshTodayHome(
+  options?: RefreshTodayHomeOptions,
+): Promise<RefreshTodayHomeResult> {
   try {
+    const force = options?.force === true;
     const today = getIsraelDateDaysAgo(0);
     const yesterday = getIsraelDateDaysAgo(1);
     const dates = [today, yesterday] as const;
@@ -837,13 +851,17 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       return { updated: false };
     }
 
-    const needRefresh = dates.some((d) => {
-      const row = existingRows?.find((r) => String(r.date).slice(0, 10) === d);
-      if (!row?.created_at) return true;
-      return Date.now() - new Date(row.created_at).getTime() >= REFRESH_STALE_MS;
-    });
+    if (!force) {
+      const needRefresh = dates.some((d) => {
+        const row = existingRows?.find((r) => String(r.date).slice(0, 10) === d);
+        if (!row?.created_at) return true;
+        const ageMs = Date.now() - new Date(row.created_at).getTime();
+        const staleMs = d === today ? REFRESH_STALE_MS_TODAY : REFRESH_STALE_MS_YESTERDAY;
+        return ageMs >= staleMs;
+      });
 
-    if (!needRefresh) return { updated: false };
+      if (!needRefresh) return { updated: false };
+    }
 
     const syncedAt = new Date().toISOString();
 
