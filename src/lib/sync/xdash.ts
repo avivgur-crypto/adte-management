@@ -17,7 +17,6 @@ import {
   fetchDemandPartners,
   fetchSupplyPartners,
   fetchReportForDate,
-  fetchAdServerOverview,
   fetchHomeForDate,
   mapDemandPartners,
   mapSupplyPartners,

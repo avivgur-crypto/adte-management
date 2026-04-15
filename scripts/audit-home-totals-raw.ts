@@ -1,14 +1,27 @@
 /**
- * One-off: print raw /home/overview/adServers totals vs mapAdServerOverviewToHomeTotals.
+ * One-off: print raw POST /home/overview totals vs mapHomeOverviewToHomeTotals.
  * Usage: npx tsx --env-file=.env.local scripts/audit-home-totals-raw.ts [YYYY-MM-DD]
  */
 
-import { fetchAdServerOverview, mapAdServerOverviewToHomeTotals } from "../src/lib/xdash-client";
+import {
+  fetchAdServerOverview,
+  mapHomeOverviewToHomeTotals,
+  resolveHomeOverviewSelectedTotals,
+} from "../src/lib/xdash-client";
 
 async function main() {
-  const date = (process.argv[2]?.trim() || "2026-04-15").slice(0, 10);
+  const date = (process.argv[2]?.trim() || "2026-04-10").slice(0, 10);
   const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
-  const t = raw.overviewTotals?.selectedDates?.totals;
+  const t = resolveHomeOverviewSelectedTotals(raw) as
+    | {
+        revenue?: unknown;
+        netRevenue?: unknown;
+        cost?: unknown;
+        netCost?: unknown;
+        serviceCost?: unknown;
+        impressions?: unknown;
+      }
+    | undefined;
   console.log("\n--- raw overviewTotals.selectedDates.totals (subset) ---\n");
   console.log(
     JSON.stringify(
@@ -31,8 +44,8 @@ async function main() {
   console.log("netRevenue (totals.netRevenue):", netRev);
   console.log("current mapper uses: gross || net →", gross || netRev);
 
-  const mapped = mapAdServerOverviewToHomeTotals(raw, date);
-  console.log("\nmapAdServerOverviewToHomeTotals:", mapped);
+  const mapped = mapHomeOverviewToHomeTotals(raw, date);
+  console.log("\nmapHomeOverviewToHomeTotals:", mapped);
 }
 
 main().catch((e) => {

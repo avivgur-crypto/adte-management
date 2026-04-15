@@ -9,6 +9,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import {
   fetchAdServerOverview,
   fetchHomeForDate,
+  resolveHomeOverviewSelectedTotals,
   type XDashTotals,
 } from "@/lib/xdash-client";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
@@ -1009,7 +1010,7 @@ export type DiagnosticXdashHomeCostResult =
   | { ok: false; error: string };
 
 /**
- * Diagnostics only: fetch Home `/home/overview/adServers` for one date and compare
+ * Diagnostics only: fetch Home `POST /home/overview` for one date and compare
  * raw cost fields to what we store. Does not write to the DB.
  *
  * - Default `date` = yesterday (Israel calendar).
@@ -1027,11 +1028,12 @@ export async function diagnosticXdashHomeCostFields(
 
   try {
     const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
-    const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
-    const selectedDates = sd?.selectedDates as Record<string, unknown> | undefined;
-    const totals = selectedDates?.totals as XDashTotals | undefined;
+    const totals = resolveHomeOverviewSelectedTotals(raw) as XDashTotals | undefined;
+    if (!totals) {
+      return { ok: false, error: "No overviewTotals.selectedDates.totals in Home response." };
+    }
 
-    const grossCost = Number(totals?.cost ?? 0);
+    const grossCost = Number(totals.cost ?? 0);
     const netCost = Number(totals?.netCost ?? 0);
     const grossRevenue = Number(totals?.revenue ?? 0);
     const netRevenue = Number(totals?.netRevenue ?? 0);

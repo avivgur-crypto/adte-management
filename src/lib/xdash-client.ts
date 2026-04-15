@@ -6,7 +6,7 @@
  *
  *   - Partners overview: /partners/demand/overview + /partners/supply/overview (2 calls per date)
  *   - Reports API: one call per date with metrics Revenue/Cost/Impressions — set XDASH_USE_REPORTS=true
- *   - Ad-server overview (legacy): /home/overview/adServers
+ *   - Home overview (global totals, matches XDASH header): POST /home/overview
  *
  * IMPORTANT: The auth token expires periodically. Copy a fresh token from the backup site
  * (DevTools > Network > auth-token cookie) and update XDASH_AUTH_TOKEN in `.env.local`.
@@ -151,7 +151,7 @@ export interface XDashPeriodData {
   totals: XDashTotals;
 }
 
-/** The full API response shape from /home/overview/adServers */
+/** Response from POST /home/overview/adServers — overviewTotals at root. */
 export interface XDashApiResponse {
   overviewTotals: {
     selectedDates: XDashPeriodData;
@@ -160,6 +160,13 @@ export interface XDashApiResponse {
     monthAgo: XDashPeriodData;
     specificComparisonDate: XDashPeriodData;
   };
+}
+
+/**
+ * POST /home/overview wraps the same overview under `adServers` (global rollup = XDASH header KPIs).
+ */
+export interface XDashGlobalHomeApiResponse {
+  adServers?: XDashApiResponse;
 }
 
 // ---------------------------------------------------------------------------
@@ -678,17 +685,46 @@ const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
 const HOME_OVERVIEW_RETRY_ATTEMPTS = 2;
 const HOME_OVERVIEW_RETRY_DELAY_MS = 5000;
 
+/** Global Home rollup (matches XDASH header). Older backup path was /home/overview/adServers only. */
+const HOME_OVERVIEW_GLOBAL_PATH = "/home/overview";
+
 /**
- * Fetches the ad-server overview data from XDASH backup for a given date range.
+ * `selectedDates.totals` from either:
+ * - `POST /home/overview` → `{ adServers: { overviewTotals: { selectedDates, … } } }`
+ * - `POST /home/overview/adServers` → `{ overviewTotals: { selectedDates, … } }` (subset vs header)
+ */
+export function resolveHomeOverviewSelectedTotals(raw: unknown): XDashTotals | undefined {
+  const r = raw as Record<string, unknown> | null;
+  if (!r || typeof r !== "object") return undefined;
+
+  const fromNested = r.adServers as Record<string, unknown> | undefined;
+  const otNested = fromNested?.overviewTotals as Record<string, unknown> | undefined;
+  const sdNested = otNested?.selectedDates as Record<string, unknown> | undefined;
+  const totalsNested = sdNested?.totals;
+  if (totalsNested && typeof totalsNested === "object") {
+    return totalsNested as XDashTotals;
+  }
+
+  const ot = r.overviewTotals as Record<string, unknown> | undefined;
+  const sd = ot?.selectedDates as Record<string, unknown> | undefined;
+  const totals = sd?.totals;
+  if (totals && typeof totals === "object") {
+    return totals as XDashTotals;
+  }
+  return undefined;
+}
+
+/**
+ * Fetches the **global** Home overview from XDASH backup (same rollup as the main header).
  * Retries on 502/503/504 (Bad Gateway / Unavailable).
  */
 export async function fetchAdServerOverview(
   dateRange: XDashDateRange
-): Promise<XDashApiResponse> {
+): Promise<XDashApiResponse | XDashGlobalHomeApiResponse> {
   assertNotDisabled();
   assertEnvVars();
 
-  const url = `${XDASH_API_BASE}/home/overview/adServers`;
+  const url = `${XDASH_API_BASE}${HOME_OVERVIEW_GLOBAL_PATH}`;
   const body = JSON.stringify({
     startDate: dateRange.startDate,
     endDate: dateRange.endDate,
@@ -709,7 +745,7 @@ export async function fetchAdServerOverview(
       clearTimeout(timeoutId);
 
       if (response.ok) {
-        const json: XDashApiResponse = await response.json();
+        const json = (await response.json()) as XDashApiResponse | XDashGlobalHomeApiResponse;
         return json;
       }
 
@@ -731,29 +767,31 @@ export async function fetchAdServerOverview(
 }
 
 /**
- * Maps a raw `/home/overview/adServers` JSON body to the same numbers as the Home dashboard path.
- * Use after `fetchAdServerOverview` when you need the raw response for logging (single HTTP call).
+ * Maps raw `POST /home/overview` (or legacy adServers) JSON to Pulse / daily_home_totals fields.
+ * Uses `resolveHomeOverviewSelectedTotals` so the **global** header rollup is used when present.
  *
  * Cost: `netCost` already includes service cost in XDASH; use it when present. Otherwise gross
  * `cost` + `serviceCost`. Never add `serviceCost` on top of `netCost` (avoids double-counting).
  * Profit: revenue − cost (same basis as net cost above — aligns with XDASH net-style totals).
  */
-export function mapAdServerOverviewToHomeTotals(
-  raw: XDashApiResponse,
+export function mapHomeOverviewToHomeTotals(
+  raw: unknown,
   date: string,
 ): { revenue: number; cost: number; profit: number; impressions: number } {
-  const sd = (raw as unknown as Record<string, unknown>).overviewTotals as Record<string, unknown> | undefined;
-  const selectedDates = sd?.selectedDates as Record<string, unknown> | undefined;
-  const totals = selectedDates?.totals as XDashTotals | undefined;
+  const totals = resolveHomeOverviewSelectedTotals(raw);
+  if (!totals) {
+    console.warn(`[xdash-client] Home ${date}: missing overviewTotals.selectedDates.totals — returning zeros`);
+    return { revenue: 0, cost: 0, profit: 0, impressions: 0 };
+  }
 
-  const grossRevenue = Number(totals?.revenue ?? 0);
-  const netRevenue = Number(totals?.netRevenue ?? 0);
-  const impressions = Number(totals?.impressions ?? 0);
+  const grossRevenue = Number(totals.revenue ?? 0);
+  const netRevenue = Number(totals.netRevenue ?? 0);
+  const impressions = Number(totals.impressions ?? 0);
 
   const revenue = grossRevenue || netRevenue;
   const cost =
-    Number(totals?.netCost) ||
-    (Number(totals?.cost) + Number(totals?.serviceCost ?? 0));
+    Number(totals.netCost) ||
+    (Number(totals.cost) + Number(totals.serviceCost ?? 0));
   const profit = revenue - cost;
 
   const todayIL = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
@@ -766,15 +804,18 @@ export function mapAdServerOverviewToHomeTotals(
   return { revenue, cost, profit, impressions };
 }
 
+/** @alias mapHomeOverviewToHomeTotals — kept for existing imports. */
+export const mapAdServerOverviewToHomeTotals = mapHomeOverviewToHomeTotals;
+
 /**
  * Fetch Home API totals for a single date. Returns {revenue, cost, profit, impressions}.
- * Uses /home/overview/adServers only — the same source as the XDASH Home dashboard.
+ * Uses **POST /home/overview** (global rollup — matches XDASH header).
  */
 export async function fetchHomeForDate(
   date: string,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
   const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
-  return mapAdServerOverviewToHomeTotals(raw, date);
+  return mapHomeOverviewToHomeTotals(raw, date);
 }
 
 /**
@@ -859,8 +900,12 @@ export function extractRevenueFromHomeResponse(raw: unknown): number {
   const data = raw as Record<string, unknown>;
   const ot = data?.overviewTotals as Record<string, unknown> | undefined;
   const sd = data?.selectedDates as Record<string, unknown> | undefined;
+  const nestedOt = (data.adServers as Record<string, unknown> | undefined)?.overviewTotals as
+    | Record<string, unknown>
+    | undefined;
 
   const candidates: unknown[] = [
+    nestedOt?.selectedDates && (nestedOt.selectedDates as Record<string, unknown>)?.totals,
     ot?.selectedDates && (ot.selectedDates as Record<string, unknown>)?.totals,
     ot?.totals,
     sd?.totals,
@@ -880,7 +925,7 @@ export function extractRevenueFromHomeResponse(raw: unknown): number {
 
 /**
  * Revenue from XDASH backup home screen for a date range.
- * Uses /home/overview/adServers — same source as the main dashboard, not "All Demand Partners".
+ * Uses POST /home/overview (global header rollup).
  */
 export async function getHomeRevenueForRange(
   startDate: string,
