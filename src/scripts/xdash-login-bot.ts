@@ -161,7 +161,7 @@ async function main() {
         type: el.getAttribute("type"),
         placeholder: el.getAttribute("placeholder"),
         id: el.id,
-        visible: el.offsetParent !== null,
+        visible: el instanceof HTMLElement ? el.offsetParent !== null : false,
       }));
       console.log(`[xdash-login-bot] input[${i}]:`, JSON.stringify(attrs));
     }
