@@ -13,7 +13,9 @@ import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard"
  * (tagged "financial-data") deduplicates within a burst of concurrent
  * requests; `refreshTodayHome` / cron sync invalidate the tag after writes.
  */
+export const dynamic = "force-dynamic";
 export const revalidate = 0;
+export const maxDuration = 60;
 
 function FinancialSkeleton() {
   return (
