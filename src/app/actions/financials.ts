@@ -818,9 +818,9 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
 // ---------------------------------------------------------------------------
 
 /** Yesterday’s row: avoid hammering XDASH when the calendar day is settled. */
-const REFRESH_STALE_MS_YESTERDAY = 5 * 60 * 1000;
+// REMOVED: const REFRESH_STALE_MS_YESTERDAY = 5 * 60 * 1000;
 /** Today’s intraday row: keep Pulse within ~1 minute of XDASH Home. */
-const REFRESH_STALE_MS_TODAY = 60 * 1000;
+// REMOVED: const REFRESH_STALE_MS_TODAY = 60 * 1000;
 
 export type RefreshTodayHomeResult = {
   updated: boolean;
@@ -834,59 +834,25 @@ export type RefreshTodayHomeResult = {
   };
 };
 
-export type RefreshTodayHomeOptions = {
+export type RefreshTodayHomeOptions = { // legacy — every call now fetches+writes unconditionally
   /** When true (e.g. manual “Sync XDASH”), skip stale checks and always fetch today + yesterday from XDASH. */
   force?: boolean;
 };
 
 /**
- * Bulletproof sync: fetch XDASH Home for today + yesterday (Israel),
- * upsert into `daily_home_totals`, verify the write via read-back,
- * then invalidate caches. Every step is logged with `[SYNC DEBUG]`.
+ * Unconditional sync: fetch XDASH Home for today + yesterday (Israel),
+ * upsert into `daily_home_totals`, verify via read-back, invalidate caches.
+ * NO stale checks — every call hits XDASH and writes. Errors are thrown, never swallowed.
  */
 export async function refreshTodayHome(
-  options?: RefreshTodayHomeOptions,
+  _options?: RefreshTodayHomeOptions,
 ): Promise<RefreshTodayHomeResult> {
   try {
-    const force = options?.force === true;
     const today = getIsraelDateDaysAgo(0);
     const yesterday = getIsraelDateDaysAgo(1);
     const dates = [today, yesterday] as const;
 
-    console.log(`[SYNC DEBUG] refreshTodayHome called. force=${force}, today=${today}, yesterday=${yesterday}`);
-
-    const { data: existingRows, error: selectError } = await supabaseAdmin
-      .from("daily_home_totals")
-      .select("date, created_at, revenue")
-      .in("date", [...dates]);
-
-    if (selectError) {
-      const msg = `select failed: ${selectError.message}`;
-      console.error(`[SYNC DEBUG] ${msg}`);
-      return { updated: false, error: msg };
-    }
-
-    console.log(
-      `[SYNC DEBUG] Existing rows:`,
-      (existingRows ?? []).map((r) =>
-        `${r.date} rev=$${Number(r.revenue).toFixed(2)} age=${r.created_at}`
-      ).join(" | ") || "(none)",
-    );
-
-    if (!force) {
-      const needRefresh = dates.some((d) => {
-        const row = existingRows?.find((r) => String(r.date).slice(0, 10) === d);
-        if (!row?.created_at) return true;
-        const ageMs = Date.now() - new Date(row.created_at).getTime();
-        const staleMs = d === today ? REFRESH_STALE_MS_TODAY : REFRESH_STALE_MS_YESTERDAY;
-        return ageMs >= staleMs;
-      });
-
-      if (!needRefresh) {
-        console.log(`[SYNC DEBUG] Rows are fresh — skipping XDASH fetch (use force=true to override)`);
-        return { updated: false, details: { todayDate: today, yesterdayDate: yesterday } };
-      }
-    }
+    console.log(`[SYNC DEBUG] refreshTodayHome called (unconditional). today=${today}, yesterday=${yesterday}`);
 
     const syncedAt = new Date().toISOString();
     let todayValues: { revenue: number; cost: number; profit: number; impressions: number } | null = null;
@@ -894,7 +860,14 @@ export async function refreshTodayHome(
 
     for (const date of dates) {
       console.log(`[SYNC DEBUG] Fetching XDASH Home for ${date}…`);
-      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
+      let revenue: number, cost: number, profit: number, impressions: number;
+      try {
+        ({ revenue, cost, profit, impressions } = await fetchHomeForDate(date));
+      } catch (fetchErr) {
+        const msg = `XDASH fetch FAILED for ${date}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`;
+        console.error(`[SYNC DEBUG] ${msg}`);
+        throw new Error(msg);
+      }
       console.log(
         `[SYNC DEBUG] XDASH returned for ${date}: revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, profit=$${profit.toFixed(2)}, imp=${impressions}`,
       );
@@ -908,9 +881,9 @@ export async function refreshTodayHome(
         { onConflict: "date" },
       );
       if (error) {
-        const msg = `upsert failed for ${date}: ${error.message} (code: ${error.code}, details: ${error.details})`;
+        const msg = `upsert FAILED for ${date}: ${error.message} (code: ${error.code}, details: ${error.details})`;
         console.error(`[SYNC DEBUG] ${msg}`);
-        return { updated: false, error: msg, details };
+        throw new Error(msg);
       }
       console.log(`[SYNC DEBUG] Supabase upsert SUCCESS for ${date}`);
 
@@ -957,7 +930,8 @@ export async function refreshTodayHome(
     return { updated: true, details };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[SYNC DEBUG] refreshTodayHome THREW: ${msg}`);
+    const stack = e instanceof Error ? e.stack : "";
+    console.error(`[SYNC DEBUG] refreshTodayHome THREW: ${msg}\n${stack}`);
     return { updated: false, error: msg };
   }
 }
