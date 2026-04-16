@@ -631,9 +631,10 @@ async function throttle(): Promise<void> {
 /** Per-request timeout so a slow XDASH day doesn't hang the whole sync. */
 const FETCH_TIMEOUT_MS = 25_000;
 
-/** No cache-busting timestamp — let XDASH use its own edge caching. */
+/** Unique per-request timestamp so intermediaries never serve a stale XDASH response. */
 function bustCache(url: string): string {
-  return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}cache_bust=${Date.now()}`;
 }
 
 /** Fetch with retry on network errors. Each attempt has a 60s timeout — abort that day and move on. */
