@@ -6,16 +6,9 @@ import { refreshTodayHome } from "@/app/actions/financials";
 import { useSyncStatus } from "@/app/context/SyncStatusContext";
 import { invalidatePrefetch } from "@/lib/tab-prefetch";
 
-const POLL_MS = 60_000;
+const POLL_MS = 5 * 60 * 1000; // 5 minutes — respectful to XDASH API
+const INITIAL_DELAY_MS = 3_000; // small delay on page load before first sync
 
-/**
- * Bulletproof auto-sync: calls refreshTodayHome every 60 seconds and
- * ALWAYS triggers a full router.refresh() afterward — whether the server
- * action wrote new data, returned cached, or threw an error.
- *
- * This guarantees the RSC tree re-renders with the latest DB state on
- * every cycle, eliminating stale-UI scenarios entirely.
- */
 export default function AutoSync() {
   const router = useRouter();
   const syncStatus = useSyncStatus();
@@ -28,24 +21,20 @@ export default function AutoSync() {
     syncStatus?.bumpSyncVersion();
     invalidatePrefetch();
     router.refresh();
-    console.log("[AutoSync] router.refresh() fired");
   }, [router, syncStatus]);
 
   const runSync = useCallback(async () => {
     const t0 = Date.now();
-    console.log("[AutoSync] Starting sync cycle…");
     try {
       const result = await refreshTodayHome();
       const ms = Date.now() - t0;
       if (result.error) {
-        console.error(`[AutoSync] Sync completed with error (${ms}ms):`, result.error);
+        console.error(`[AutoSync] error (${ms}ms):`, result.error);
       } else if (result.updated) {
-        console.log(`[AutoSync] Sync wrote new data (${ms}ms). Revenue: $${result.details?.todayRevenue?.toFixed(2) ?? "?"}`);
-      } else {
-        console.log(`[AutoSync] Sync skipped — rows fresh (${ms}ms)`);
+        console.log(`[AutoSync] synced (${ms}ms). Revenue: $${result.details?.todayRevenue?.toFixed(2) ?? "?"}`);
       }
     } catch (e) {
-      console.error("[AutoSync] refreshTodayHome threw:", e instanceof Error ? e.message : e);
+      console.error("[AutoSync] threw:", e instanceof Error ? e.message : e);
     }
     forceRefreshUI();
   }, [forceRefreshUI]);
@@ -55,7 +44,7 @@ export default function AutoSync() {
 
     const initialDelay = setTimeout(() => {
       runSync();
-    }, 500);
+    }, INITIAL_DELAY_MS);
 
     pollRef.current = setInterval(() => {
       runSync();

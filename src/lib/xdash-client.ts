@@ -615,8 +615,8 @@ function buildDatePayload(date: string): string {
 const RETRY_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 2000;
 
-// Throttle: minimum gap between consecutive API calls to protect the backup server.
-const THROTTLE_MS = 2000;
+// Throttle: minimum gap between consecutive API calls to protect XDASH.
+const THROTTLE_MS = 3000;
 let _lastRequestTime = 0;
 
 async function throttle(): Promise<void> {
@@ -631,10 +631,9 @@ async function throttle(): Promise<void> {
 /** Per-request timeout so a slow XDASH day doesn't hang the whole sync. */
 const FETCH_TIMEOUT_MS = 25_000;
 
-/** Append a cache-busting timestamp so XDASH CDN/proxy never returns stale data. */
+/** No cache-busting timestamp — let XDASH use its own edge caching. */
 function bustCache(url: string): string {
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}_t=${Date.now()}`;
+  return url;
 }
 
 /** Fetch with retry on network errors. Each attempt has a 60s timeout — abort that day and move on. */
