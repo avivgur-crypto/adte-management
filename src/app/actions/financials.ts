@@ -822,7 +822,17 @@ const REFRESH_STALE_MS_YESTERDAY = 5 * 60 * 1000;
 /** Today’s intraday row: keep Pulse within ~1 minute of XDASH Home. */
 const REFRESH_STALE_MS_TODAY = 60 * 1000;
 
-export type RefreshTodayHomeResult = { updated: boolean };
+export type RefreshTodayHomeResult = {
+  updated: boolean;
+  error?: string;
+  details?: {
+    todayDate?: string;
+    yesterdayDate?: string;
+    todayRevenue?: number;
+    yesterdayRevenue?: number;
+    readBack?: Record<string, unknown> | null;
+  };
+};
 
 export type RefreshTodayHomeOptions = {
   /** When true (e.g. manual “Sync XDASH”), skip stale checks and always fetch today + yesterday from XDASH. */
@@ -830,8 +840,9 @@ export type RefreshTodayHomeOptions = {
 };
 
 /**
- * Returns { updated: true } when at least one date was upserted from XDASH.
- * Default stale rules: today must be older than 60s or missing; yesterday 5m or missing.
+ * Bulletproof sync: fetch XDASH Home for today + yesterday (Israel),
+ * upsert into `daily_home_totals`, verify the write via read-back,
+ * then invalidate caches. Every step is logged with `[SYNC DEBUG]`.
  */
 export async function refreshTodayHome(
   options?: RefreshTodayHomeOptions,
@@ -842,15 +853,25 @@ export async function refreshTodayHome(
     const yesterday = getIsraelDateDaysAgo(1);
     const dates = [today, yesterday] as const;
 
+    console.log(`[SYNC DEBUG] refreshTodayHome called. force=${force}, today=${today}, yesterday=${yesterday}`);
+
     const { data: existingRows, error: selectError } = await supabaseAdmin
       .from("daily_home_totals")
-      .select("date, created_at")
+      .select("date, created_at, revenue")
       .in("date", [...dates]);
 
     if (selectError) {
-      console.error("[refreshTodayHome] select failed:", selectError.message);
-      return { updated: false };
+      const msg = `select failed: ${selectError.message}`;
+      console.error(`[SYNC DEBUG] ${msg}`);
+      return { updated: false, error: msg };
     }
+
+    console.log(
+      `[SYNC DEBUG] Existing rows:`,
+      (existingRows ?? []).map((r) =>
+        `${r.date} rev=$${Number(r.revenue).toFixed(2)} age=${r.created_at}`
+      ).join(" | ") || "(none)",
+    );
 
     if (!force) {
       const needRefresh = dates.some((d) => {
@@ -861,51 +882,83 @@ export async function refreshTodayHome(
         return ageMs >= staleMs;
       });
 
-      if (!needRefresh) return { updated: false };
+      if (!needRefresh) {
+        console.log(`[SYNC DEBUG] Rows are fresh — skipping XDASH fetch (use force=true to override)`);
+        return { updated: false, details: { todayDate: today, yesterdayDate: yesterday } };
+      }
     }
 
     const syncedAt = new Date().toISOString();
-
     let todayValues: { revenue: number; cost: number; profit: number; impressions: number } | null = null;
+    const details: NonNullable<RefreshTodayHomeResult["details"]> = { todayDate: today, yesterdayDate: yesterday };
 
     for (const date of dates) {
+      console.log(`[SYNC DEBUG] Fetching XDASH Home for ${date}…`);
       const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
+      console.log(
+        `[SYNC DEBUG] XDASH returned for ${date}: revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, profit=$${profit.toFixed(2)}, imp=${impressions}`,
+      );
+
+      if (date === today) details.todayRevenue = revenue;
+      if (date === yesterday) details.yesterdayRevenue = revenue;
+
+      console.log(`[SYNC DEBUG] Saving to Supabase: revenue=$${revenue.toFixed(2)} for date ${date}`);
       const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
         { date, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
       );
       if (error) {
-        console.error(`[refreshTodayHome] upsert failed (${date}):`, error.message);
-        return { updated: false };
+        const msg = `upsert failed for ${date}: ${error.message} (code: ${error.code}, details: ${error.details})`;
+        console.error(`[SYNC DEBUG] ${msg}`);
+        return { updated: false, error: msg, details };
       }
-      console.log(
-        `[refreshTodayHome] Updated ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
-      );
+      console.log(`[SYNC DEBUG] Supabase upsert SUCCESS for ${date}`);
+
       if (date === today) todayValues = { revenue, cost, profit, impressions };
     }
 
-    // Fire-and-forget: record an hourly snapshot for "today" so same-time
-    // comparisons can be made tomorrow.  Never blocks or delays the main sync.
+    // Read-back: verify the DB actually holds what we wrote
+    const { data: readBack, error: readBackErr } = await supabaseAdmin
+      .from("daily_home_totals")
+      .select("date, revenue, cost, profit, impressions, created_at")
+      .eq("date", today)
+      .maybeSingle();
+
+    if (readBackErr) {
+      console.warn(`[SYNC DEBUG] Read-back query failed (non-fatal): ${readBackErr.message}`);
+    } else {
+      details.readBack = readBack;
+      const dbRev = Number(readBack?.revenue ?? 0);
+      console.log(`[SYNC DEBUG] Read-back for ${today}: revenue=$${dbRev.toFixed(2)}, created_at=${readBack?.created_at}`);
+      if (todayValues && Math.abs(dbRev - todayValues.revenue) > 0.01) {
+        console.error(
+          `[SYNC DEBUG] *** MISMATCH *** Wrote revenue=$${todayValues.revenue.toFixed(2)} but DB has=$${dbRev.toFixed(2)}`,
+        );
+      }
+    }
+
     if (todayValues) {
       recordHourlySnapshot(today, todayValues).catch((e) => {
-        console.warn("[refreshTodayHome] hourly snapshot (non-fatal):", e instanceof Error ? e.message : e);
+        console.warn("[SYNC DEBUG] hourly snapshot (non-fatal):", e instanceof Error ? e.message : e);
       });
     }
 
     try {
       revalidateTag(FINANCIAL_TAG, { expire: 0 });
       revalidatePath("/");
+      revalidatePath("/financials");
+      console.log(`[SYNC DEBUG] Cache invalidated (revalidateTag + revalidatePath / + /financials)`);
     } catch (revErr) {
-      // e.g. CLI/scripts have no Next.js cache store — DB upsert still succeeded.
       console.warn(
-        "[refreshTodayHome] revalidateTag/revalidatePath (non-fatal):",
+        "[SYNC DEBUG] revalidateTag/revalidatePath (non-fatal):",
         revErr instanceof Error ? revErr.message : revErr,
       );
     }
-    return { updated: true };
+    return { updated: true, details };
   } catch (e) {
-    console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
-    return { updated: false };
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[SYNC DEBUG] refreshTodayHome THREW: ${msg}`);
+    return { updated: false, error: msg };
   }
 }
 
