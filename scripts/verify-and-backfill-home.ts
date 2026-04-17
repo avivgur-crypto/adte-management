@@ -5,6 +5,7 @@
  * Usage:
  *   npx tsx --env-file=.env.local scripts/verify-and-backfill-home.ts
  *   npx tsx --env-file=.env.local scripts/verify-and-backfill-home.ts --verify-only
+ *   npx tsx --env-file=.env.local scripts/verify-and-backfill-home.ts --date=2026-04-14
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -15,11 +16,22 @@ function todayIsrael(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
+function datesFromArgv(argv: string[]): string[] {
+  const out: string[] = [];
+  for (const a of argv) {
+    const m = /^--date=(\d{4}-\d{2}-\d{2})$/.exec(a);
+    if (m) {
+      out.push(m[1]!);
+      continue;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(a)) out.push(a);
+  }
+  return [...new Set(out)].slice(0, 10);
+}
+
 async function main() {
   const verifyOnly = process.argv.includes("--verify-only");
-  const datesFromArgs = process.argv
-    .filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a))
-    .slice(0, 10);
+  const datesFromArgs = datesFromArgv(process.argv.slice(2));
 
   const backfillDates =
     datesFromArgs.length > 0
