@@ -637,15 +637,19 @@ function bustCache(url: string): string {
   return `${url}${sep}cache_bust=${Date.now()}`;
 }
 
-/** Fetch with retry on network errors. Each attempt has a 60s timeout — abort that day and move on. */
+type FetchWithRetryOpts = { timeoutMs?: number };
+
+/** Fetch with retry on network errors. Default per-attempt timeout is FETCH_TIMEOUT_MS. */
 async function fetchWithRetry(
   url: string,
-  options: RequestInit
+  options: RequestInit,
+  fetchOpts?: FetchWithRetryOpts,
 ): Promise<Response> {
+  const timeoutMs = fetchOpts?.timeoutMs ?? FETCH_TIMEOUT_MS;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       await throttle();
       const res = await fetch(bustCache(url), {
@@ -663,7 +667,7 @@ async function fetchWithRetry(
         e instanceof TypeError && (e.message === "fetch failed" || e.cause != null);
       const isAbort = e instanceof Error && e.name === "AbortError";
       if (isAbort) {
-        console.warn(`[xdash-client] Request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+        console.warn(`[xdash-client] Request timed out after ${timeoutMs / 1000}s`);
       }
       if (attempt < RETRY_ATTEMPTS && (isNetwork || isAbort)) {
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
@@ -735,12 +739,16 @@ export async function fetchAdServerOverview(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), HOME_OVERVIEW_TIMEOUT_MS);
     try {
-      const response = await fetchWithRetry(url, {
-        method: "POST",
-        headers: await buildHeaders(),
-        body,
-        signal: controller.signal,
-      });
+      const response = await fetchWithRetry(
+        url,
+        {
+          method: "POST",
+          headers: await buildHeaders(),
+          body,
+          signal: controller.signal,
+        },
+        { timeoutMs: HOME_OVERVIEW_TIMEOUT_MS },
+      );
       clearTimeout(timeoutId);
 
       if (response.ok) {
