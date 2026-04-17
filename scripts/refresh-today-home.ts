@@ -6,8 +6,8 @@
 import { refreshTodayHome } from "../src/app/actions/financials";
 
 async function main() {
-  console.log("Calling refreshTodayHome({ force: true })…\n");
-  const result = await refreshTodayHome({ force: true });
+  console.log("Calling refreshTodayHome()…\n");
+  const result = await refreshTodayHome();
   console.log("Result:", JSON.stringify(result, null, 2));
   if (!result.updated) {
     console.warn("Note: updated=false (check server logs for upsert errors).");

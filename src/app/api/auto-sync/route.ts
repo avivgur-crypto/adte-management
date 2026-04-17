@@ -159,23 +159,6 @@ async function runMonday(): Promise<StepResult> {
   }
 }
 
-async function stamp(): Promise<void> {
-  const now = new Date().toISOString();
-  const { data } = await supabaseAdmin
-    .from("daily_home_totals")
-    .select("date")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-  if (data) {
-    const { error } = await supabaseAdmin
-      .from("daily_home_totals")
-      .update({ created_at: now })
-      .eq("date", data.date);
-    if (error) console.warn("[auto-sync] stamp failed:", error.message);
-  }
-}
-
 type Results = Record<string, StepResult>;
 
 function logResult(mode: string, results: Results, t0: number, extra?: Record<string, unknown>) {
@@ -224,7 +207,6 @@ async function executeSync(params: SyncParams): Promise<void> {
         xdash = { status: "failed", error: e instanceof Error ? e.message : String(e) };
       }
       shouldCheckPerformance = xdash.status === "success";
-      try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("backfill", { xdash, pairs: SKIP, billing: SKIP, monday: SKIP }, t0, { range: { start: backfillStart, end } });
       return;
@@ -245,7 +227,6 @@ async function executeSync(params: SyncParams): Promise<void> {
         xdash = await runXdash(days, t0, force);
       }
       shouldCheckPerformance = xdash.status === "success";
-      try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("targeted:xdash-totals", { xdash, pairs: SKIP, billing: SKIP, monday: SKIP }, t0, { days });
       return;
@@ -259,7 +240,6 @@ async function executeSync(params: SyncParams): Promise<void> {
       } else {
         pairs = await runFullPairs();
       }
-      try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("targeted:partner-pairs", { xdash: SKIP, pairs, billing: SKIP, monday: SKIP }, t0);
       return;
@@ -268,7 +248,6 @@ async function executeSync(params: SyncParams): Promise<void> {
     if (target === "cron-daily-pairs") {
       console.log(`[auto-sync] Running targeted sync: cron-daily-pairs for 2 days.`);
       const pairs = await runPairs();
-      try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("targeted:cron-daily-pairs", { xdash: SKIP, pairs, billing: SKIP, monday: SKIP }, t0);
       return;
@@ -280,7 +259,6 @@ async function executeSync(params: SyncParams): Promise<void> {
         target === "daily" || target === "billing" ? runBilling() : SKIP,
         target === "daily" || target === "monday" ? runMonday() : SKIP,
       ]);
-      try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult(
         target === "daily" ? "daily-heavy" : `targeted:${target}`,
@@ -303,7 +281,6 @@ async function executeSync(params: SyncParams): Promise<void> {
       if (elapsedMs < TIME_BUDGET_MS) {
         [billing, monday] = await Promise.all([runBilling(), runMonday()]);
       }
-      try { await stamp(); } catch { /* non-fatal */ }
       bustCaches();
       logResult("manual-recovery", { xdash, pairs, billing, monday }, t0, { days });
       return;

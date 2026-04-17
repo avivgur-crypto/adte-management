@@ -813,116 +813,73 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
 
 // ---------------------------------------------------------------------------
 // Live refresh: fetch Home totals for today + yesterday (Israel) and upsert into Supabase.
-// AutoSync calls this on idle: today’s row is considered stale after 60s (intraday); yesterday
-// after 5 minutes. Manual “Sync XDASH” passes force:true to bypass stale checks entirely.
+// Called on page load so the dashboard stays current without waiting for cron; yesterday is
+// re-fetched so end-of-day totals settle after the calendar flips.
 // ---------------------------------------------------------------------------
 
+const REFRESH_STALE_MS = 5 * 60 * 1000; // skip if both rows are fresher than this
 
-/** Yesterday: only re-fetch if DB row is missing or older than 1 hour. */
-const YESTERDAY_STALE_MS = 60 * 60 * 1000;
+export type RefreshTodayHomeResult = { updated: boolean };
 
-export type RefreshTodayHomeResult = {
-  updated: boolean;
-  error?: string;
-  details?: {
-    todayDate?: string;
-    yesterdayDate?: string;
-    todayRevenue?: number;
-    yesterdayRevenue?: number;
-    readBack?: Record<string, unknown> | null;
-  };
-};
-
-export type RefreshTodayHomeOptions = {
-  /** When true (manual sync), fetch both today AND yesterday regardless of staleness. */
-  force?: boolean;
-};
-
-/**
- * Lightweight sync: always fetch today from XDASH, but only fetch yesterday
- * if the DB row is missing or >1 hour old. This cuts XDASH requests ~50%.
- * Errors are logged and returned, never silently swallowed.
- */
-export async function refreshTodayHome(
-  options?: RefreshTodayHomeOptions,
-): Promise<RefreshTodayHomeResult> {
+/** Returns { updated: true } when at least one date was upserted from XDASH. */
+export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
   try {
-    const force = options?.force === true;
     const today = getIsraelDateDaysAgo(0);
     const yesterday = getIsraelDateDaysAgo(1);
+    const dates = [today, yesterday] as const;
 
-    console.log(`[SYNC] refreshTodayHome (force=${force}) today=${today}`);
+    const { data: existingRows, error: selectError } = await supabaseAdmin
+      .from("daily_home_totals")
+      .select("date, created_at")
+      .in("date", [...dates]);
+
+    if (selectError) {
+      console.error("[refreshTodayHome] select failed:", selectError.message);
+      return { updated: false };
+    }
+
+    const needRefresh = dates.some((d) => {
+      const row = existingRows?.find((r) => String(r.date).slice(0, 10) === d);
+      if (!row?.created_at) return true;
+      return Date.now() - new Date(row.created_at).getTime() >= REFRESH_STALE_MS;
+    });
+
+    if (!needRefresh) return { updated: false };
 
     const syncedAt = new Date().toISOString();
-    const details: NonNullable<RefreshTodayHomeResult["details"]> = {
-      todayDate: today,
-      yesterdayDate: yesterday,
-    };
-
-    // Decide which dates need fetching
-    const datesToFetch: string[] = [today];
-
-    if (force) {
-      datesToFetch.push(yesterday);
-    } else {
-      const { data: yRow } = await supabaseAdmin
-        .from("daily_home_totals")
-        .select("created_at")
-        .eq("date", yesterday)
-        .maybeSingle();
-      const yAge = yRow?.created_at
-        ? Date.now() - new Date(yRow.created_at).getTime()
-        : Infinity;
-      if (yAge > YESTERDAY_STALE_MS) {
-        datesToFetch.push(yesterday);
-        console.log(`[SYNC] Yesterday row stale (${(yAge / 60000).toFixed(0)}m) — will refresh`);
-      }
-    }
 
     let todayValues: { revenue: number; cost: number; profit: number; impressions: number } | null = null;
 
-    for (const date of datesToFetch) {
-      console.log(`[SYNC] Fetching XDASH for ${date}…`);
-      let fetched: { revenue: number; cost: number; profit: number; impressions: number };
-      try {
-        fetched = await fetchHomeForDate(date);
-      } catch (fetchErr) {
-        const msg = `XDASH fetch failed for ${date}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`;
-        console.error(`[SYNC] ${msg}`);
-        throw new Error(msg);
-      }
-      const { revenue, cost, profit, impressions } = fetched;
-      console.log(`[SYNC] ${date}: rev=$${revenue.toFixed(2)} cost=$${cost.toFixed(2)} profit=$${profit.toFixed(2)}`);
-
-      if (date === today) { details.todayRevenue = revenue; todayValues = fetched; }
-      if (date === yesterday) details.yesterdayRevenue = revenue;
-
+    for (const date of dates) {
+      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
       const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
         { date, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
       );
       if (error) {
-        const msg = `upsert failed for ${date}: ${error.message}`;
-        console.error(`[SYNC] ${msg}`);
-        throw new Error(msg);
+        console.error(`[refreshTodayHome] upsert failed (${date}):`, error.message);
+        return { updated: false };
       }
+      console.log(
+        `[refreshTodayHome] Updated ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
+      );
+      if (date === today) todayValues = { revenue, cost, profit, impressions };
     }
 
+    // Fire-and-forget: record an hourly snapshot for "today" so same-time
+    // comparisons can be made tomorrow.  Never blocks or delays the main sync.
     if (todayValues) {
-      recordHourlySnapshot(today, todayValues).catch(() => {});
+      recordHourlySnapshot(today, todayValues).catch((e) => {
+        console.warn("[refreshTodayHome] hourly snapshot (non-fatal):", e instanceof Error ? e.message : e);
+      });
     }
 
-    try {
-      revalidateTag(FINANCIAL_TAG, { expire: 0 });
-      revalidatePath("/");
-      revalidatePath("/financials");
-    } catch { /* non-fatal */ }
-
-    return { updated: true, details };
+    revalidateTag(FINANCIAL_TAG, { expire: 0 });
+    revalidatePath("/");
+    return { updated: true };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[SYNC] refreshTodayHome error: ${msg}`);
-    return { updated: false, error: msg };
+    console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
+    return { updated: false };
   }
 }
 

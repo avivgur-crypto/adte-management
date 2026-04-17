@@ -613,10 +613,10 @@ function buildDatePayload(date: string): string {
 }
 
 const RETRY_ATTEMPTS = 2;
-const RETRY_DELAY_MS = 2000;
+const RETRY_DELAY_MS = 5000;
 
-// Throttle: minimum gap between consecutive API calls to protect XDASH.
-const THROTTLE_MS = 3000;
+// Throttle: minimum gap between consecutive API calls to protect the backup server.
+const THROTTLE_MS = 2000;
 let _lastRequestTime = 0;
 
 async function throttle(): Promise<void> {
@@ -629,7 +629,7 @@ async function throttle(): Promise<void> {
 }
 
 /** Per-request timeout so a slow XDASH day doesn't hang the whole sync. */
-const FETCH_TIMEOUT_MS = 25_000;
+const FETCH_TIMEOUT_MS = 60_000;
 
 /** Unique per-request timestamp so intermediaries never serve a stale XDASH response. */
 function bustCache(url: string): string {
@@ -679,10 +679,10 @@ async function fetchWithRetry(
 // Core fetch function (legacy — ad-server overview)
 // ============================================================================
 
-const HOME_OVERVIEW_TIMEOUT_MS = 25_000;
+const HOME_OVERVIEW_TIMEOUT_MS = 90_000;
 const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
 const HOME_OVERVIEW_RETRY_ATTEMPTS = 2;
-const HOME_OVERVIEW_RETRY_DELAY_MS = 3000;
+const HOME_OVERVIEW_RETRY_DELAY_MS = 5000;
 
 /** Global Home rollup (matches XDASH header). Older backup path was /home/overview/adServers only. */
 const HOME_OVERVIEW_GLOBAL_PATH = "/home/overview";

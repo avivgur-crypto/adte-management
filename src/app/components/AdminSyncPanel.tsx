@@ -163,10 +163,10 @@ export default function AdminSyncPanel() {
     if (lastSyncedAt) syncStatus?.setLastSyncedAt(lastSyncedAt);
 
     try {
-      const home = await refreshTodayHome({ force: true });
+      const home = await refreshTodayHome();
       if (home.updated) router.refresh();
     } catch (e) {
-      console.error("[AdminSyncPanel] refreshTodayHome(force):", e);
+      console.error("[AdminSyncPanel] refreshTodayHome:", e);
     }
   }, [syncStatus, router]);
 

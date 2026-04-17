@@ -17,6 +17,7 @@ import {
   fetchDemandPartners,
   fetchSupplyPartners,
   fetchReportForDate,
+  fetchAdServerOverview,
   fetchHomeForDate,
   mapDemandPartners,
   mapSupplyPartners,
@@ -234,32 +235,8 @@ async function batchUpsert(records: Record<string, unknown>[]): Promise<number> 
 }
 
 /**
- * Builds partner rows from day results and upserts. Does not throw — failures are logged so
- * `syncHomeTotalsForDates` can still run afterward.
- */
-async function upsertPartnerRowsOrLog(
-  dayResults: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[],
-  syncedAt: string,
-  context: string,
-): Promise<number> {
-  const records: Record<string, unknown>[] = [];
-  for (const { date, demand, supply } of dayResults) {
-    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
-  }
-  try {
-    return await batchUpsert(records);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[xdash-sync] ${context} batchUpsert failed (non-fatal; daily_home_totals sync still runs):`, msg);
-    return 0;
-  }
-}
-
-/**
  * Process dates in small batches to avoid overwhelming the backup server.
  * Each batch fetches FETCH_BATCH_SIZE dates, then waits INTER_BATCH_DELAY_MS.
- * Failures propagate — callers catch, log CRITICAL, still run `syncHomeTotalsForDates` in `finally`.
  */
 async function fetchDatesInBatches(
   dates: string[]
@@ -496,25 +473,20 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
   }
 
   console.log(`[xdash-sync] Sync (catch-up + today): ${toFetch.join(", ")}`);
-  let rowsUpserted = 0;
-  let partnerErr: unknown = null;
-  try {
-    const dayResults = await fetchDatesInBatches(toFetch);
-    for (const { date, demand, supply } of dayResults) {
-      if (demand.length === 0 && supply.length === 0) {
-        console.warn(`[xdash-sync] No data returned for ${date} — XDASH may not have this date yet`);
-      } else {
-        console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
-      }
+  const dayResults = await fetchDatesInBatches(toFetch);
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    if (demand.length === 0 && supply.length === 0) {
+      console.warn(`[xdash-sync] No data returned for ${date} — XDASH may not have this date yet`);
+    } else {
+      console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
     }
-    rowsUpserted = await upsertPartnerRowsOrLog(dayResults, syncedAt, "syncXDASHData");
-  } catch (e) {
-    partnerErr = e;
-    console.error("[xdash-sync] CRITICAL [syncXDASHData]: Partner/Reports step failed —", e instanceof Error ? e.message : e);
-  } finally {
-    await syncHomeTotalsForDates(toFetch, syncedAt);
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
-  if (partnerErr) throw partnerErr instanceof Error ? partnerErr : new Error(String(partnerErr));
+  const rowsUpserted = await batchUpsert(records);
+
+  await syncHomeTotalsForDates(toFetch, syncedAt);
   return { datesSynced: toFetch.length, rowsUpserted };
 }
 
@@ -541,15 +513,13 @@ export async function syncXDASHDataLastNDays(
   console.log(`[xdash-sync] ${n}-day sync (always re-fetch): ${dates.join(", ")} (time budget ${timeBudgetMs / 1000}s)`);
   const dayResults: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[] = [];
 
-  let partnerErr: unknown = null;
-  let rowsUpserted = 0;
-  try {
-    for (let i = 0; i < dates.length; i++) {
-      if (Date.now() - startTime >= timeBudgetMs) {
-        console.log(`[xdash-sync] Time budget reached after ${i} day(s), stopping.`);
-        break;
-      }
-      const date = dates[i]!;
+  for (let i = 0; i < dates.length; i++) {
+    if (Date.now() - startTime >= timeBudgetMs) {
+      console.log(`[xdash-sync] Time budget reached after ${i} day(s), stopping.`);
+      break;
+    }
+    const date = dates[i]!;
+    try {
       const result = await fetchDay(date);
       dayResults.push(result);
       if (result.demand.length === 0 && result.supply.length === 0) {
@@ -557,20 +527,25 @@ export async function syncXDASHDataLastNDays(
       } else {
         console.log(`[xdash-sync] ${date}: ${result.demand.length} demand + ${result.supply.length} supply rows`);
       }
-      if (i < dates.length - 1) {
-        await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
-      }
+    } catch (e) {
+      console.warn(`[xdash-sync] Failed for ${date} (skipping):`, e instanceof Error ? e.message : e);
     }
-
-    rowsUpserted = await upsertPartnerRowsOrLog(dayResults, syncedAt, "syncXDASHDataLastNDays");
-  } catch (e) {
-    partnerErr = e;
-    console.error("[xdash-sync] CRITICAL [syncXDASHDataLastNDays]: Partner/Reports step failed —", e instanceof Error ? e.message : e);
-  } finally {
-    await syncHomeTotalsForDates(dates, syncedAt, options?.force);
+    if (i < dates.length - 1) {
+      await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
+    }
   }
-  if (partnerErr) throw partnerErr instanceof Error ? partnerErr : new Error(String(partnerErr));
-  return { datesSynced: dates.length, rowsUpserted };
+
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
+  }
+  const rowsUpserted = records.length > 0 ? await batchUpsert(records) : 0;
+  const syncedDates = dayResults.map((d) => d.date);
+  if (syncedDates.length > 0) {
+    await syncHomeTotalsForDates(syncedDates, syncedAt, options?.force);
+  }
+  return { datesSynced: syncedDates.length, rowsUpserted };
 }
 
 /**
@@ -586,25 +561,19 @@ export async function syncXDASHDataForDates(
   }
   const syncedAt = new Date().toISOString();
   console.log(`[xdash-sync] Sync ${dates.length} date(s): ${dates.join(", ")}`);
-  let rowsUpserted = 0;
-  let partnerErr: unknown = null;
-  try {
-    const dayResults = await fetchDatesInBatches(dates);
-    for (const { date, demand, supply } of dayResults) {
-      if (demand.length === 0 && supply.length === 0) {
-        console.warn(`[xdash-sync] No data returned for ${date}`);
-      } else {
-        console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
-      }
+  const dayResults = await fetchDatesInBatches(dates);
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    if (demand.length === 0 && supply.length === 0) {
+      console.warn(`[xdash-sync] No data returned for ${date}`);
+    } else {
+      console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
     }
-    rowsUpserted = await upsertPartnerRowsOrLog(dayResults, syncedAt, "syncXDASHDataForDates");
-  } catch (e) {
-    partnerErr = e;
-    console.error("[xdash-sync] CRITICAL [syncXDASHDataForDates]: Partner/Reports step failed —", e instanceof Error ? e.message : e);
-  } finally {
-    await syncHomeTotalsForDates(dates, syncedAt, options?.force);
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
-  if (partnerErr) throw partnerErr instanceof Error ? partnerErr : new Error(String(partnerErr));
+  const rowsUpserted = await batchUpsert(records);
+  await syncHomeTotalsForDates(dates, syncedAt, options?.force);
   return { datesSynced: dates.length, rowsUpserted };
 }
 
@@ -625,25 +594,21 @@ export async function syncXDASHBackfill(
   }
 
   console.log(`[xdash-sync] BACKFILL ${startDate} → ${endDate} (${dates.length} days)`);
-  let rowsUpserted = 0;
-  let partnerErr: unknown = null;
-  try {
-    const dayResults = await fetchDatesInBatches(dates);
-    for (const { date, demand, supply } of dayResults) {
-      if (demand.length === 0 && supply.length === 0) {
-        console.warn(`[xdash-sync] Backfill: no data for ${date}`);
-      } else {
-        console.log(`[xdash-sync] Backfill ${date}: ${demand.length} demand + ${supply.length} supply`);
-      }
+  const dayResults = await fetchDatesInBatches(dates);
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    if (demand.length === 0 && supply.length === 0) {
+      console.warn(`[xdash-sync] Backfill: no data for ${date}`);
+    } else {
+      console.log(`[xdash-sync] Backfill ${date}: ${demand.length} demand + ${supply.length} supply`);
     }
-    rowsUpserted = await upsertPartnerRowsOrLog(dayResults, syncedAt, "syncXDASHBackfill");
-  } catch (e) {
-    partnerErr = e;
-    console.error("[xdash-sync] CRITICAL [syncXDASHBackfill]: Partner/Reports step failed —", e instanceof Error ? e.message : e);
-  } finally {
-    await syncHomeTotalsForDates(dates, syncedAt, true);
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
-  if (partnerErr) throw partnerErr instanceof Error ? partnerErr : new Error(String(partnerErr));
+  const rowsUpserted = await batchUpsert(records);
+
+  // Backfill always forces re-fetch of home totals
+  await syncHomeTotalsForDates(dates, syncedAt, true);
   return { datesSynced: dates.length, rowsUpserted };
 }
 
@@ -658,18 +623,15 @@ export async function syncXDASHDataForMonth(
 ): Promise<SyncXDASHResult> {
   const syncedAt = new Date().toISOString();
   const dates = datesForMonth(year, month);
-  let rowsUpserted = 0;
-  let partnerErr: unknown = null;
-  try {
-    const dayResults = await fetchDatesInBatches(dates);
-    rowsUpserted = await upsertPartnerRowsOrLog(dayResults, syncedAt, "syncXDASHDataForMonth");
-  } catch (e) {
-    partnerErr = e;
-    console.error("[xdash-sync] CRITICAL [syncXDASHDataForMonth]: Partner/Reports step failed —", e instanceof Error ? e.message : e);
-  } finally {
-    await syncHomeTotalsForDates(dates, syncedAt, options?.force);
+  const dayResults = await fetchDatesInBatches(dates);
+  const records: Record<string, unknown>[] = [];
+  for (const { date, demand, supply } of dayResults) {
+    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
   }
-  if (partnerErr) throw partnerErr instanceof Error ? partnerErr : new Error(String(partnerErr));
+  const rowsUpserted = await batchUpsert(records);
+
+  await syncHomeTotalsForDates(dates, syncedAt, options?.force);
 
   return { datesSynced: dates.length, rowsUpserted };
 }
