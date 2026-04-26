@@ -64,6 +64,19 @@ function getTodayIsrael(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: TIMEZONE_ISRAEL });
 }
 
+/** Yesterday's date in Israel (YYYY-MM-DD). XDash keeps reattributing recent days, so the
+ *  row for "yesterday" must keep being re-fetched until the morning summary anchors it. */
+function getYesterdayIsrael(): string {
+  const today = getTodayIsrael();
+  const [y, m, d] = today.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
 function getYesterday(now: Date): Date {
   const d = new Date(now);
   d.setDate(d.getDate() - 1);
@@ -329,7 +342,10 @@ async function getHomeDatesWithProfit(dates: string[]): Promise<Set<string>> {
 /**
  * For each date, fetch the Home API totals and batch-upsert into daily_home_totals.
  * Skips dates that already have a non-zero profit unless `force` is true.
- * Today is always re-fetched (intraday data grows throughout the day).
+ * Today AND yesterday are always re-fetched: today grows intraday, and XDash keeps
+ * reattributing yesterday for several hours after midnight (this caused the
+ * dashboard chart to freeze at the last intraday value while the XDash dashboard
+ * and the morning summary kept showing the final, larger total).
  */
 export async function syncHomeTotalsForDates(
   dates: string[],
@@ -339,14 +355,15 @@ export async function syncHomeTotalsForDates(
   if (dates.length === 0) return 0;
 
   const today = getTodayIsrael();
+  const yesterday = getYesterdayIsrael();
   let toFetch = dates;
 
   if (!force) {
     const existing = await getHomeDatesWithProfit(dates);
-    toFetch = dates.filter((d) => d === today || !existing.has(d));
+    toFetch = dates.filter((d) => d === today || d === yesterday || !existing.has(d));
     const skipped = dates.length - toFetch.length;
     if (skipped > 0) {
-      console.log(`[xdash-sync] Skipping ${skipped} date(s) with existing profit data (use force=true to override)`);
+      console.log(`[xdash-sync] Skipping ${skipped} date(s) with existing profit data (today + yesterday always re-fetched; use force=true to override the rest)`);
     }
   }
 

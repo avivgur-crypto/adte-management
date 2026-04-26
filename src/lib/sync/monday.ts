@@ -3,7 +3,11 @@
  * - Leads board 7832231403 (New Partners): every item, no status filter.
  *   Date from Creation Log pulse_log_mkzm1prs → grouped by calendar day (Asia/Jerusalem).
  * - Contracts board 8280704003: status in MONDAY_CONTRACTS_SIGNED_STATUSES (default includes
- *   Complete Storage, Signed, Done, Complete). Date from Creation Log pulse_log_mkzm1prs.
+ *   Complete Storage, Signed, Done, Complete). **Won / activity day** uses, in order:
+ *   (1) newest file in MONDAY_CONTRACTS_SIGNED_FILE_COLUMN_ID if set,
+ *   (2) status column value `changed_at` (when the row entered its current status),
+ *   (3) Monday item `updated_at`,
+ *   (4) Creation Log, then item `created_at`.
  * - Company list: Account Name column (CONTRACTS_ACCOUNT_NAME_COLUMN_ID), else Monday item name.
  * Before upsert: resets 2026 funnel lead/deal counts and replaces activity rows for both boards.
  */
@@ -11,8 +15,10 @@
 import {
   CREATION_LOG_COLUMN_IDS,
   CONTRACTS_ACCOUNT_NAME_COLUMN_ID,
+  CONTRACTS_SIGNED_FILE_COLUMN_ID,
   CONTRACTS_STATUS_COLUMN_ID,
   fetchBoardItems,
+  getContractWonReportingDate,
   getCreationLogDate,
   getColumnText,
 } from "@/lib/monday-client";
@@ -71,6 +77,20 @@ function countByCreationDate(
   return byDate;
 }
 
+/** Count signed contracts per won reporting day (see getContractWonReportingDate). */
+function countByContractWonReportingDate(
+  items: Awaited<ReturnType<typeof fetchBoardItems>>,
+  creationLogColumnId: string
+): Map<string, number> {
+  const byDate = new Map<string, number>();
+  for (const item of items) {
+    const d = getContractWonReportingDate(item, creationLogColumnId);
+    const key = dateKeyFromDate(d);
+    byDate.set(key, (byDate.get(key) ?? 0) + 1);
+  }
+  return byDate;
+}
+
 export interface SyncMondayResult {
   funnelRows: number;
   activityRows: number;
@@ -79,7 +99,11 @@ export interface SyncMondayResult {
 export async function syncMondayData(): Promise<SyncMondayResult> {
   const [leadsItems, allContractsItems] = await Promise.all([
     fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
-    fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
+    fetchBoardItems(CONTRACTS_BOARD_ID, {
+      includeColumnValues: true,
+      includeCreatedAt: true,
+      includeUpdatedAt: true,
+    }),
   ]);
 
   const signedStatuses = signedContractStatuses();
@@ -90,7 +114,10 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
 
   // Leads: all items on board 7832231403; creation date from Creation log (pulse_log_mkzm1prs).
   const totalLeadsByDate = countByCreationDate(leadsItems, CREATION_LOG_COLUMN_IDS.leads);
-  const wonDealsByDate = countByCreationDate(contractsItems, CREATION_LOG_COLUMN_IDS.contracts);
+  const wonDealsByDate = countByContractWonReportingDate(
+    contractsItems,
+    CREATION_LOG_COLUMN_IDS.contracts,
+  );
   const allDates = new Set<string>([...totalLeadsByDate.keys(), ...wonDealsByDate.keys()]);
 
   const funnelRows: Array<{
@@ -154,11 +181,34 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     });
   }
 
+  function toContractActivityRows(
+    items: Awaited<ReturnType<typeof fetchBoardItems>>,
+    creationLogColumnId: string,
+    companyColumnId: string
+  ) {
+    return items.map((item) => {
+      const reporting = getContractWonReportingDate(item, creationLogColumnId);
+      const dateStr = dateKeyFromDate(reporting);
+      const fromColumn = getColumnText(item, companyColumnId);
+      const company_name =
+        fromColumn && fromColumn.trim() !== ""
+          ? fromColumn.trim()
+          : (item.name?.trim() || null);
+      return {
+        item_id: String(item.id),
+        board_id: CONTRACTS_BOARD_ID,
+        created_at: reporting.toISOString(),
+        created_date: dateStr,
+        ...(company_name != null && company_name !== "" && { company_name }),
+      };
+    });
+  }
+
   console.log(
     `[monday-sync] leads: ${leadsItems.length} items (all statuses, date from ${CREATION_LOG_COLUMN_IDS.leads})`
   );
   console.log(
-    `[monday-sync] contracts: ${allContractsItems.length} total → ${contractsItems.length} with signed status in [${[...signedStatuses].join(", ")}]`,
+    `[monday-sync] contracts: ${allContractsItems.length} total → ${contractsItems.length} with signed status in [${[...signedStatuses].join(", ")}]; won-day = file(${CONTRACTS_SIGNED_FILE_COLUMN_ID || "—"}) → status changed_at → item updated_at → creation log`,
   );
 
   // Replace activity for both boards so misdated or duplicate rows from old syncs are removed.
@@ -170,11 +220,10 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
 
   const activityRows = [
     ...toActivityRows(leadsItems, LEADS_BOARD_ID, CREATION_LOG_COLUMN_IDS.leads),
-    ...toActivityRows(
+    ...toContractActivityRows(
       contractsItems,
-      CONTRACTS_BOARD_ID,
       CREATION_LOG_COLUMN_IDS.contracts,
-      CONTRACTS_ACCOUNT_NAME_COLUMN_ID
+      CONTRACTS_ACCOUNT_NAME_COLUMN_ID,
     ),
   ];
 

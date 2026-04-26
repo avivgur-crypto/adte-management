@@ -4,9 +4,13 @@
  *
  * Usage:
  *   npm run fetch:monday
+ *   MONDAY_SYNC_DEBUG=true npm run fetch:monday   # logs Monday API page sizes per board
  *   npx tsx --env-file=.env.local src/scripts/fetch-monday.ts
  *
  * After running, wait up to ~5 minutes for cached activity API, or redeploy / invalidate cache.
+ *
+ * Check Anzu / April 2026 activity rows:
+ *   npm run verify:anzu-april
  */
 
 import { syncMondayData } from "../lib/sync/monday";

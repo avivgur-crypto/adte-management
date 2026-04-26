@@ -12,6 +12,7 @@ import {
   syncPartnerPairsForDate,
 } from "@/lib/sync/partner-pairs";
 import { syncFunnelToSupabase } from "@/lib/sync/funnel";
+import { syncMondayData } from "@/lib/sync/monday";
 import { syncBillingData } from "@/lib/sync/billing";
 import { checkPerformance } from "@/app/actions/notifications";
 
@@ -149,9 +150,22 @@ async function runBilling(): Promise<StepResult> {
 
 async function runMonday(): Promise<StepResult> {
   try {
-    const r = await syncFunnelToSupabase();
-    if (!r.synced) return { status: "failed", error: r.error ?? "unknown" };
-    return { status: "success", totalLeads: r.totalLeads, wonDeals: r.wonDeals };
+    // Both paths are required: syncMondayData → daily_funnel_metrics + monday_items_activity
+    // (Activity / signed-deal rows). syncFunnelToSupabase → cached_funnel_metrics (dashboard snapshot).
+    const [funnel, monday] = await Promise.all([
+      syncFunnelToSupabase(),
+      syncMondayData(),
+    ]);
+    if (!funnel.synced) {
+      return { status: "failed", error: funnel.error ?? "cached funnel upsert failed" };
+    }
+    return {
+      status: "success",
+      totalLeads: funnel.totalLeads,
+      wonDeals: funnel.wonDeals,
+      mondayFunnelDates: monday.funnelRows,
+      mondayActivityRows: monday.activityRows,
+    };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[sync] monday failed:", msg);

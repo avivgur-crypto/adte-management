@@ -32,6 +32,11 @@ function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
   };
 }
 
+function isTrueish(v: string | null | undefined): boolean {
+  if (v == null) return false;
+  return ["1", "true", "yes", "on"].includes(v.trim().toLowerCase());
+}
+
 export async function GET(request: NextRequest) {
   const auth = checkAuth(request);
   if (!auth.ok) {
@@ -41,10 +46,15 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // Manual test trigger: pass ?test=true to bypass per-user dedupe and prefix
+  // the title with [TEST]. Lets you verify the format/data without burning the
+  // real once-per-day slot recorded in `sent_notifications`.
+  const test = isTrueish(request.nextUrl.searchParams.get("test"));
+
   try {
-    const result = await morningSummary();
+    const result = await morningSummary({ test });
     return NextResponse.json(
-      { ok: true, ...result },
+      { ok: true, test, ...result },
       { status: 200, headers: NO_CACHE },
     );
   } catch (e) {

@@ -19,10 +19,14 @@ import {
   setVapidDetails,
   type PushSubscription,
 } from "web-push";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
-import { fetchHomeForDate } from "@/lib/xdash-client";
 import type { NotificationSettingKey } from "@/app/actions/notification-settings";
+
+/** Same tag used by `@/app/actions/financials` and `/api/auto-sync` so the chart
+ *  re-reads `daily_home_totals` after we've confirmed yesterday's source-of-truth. */
+const FINANCIAL_TAG = "financial-data";
 
 // ---------------------------------------------------------------------------
 // Web Push (same contract as src/scripts/test-push.ts)
@@ -153,9 +157,11 @@ async function sendPushTargetedWithDedupe(
   body: string,
   settingKey: NotificationSettingKey,
   dedupe: { type: SentNotificationType; sentDate: string },
+  options: { skipDedupe?: boolean } = {},
 ): Promise<PushResult> {
   ensureWebPushConfigured();
   const payload = JSON.stringify({ title, body });
+  const skipDedupe = options.skipDedupe === true;
 
   const profiles = await loadUserProfiles();
   let ok = 0;
@@ -164,7 +170,7 @@ async function sendPushTargetedWithDedupe(
 
   for (const p of profiles) {
     if (!normalizeFlag(p.notification_settings, settingKey)) continue;
-    if (await wasAlreadySent(dedupe.type, dedupe.sentDate, p.id)) continue;
+    if (!skipDedupe && (await wasAlreadySent(dedupe.type, dedupe.sentDate, p.id))) continue;
 
     const { data: rows, error } = await supabaseAdmin
       .from("push_subscriptions")
@@ -181,7 +187,7 @@ async function sendPushTargetedWithDedupe(
     ok += r.ok;
     failed += r.failed;
     errors.push(...r.errors);
-    if (r.ok > 0) {
+    if (!skipDedupe && r.ok > 0) {
       await recordSent(dedupe.type, dedupe.sentDate, p.id);
     }
   }
@@ -258,33 +264,6 @@ async function sumProfitMtd(monthStart: string, endInclusive: string): Promise<n
     return 0;
   }
   return (data ?? []).reduce((s, r) => s + Number(r.profit ?? 0), 0);
-}
-
-/**
- * Linear MTD profit target through `throughDay` (day-of-month 1..31).
- * targetMtd = profit_goal * (throughDay / daysInMonth)
- */
-async function profitGoalMetThroughDay(
-  monthStart: string,
-  throughDay: number,
-  daysInMonth: number,
-): Promise<{ met: boolean; profitGoal: number; profitMtd: number; targetMtd: number }> {
-  const { data } = await supabaseAdmin
-    .from("monthly_goals")
-    .select("profit_goal")
-    .eq("month", monthStart)
-    .maybeSingle();
-
-  const profitGoal = Number(data?.profit_goal ?? 0);
-  const [gy, gm] = monthStart.split("-").map(Number);
-  const endIso = `${gy}-${String(gm).padStart(2, "0")}-${String(throughDay).padStart(2, "0")}`;
-  const profitMtd = await sumProfitMtd(monthStart, endIso);
-  if (profitGoal <= 0 || daysInMonth <= 0) {
-    return { met: false, profitGoal, profitMtd, targetMtd: 0 };
-  }
-  const targetMtd = profitGoal * (throughDay / daysInMonth);
-  const met = profitMtd + 1e-6 >= targetMtd;
-  return { met, profitGoal, profitMtd, targetMtd };
 }
 
 async function wasAlreadySent(
@@ -463,81 +442,68 @@ export async function checkLowMarginAlert(
 }
 
 // ---------------------------------------------------------------------------
-// Settle helper: re-fetch a date from XDASH and upsert into daily_home_totals
-// so the morning summary reads the final end-of-day numbers (force=true
-// equivalent — bypasses the "already has profit" skip optimisation in cron sync).
-// Gracefully no-ops when XDASH is disabled or the API is unreachable.
+// A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
+//
+// Read-only contract: DB-only reads from `daily_home_totals` + `monthly_goals`.
+// Periodic auto-syncs (every ~5 minutes) populate `daily_home_totals` so the
+// 24h totals for "yesterday" are already finalized by the time this runs at
+// 08:00 IL. We do NOT call XDash here — that would blow past cron-job.org's
+// 30s and Vercel Hobby's 10s limits and cause a timeout (no notification).
 // ---------------------------------------------------------------------------
 
-async function settleDateFromXdash(isoDate: string): Promise<void> {
-  try {
-    const { revenue, cost, profit, impressions } = await fetchHomeForDate(isoDate);
-    if (revenue === 0 && cost === 0 && profit === 0 && impressions === 0) return;
-
-    const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
-      { date: isoDate, revenue, cost, profit, impressions, created_at: new Date().toISOString() },
-      { onConflict: "date" },
-    );
-    if (error) {
-      console.error(`[morningSummary] settle upsert (${isoDate}):`, error.message);
-    }
-  } catch (e) {
-    console.warn(
-      `[morningSummary] settle ${isoDate} skipped (XDASH unavailable):`,
-      e instanceof Error ? e.message : e,
-    );
-  }
+/** Format an ISO calendar date (YYYY-MM-DD) as "April 25, 2026" without TZ shifts. */
+function formatHumanDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(dt);
 }
 
-// ---------------------------------------------------------------------------
-// A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
-// ---------------------------------------------------------------------------
+/** Signed percent string e.g. "+12.3%" / "-4.1%" / "0.0%". */
+function formatSignedPercent(pct: number): string {
+  const fixed = pct.toFixed(1);
+  if (pct > 0) return `+${fixed}%`;
+  return `${fixed}%`;
+}
 
-export async function morningSummary(): Promise<{
-  sent: boolean;
-  log: string;
-}> {
+export async function morningSummary(
+  options: { test?: boolean } = {},
+): Promise<{ sent: boolean; log: string }> {
+  const isTest = options.test === true;
+
   const yesterday = getIsraelDateDaysAgo(1);
   const dayBefore = getIsraelDateDaysAgo(2);
 
-  // Settle both dates from XDASH so we read the final end-of-day numbers,
-  // not the stale partial snapshot left by the last evening auto-sync.
-  // Bypasses the cron "skip if profit != 0" optimisation (force equivalent).
-  // Gracefully no-ops when XDASH is disabled or the API is unreachable.
-  await Promise.all([
-    settleDateFromXdash(yesterday),
-    settleDateFromXdash(dayBefore),
-  ]);
+  // Read-only: rely on the periodic sync having already written the 24h totals
+  // (00:00–23:59 Israel time) for both dates into `daily_home_totals`.
+  const [yY, yM] = yesterday.split("-").map(Number);
+  const monthStart = `${yY}-${String(yM).padStart(2, "0")}-01`;
 
-  const [yRow, dRow] = await Promise.all([
+  const [yRow, dRow, monthlyGoal, mtdActual] = await Promise.all([
     fetchDailyRow(yesterday),
     fetchDailyRow(dayBefore),
+    fetchMonthlyGoal(monthStart),
+    sumProfitMtd(monthStart, yesterday),
   ]);
 
   const yRev = yRow?.revenue ?? 0;
   const yGp = yRow?.profit ?? 0;
-  const dRev = dRow?.revenue ?? 0;
   const dGp = dRow?.profit ?? 0;
-
-  const revChangePercent = percentChangeVsPrior(yRev, dRev);
   const gpChangePercent = percentChangeVsPrior(yGp, dGp);
 
-  const [yY, yM] = yesterday.split("-").map(Number);
-  const monthStart = `${yY}-${String(yM).padStart(2, "0")}-01`;
-  const dim = daysInMonthYm(yY, yM);
-  const dayOfMonth = parseInt(yesterday.slice(8, 10), 10);
-  const { met: goalMet, profitMtd: mtdActual, targetMtd: mtdTarget } =
-    await profitGoalMetThroughDay(monthStart, dayOfMonth, dim);
-
-  const revEmoji = revChangePercent > 0 ? "📈" : "📉";
-  const gpEmoji = gpChangePercent > 0 ? "📈" : "📉";
-  const mtdEmoji = goalMet ? "✅" : "📉";
-
-  const title = "Adtex Daily Report 📊";
+  const title = `${isTest ? "[TEST] " : ""}Good Morning! ☕ Here is your summary for Yesterday (${formatHumanDate(yesterday)})`;
+  const mtdLine =
+    monthlyGoal > 0
+      ? `MTD Profit: ${formatCurrencyShort(mtdActual)} vs ${formatCurrencyShort(monthlyGoal)} Goal`
+      : `MTD Profit: ${formatCurrencyShort(mtdActual)}`;
   const body = [
-    `Yesterday (vs Prev Day):`,
-    `Rev ${formatCurrencyShort(yRev)} (${revChangePercent.toFixed(1)}% ${revEmoji}) · GP ${formatCurrencyShort(yGp)} (${gpChangePercent.toFixed(1)}% ${gpEmoji})`,
-    `MTD Profit: ${formatCurrencyShort(mtdActual)} vs ${formatCurrencyShort(mtdTarget)} Goal ${mtdEmoji}`,
+    `Revenue: ${formatCurrencyShort(yRev)}`,
+    `GP: ${formatCurrencyShort(yGp)} (${formatSignedPercent(gpChangePercent)} vs Day Before)`,
+    mtdLine,
   ].join("\n");
 
   const reportDayIsrael = getIsraelDate();
@@ -546,8 +512,20 @@ export async function morningSummary(): Promise<{
     body,
     "morning_summary_enabled",
     { type: "morning_summary", sentDate: reportDayIsrael },
+    { skipDedupe: isTest },
   );
-  const log = `[morningSummary] push ok=${ok} failed=${failed}${errors.length ? ` errors=${errors.slice(0, 3).join("; ")}` : ""}`;
+
+  // Bust the financial cache so the Home / Financial chart immediately reflects
+  // the same numbers that just went out in the push. The cron sync already
+  // re-fetches today + yesterday (see syncHomeTotalsForDates), but the chart's
+  // server segment / unstable_cache may still hold a snapshot taken before the
+  // last intraday update. Skip during test runs so we don't churn the cache.
+  if (!isTest) {
+    try { revalidateTag(FINANCIAL_TAG, { expire: 0 }); } catch { /* non-fatal */ }
+    try { revalidatePath("/"); } catch { /* non-fatal */ }
+  }
+
+  const log = `[morningSummary]${isTest ? " test=true" : ""} reportDay=${reportDayIsrael} yesterday=${yesterday} push ok=${ok} failed=${failed}${errors.length ? ` errors=${errors.slice(0, 3).join("; ")}` : ""}`;
 
   return { sent: ok > 0, log };
 }

@@ -10,7 +10,11 @@ const NO_CACHE_HEADERS = {
   Expires: "0",
 };
 
-/** Lightweight endpoint — returns the latest created_at directly from DB, zero caching. */
+/**
+ * Lightweight endpoint — latest `created_at` from DB (no caching).
+ * Note: This reflects **XDASH / home totals** (`daily_home_totals`), not Monday-only cron runs.
+ * A successful `/api/auto-sync?target=monday` does not move this timestamp unless XDASH also wrote.
+ */
 export async function GET() {
   try {
     // Prefer daily_home_totals (source of truth for financial data)

@@ -9,6 +9,7 @@
     "lint": "eslint",
     "fetch:xdash": "tsx --env-file=.env.local scripts/fetch-xdash.ts",
     "fetch:monday": "tsx --env-file=.env.local src/scripts/fetch-monday.ts",
+    "verify:anzu-april": "tsx --env-file=.env.local src/scripts/verify-anzu-april.ts",
     "fetch:goals": "tsx --env-file=.env.local src/scripts/fetch-goals.ts",
     "fetch:billing": "tsx --env-file=.env.local src/scripts/fetch-billing.ts",
     "fetch:client-breakdown": "tsx --env-file=.env.local src/scripts/fetch-client-breakdown.ts",

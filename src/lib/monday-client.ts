@@ -60,6 +60,8 @@ export interface MondayItem {
   name: string;
   /** ISO8601 from Monday API when requested */
   created_at?: string | null;
+  /** Item last-updated timestamp from Monday API when requested */
+  updated_at?: string | null;
   state?: string | null;
   group?: { id: string } | null;
   column_values?: MondayColumnValue[];
@@ -118,6 +120,13 @@ export const CONTRACTS_STATUS_COLUMN_ID = "cm_status_template";
 export const CONTRACTS_SIGNED_STATUS = "Complete Storage";
 
 /**
+ * Optional: Media Contracts **Files** column id whose newest attachment sets the won-deal
+ * reporting day (e.g. signed PDF upload). If unset, sync uses status change → item updated → creation log.
+ */
+export const CONTRACTS_SIGNED_FILE_COLUMN_ID =
+  process.env.MONDAY_CONTRACTS_SIGNED_FILE_COLUMN_ID?.trim() ?? "";
+
+/**
  * Deals board: column that holds pipeline stage (Legal Negotiation, Waiting for sign, etc.).
  * Set DEALS_STATUS_COLUMN_ID in .env.local so Ops Approved count is correct.
  * Read at runtime so it always uses current env.
@@ -148,16 +157,22 @@ const ITEMS_PAGE_LIMIT = 500;
  * Fetch all items from a single board, with optional column_values and created_at.
  * For activity (Leads/Contracts), pass includeColumnValues: true and use getCreationLogDate()
  * with CREATION_LOG_COLUMN_IDS.leads or .contracts to read creation date from pulse_log columns.
+ * Pass includeUpdatedAt for contract won-date logic (item `updated_at`).
  * Paginates using items_page then next_items_page.
  */
 export async function fetchBoardItems(
   boardId: string,
-  options: { includeColumnValues?: boolean; includeCreatedAt?: boolean } = {}
+  options: {
+    includeColumnValues?: boolean;
+    includeCreatedAt?: boolean;
+    includeUpdatedAt?: boolean;
+  } = {}
 ): Promise<MondayItem[]> {
   const columnValuesFragment = options.includeColumnValues
     ? "column_values { id text value type }"
     : "";
   const createdAtFragment = options.includeCreatedAt ? "created_at" : "";
+  const updatedAtFragment = options.includeUpdatedAt ? "updated_at" : "";
 
   const firstPageQuery = `
     query GetBoardItemsFirst($boardId: ID!, $limit: Int!) {
@@ -171,6 +186,7 @@ export async function fetchBoardItems(
             state
             group { id }
             ${createdAtFragment}
+            ${updatedAtFragment}
             ${columnValuesFragment}
           }
         }
@@ -188,6 +204,7 @@ export async function fetchBoardItems(
           state
           group { id }
           ${createdAtFragment}
+          ${updatedAtFragment}
           ${columnValuesFragment}
         }
       }
@@ -202,6 +219,20 @@ export async function fetchBoardItems(
     boardId,
     limit: ITEMS_PAGE_LIMIT,
   });
+  if (process.env.MONDAY_SYNC_DEBUG === "true") {
+    const first = data.boards?.[0]?.items_page;
+    const sample = first?.items?.slice(0, 2).map((i) => ({ id: i.id, name: i.name })) ?? [];
+    console.log(
+      "[monday-fetch] board",
+      boardId,
+      "firstPageCount",
+      first?.items?.length ?? 0,
+      "cursor?",
+      Boolean(first?.cursor),
+      "sample",
+      JSON.stringify(sample),
+    );
+  }
   const board = data.boards?.[0];
   const firstPage = board?.items_page;
   if (!firstPage) return allItems;
@@ -218,6 +249,10 @@ export async function fetchBoardItems(
     if (!page) break;
     allItems.push(...page.items);
     cursor = page.cursor ?? null;
+  }
+
+  if (process.env.MONDAY_SYNC_DEBUG === "true") {
+    console.log("[monday-fetch] board", boardId, "totalItemsAfterPagination", allItems.length);
   }
 
   return allItems;
@@ -285,4 +320,99 @@ export function getCreationLogDate(
     if (!Number.isNaN(d.getTime())) return d;
   }
   return null;
+}
+
+/** Parse Monday item `updated_at` when present on the item query. */
+export function getItemUpdatedAtDate(item: MondayItem): Date | null {
+  if (!item.updated_at) return null;
+  const d = new Date(item.updated_at);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * When the status column last changed (from raw `value` JSON), e.g. moving into "Complete Storage".
+ * Monday often stores `changed_at` on status / color column values.
+ */
+export function getStatusColumnChangedAt(
+  item: MondayItem,
+  statusColumnId: string
+): Date | null {
+  const col = item.column_values?.find((c) => c.id === statusColumnId);
+  const raw = col?.value ?? null;
+  if (raw == null || raw === "") return null;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      changed_at?: string;
+      updated_at?: string;
+    };
+    const iso = parsed?.changed_at ?? parsed?.updated_at;
+    if (iso) {
+      const d = new Date(iso);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * Newest upload time from a Files-type column's `value` JSON (`files[].createdAt` ms or ISO).
+ */
+export function getFileColumnLatestUploadDate(
+  item: MondayItem,
+  fileColumnId: string
+): Date | null {
+  if (!fileColumnId) return null;
+  const col = item.column_values?.find((c) => c.id === fileColumnId);
+  const raw = col?.value ?? null;
+  if (raw == null || raw === "") return null;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      files?: Array<{ createdAt?: string; created_at?: string }>;
+    };
+    let best: Date | null = null;
+    for (const f of parsed.files ?? []) {
+      const ca = f.createdAt ?? f.created_at;
+      if (ca == null || ca === "") continue;
+      const d = /^\d+$/.test(String(ca).trim())
+        ? new Date(Number.parseInt(String(ca).trim(), 10))
+        : new Date(String(ca));
+      if (Number.isNaN(d.getTime())) continue;
+      if (!best || d.getTime() > best.getTime()) best = d;
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reporting calendar day for signed contracts: signed file (if configured) → status `changed_at`
+ * → item `updated_at` → creation log → `created_at` → now.
+ */
+export function getContractWonReportingDate(
+  item: MondayItem,
+  creationLogColumnId: string
+): Date {
+  const fromFile = getFileColumnLatestUploadDate(item, CONTRACTS_SIGNED_FILE_COLUMN_ID);
+  if (fromFile) return fromFile;
+
+  const fromStatus = getStatusColumnChangedAt(item, CONTRACTS_STATUS_COLUMN_ID);
+  if (fromStatus) return fromStatus;
+
+  const fromItemUpdated = getItemUpdatedAtDate(item);
+  if (fromItemUpdated) return fromItemUpdated;
+
+  const fromLog = getCreationLogDate(item, creationLogColumnId);
+  if (fromLog) return fromLog;
+
+  if (item.created_at) {
+    const d = new Date(item.created_at);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+
+  return new Date();
 }
