@@ -461,6 +461,8 @@ export async function syncHomeTotalsForDates(
 export interface SyncXDASHResult {
   datesSynced: number;
   rowsUpserted: number;
+  /** Count of rows written to `daily_home_totals` during this run. Optional for back-compat. */
+  homeRowsWritten?: number;
 }
 
 /**
@@ -624,9 +626,9 @@ export async function syncXDASHBackfill(
   }
   const rowsUpserted = await batchUpsert(records);
 
-  // Backfill always forces re-fetch of home totals
-  await syncHomeTotalsForDates(dates, syncedAt, true);
-  return { datesSynced: dates.length, rowsUpserted };
+  // Backfill always forces re-fetch of home totals (overrides the "skip if profit != 0" optimization)
+  const homeRowsWritten = await syncHomeTotalsForDates(dates, syncedAt, true);
+  return { datesSynced: dates.length, rowsUpserted, homeRowsWritten };
 }
 
 /**

@@ -3,12 +3,14 @@
 import { unstable_cache } from "next/cache";
 import {
   MONDAY_BOARD_IDS,
+  CREATION_LOG_COLUMN_IDS,
   FUNNEL_DEALS_STATUS_COL,
   FUNNEL_DEALS_GROUP_IDS,
   FUNNEL_OPS_STATUSES,
   fetchBoardItems,
   filterActiveItems,
   getColumnText,
+  getContractWonReportingDate,
   type MondayItem,
 } from "@/lib/monday-client";
 import { withRetry } from "@/lib/resilience";
@@ -28,12 +30,36 @@ export interface MonthFilter {
   month: number; // 1-12
 }
 
-function isInMonth(item: MondayItem, filter: MonthFilter): boolean {
+const DATE_TZ = "Asia/Jerusalem";
+
+/** Calendar YYYY-MM-DD in Israel (same as Monday sync / activity). */
+function dateKeyIsrael(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: DATE_TZ });
+}
+
+/**
+ * Leads / Deals: bucket by item **creation** month in Israel (not UTC), so late-day UTC
+ * does not shift March ↔ April.
+ */
+function leadOrDealCreatedInFilterMonth(item: MondayItem, filter: MonthFilter): boolean {
   const raw = item.created_at;
   if (!raw) return false;
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return false;
-  return d.getUTCFullYear() === filter.year && d.getUTCMonth() + 1 === filter.month;
+  const key = dateKeyIsrael(d);
+  const [y, m] = key.split("-").map(Number);
+  return y === filter.year && m === filter.month;
+}
+
+/**
+ * Contracts (Won): bucket by **signed reporting date** (Signed Date column → file → status
+ * changed_at → updated_at → …), not `created_at`, so Anzu-type rows land in April when signed in April.
+ */
+function contractSignedInFilterMonth(item: MondayItem, filter: MonthFilter): boolean {
+  const d = getContractWonReportingDate(item, CREATION_LOG_COLUMN_IDS.contracts);
+  const key = dateKeyIsrael(d);
+  const [y, m] = key.split("-").map(Number);
+  return y === filter.year && m === filter.month;
 }
 
 /**
@@ -47,11 +73,16 @@ function isInMonth(item: MondayItem, filter: MonthFilter): boolean {
  */
 async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMetrics | null> {
   const needCreatedAt = !!monthFilter;
+  const contractsNeedSignedMeta = !!monthFilter;
 
   const [leadsRaw, dealsRaw, contractsRaw] = await Promise.all([
     fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: false, includeCreatedAt: needCreatedAt }),
     fetchBoardItems(DEALS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: needCreatedAt }),
-    fetchBoardItems(CONTRACTS_BOARD_ID, { includeColumnValues: false, includeCreatedAt: needCreatedAt }),
+    fetchBoardItems(CONTRACTS_BOARD_ID, {
+      includeColumnValues: contractsNeedSignedMeta,
+      includeCreatedAt: contractsNeedSignedMeta,
+      includeUpdatedAt: contractsNeedSignedMeta,
+    }),
   ]);
 
   let leads = filterActiveItems(leadsRaw);
@@ -59,9 +90,9 @@ async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMe
   let contracts = filterActiveItems(contractsRaw);
 
   if (monthFilter) {
-    leads = leads.filter((i) => isInMonth(i, monthFilter));
-    deals = deals.filter((i) => isInMonth(i, monthFilter));
-    contracts = contracts.filter((i) => isInMonth(i, monthFilter));
+    leads = leads.filter((i) => leadOrDealCreatedInFilterMonth(i, monthFilter));
+    deals = deals.filter((i) => leadOrDealCreatedInFilterMonth(i, monthFilter));
+    contracts = contracts.filter((i) => contractSignedInFilterMonth(i, monthFilter));
   }
 
   const contractsCount = contracts.length;

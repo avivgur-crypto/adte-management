@@ -5,6 +5,9 @@
  * Usage:
  *   npm run fetch:monday
  *   MONDAY_SYNC_DEBUG=true npm run fetch:monday   # logs Monday API page sizes per board
+ *
+ * Set MONDAY_CONTRACTS_SIGNED_DATE_COLUMN_ID in .env.local to your board’s **Signed date** Date column
+ * so won deals bucket by that day (recommended). Then re-run this script to refresh Supabase.
  *   npx tsx --env-file=.env.local src/scripts/fetch-monday.ts
  *
  * After running, wait up to ~5 minutes for cached activity API, or redeploy / invalidate cache.

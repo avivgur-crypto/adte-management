@@ -120,6 +120,20 @@ export const CONTRACTS_STATUS_COLUMN_ID = "cm_status_template";
 export const CONTRACTS_SIGNED_STATUS = "Complete Storage";
 
 /**
+ * Media Contracts **Last Updated** (pulse) column — primary won-deal reporting instant.
+ * Override with MONDAY_CONTRACTS_LAST_UPDATED_COLUMN_ID if the board uses a different id.
+ */
+export const CONTRACTS_LAST_UPDATED_COLUMN_ID =
+  process.env.MONDAY_CONTRACTS_LAST_UPDATED_COLUMN_ID?.trim() || "pulse_updated_mm24tjj9";
+
+/**
+ * Optional: Media Contracts **Date** column id for the real "Signed date" (recommended).
+ * If set, won-deal reporting uses this column first. Find the column id in Monday → column menu.
+ */
+export const CONTRACTS_SIGNED_DATE_COLUMN_ID =
+  process.env.MONDAY_CONTRACTS_SIGNED_DATE_COLUMN_ID?.trim() ?? "";
+
+/**
  * Optional: Media Contracts **Files** column id whose newest attachment sets the won-deal
  * reporting day (e.g. signed PDF upload). If unset, sync uses status change → item updated → creation log.
  */
@@ -322,6 +336,51 @@ export function getCreationLogDate(
   return null;
 }
 
+/**
+ * Pulse-style columns (Creation log, **Last Updated**, etc.): read `value` JSON only.
+ * Prefers `changed_at` / `updated_at` (full ISO) so the instant is correct for Asia/Jerusalem bucketing.
+ * If only `date` (YYYY-MM-DD) is present, uses **UTC noon** on that civil day to avoid midnight
+ * UTC→Israel shifts changing the calendar month.
+ * Does **not** fall back to `item.created_at` — empty column returns null.
+ */
+export function getPulseColumnEventDate(item: MondayItem, columnId: string): Date | null {
+  if (!columnId) return null;
+  const col = item.column_values?.find((c) => c.id === columnId);
+  const raw = col?.value ?? null;
+  if (raw == null || raw === "") return null;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "{}") return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      changed_at?: string;
+      updated_at?: string;
+      date?: string;
+    };
+    const iso =
+      (typeof parsed.changed_at === "string" && parsed.changed_at.trim() !== ""
+        ? parsed.changed_at
+        : null) ??
+      (typeof parsed.updated_at === "string" && parsed.updated_at.trim() !== ""
+        ? parsed.updated_at
+        : null);
+    if (iso) {
+      const d = new Date(iso);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    if (typeof parsed.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) {
+      const [y, m, day] = parsed.date.split("-").map(Number);
+      const d = new Date(Date.UTC(y, m - 1, day, 12, 0, 0));
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  } catch {
+    const d = new Date(trimmed);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 /** Parse Monday item `updated_at` when present on the item query. */
 export function getItemUpdatedAtDate(item: MondayItem): Date | null {
   if (!item.updated_at) return null;
@@ -358,6 +417,39 @@ export function getStatusColumnChangedAt(
 }
 
 /**
+ * Monday **Date** or **Timeline** column: reads `value` JSON (`date`, or range `from`).
+ * Uses calendar day at local noon to avoid parsing ambiguity (not DD/MM vs MM/DD from `text`).
+ */
+export function getDateColumnDate(item: MondayItem, columnId: string): Date | null {
+  if (!columnId) return null;
+  const col = item.column_values?.find((c) => c.id === columnId);
+  const raw = col?.value ?? null;
+  if (raw == null || raw === "") return null;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      date?: string;
+      from?: string;
+      to?: string;
+      time?: string;
+    };
+    const day =
+      (typeof parsed.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date) && parsed.date) ||
+      (typeof parsed.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(parsed.from) && parsed.from) ||
+      null;
+    if (!day) return null;
+    const hasTime =
+      typeof parsed.time === "string" &&
+      /^\d{1,2}:\d{2}/.test(parsed.time.trim());
+    const iso = hasTime ? `${day}T${parsed.time}` : `${day}T12:00:00`;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Newest upload time from a Files-type column's `value` JSON (`files[].createdAt` ms or ISO).
  */
 export function getFileColumnLatestUploadDate(
@@ -390,13 +482,23 @@ export function getFileColumnLatestUploadDate(
 }
 
 /**
- * Reporting calendar day for signed contracts: signed file (if configured) → status `changed_at`
- * → item `updated_at` → creation log → `created_at` → now.
+ * Reporting calendar day for signed contracts:
+ * **Last Updated pulse** (`CONTRACTS_LAST_UPDATED_COLUMN_ID`, default `pulse_updated_mm24tjj9`)
+ * → optional Signed Date column → signed file → status `changed_at` → item `updated_at`
+ * → creation log → `created_at` → now.
+ *
+ * Calendar month/day for the app uses `Asia/Jerusalem` when reducing to YYYY-MM-DD (see `monday.ts`).
  */
 export function getContractWonReportingDate(
   item: MondayItem,
   creationLogColumnId: string
 ): Date {
+  const fromLastUpdated = getPulseColumnEventDate(item, CONTRACTS_LAST_UPDATED_COLUMN_ID);
+  if (fromLastUpdated) return fromLastUpdated;
+
+  const fromSignedDateCol = getDateColumnDate(item, CONTRACTS_SIGNED_DATE_COLUMN_ID);
+  if (fromSignedDateCol) return fromSignedDateCol;
+
   const fromFile = getFileColumnLatestUploadDate(item, CONTRACTS_SIGNED_FILE_COLUMN_ID);
   if (fromFile) return fromFile;
 

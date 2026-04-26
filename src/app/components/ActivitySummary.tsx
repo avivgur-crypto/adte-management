@@ -107,7 +107,7 @@ export default function ActivitySummary({
             {hasSelection ? metrics.newSignedDeals.toLocaleString() : "—"}
           </p>
           <p className="mb-3 text-xs text-white/50">
-            New deals signed in selected period (Monday&apos;s &apos;Media Contracts&apos; board creation date)
+            New deals signed in selected period (Media Contracts: signed / reporting date from Monday sync)
           </p>
           {hasSelection && metrics.newSignedDeals > 0 && (
             <div className="border-t border-white/10 pt-3">
