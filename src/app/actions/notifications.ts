@@ -463,6 +463,16 @@ function formatHumanDate(isoDate: string): string {
   }).format(dt);
 }
 
+/** "Saturday" for an ISO calendar date (YYYY-MM-DD), TZ-stable via UTC anchor. */
+function formatDayOfWeek(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    weekday: "long",
+  }).format(dt);
+}
+
 /** Signed percent string e.g. "+12.3%" / "-4.1%" / "0.0%". */
 function formatSignedPercent(pct: number): string {
   const fixed = pct.toFixed(1);
@@ -477,32 +487,64 @@ export async function morningSummary(
 
   const yesterday = getIsraelDateDaysAgo(1);
   const dayBefore = getIsraelDateDaysAgo(2);
+  // Same day-of-week last week, relative to "yesterday": yesterday is 1 day ago,
+  // so the matching weekday last week is 8 days ago (1 + 7).
+  const sameDayLastWeek = getIsraelDateDaysAgo(8);
 
   // Read-only: rely on the periodic sync having already written the 24h totals
-  // (00:00–23:59 Israel time) for both dates into `daily_home_totals`.
+  // (00:00–23:59 Israel time) for these dates into `daily_home_totals`.
   const [yY, yM] = yesterday.split("-").map(Number);
   const monthStart = `${yY}-${String(yM).padStart(2, "0")}-01`;
 
-  const [yRow, dRow, monthlyGoal, mtdActual] = await Promise.all([
+  const [yRow, dRow, wRow, monthlyGoal, mtdActual] = await Promise.all([
     fetchDailyRow(yesterday),
     fetchDailyRow(dayBefore),
+    fetchDailyRow(sameDayLastWeek),
     fetchMonthlyGoal(monthStart),
     sumProfitMtd(monthStart, yesterday),
   ]);
 
   const yRev = yRow?.revenue ?? 0;
   const yGp = yRow?.profit ?? 0;
+  const dRev = dRow?.revenue ?? 0;
   const dGp = dRow?.profit ?? 0;
-  const gpChangePercent = percentChangeVsPrior(yGp, dGp);
+  const wRev = wRow?.revenue ?? 0;
+  const wGp = wRow?.profit ?? 0;
 
-  const title = `${isTest ? "[TEST] " : ""}Good Morning! ☕ Here is your summary for Yesterday (${formatHumanDate(yesterday)})`;
+  // Day-over-day (vs Day Before) and Week-over-Week (vs same weekday last week).
+  const revPrevPct = percentChangeVsPrior(yRev, dRev);
+  const gpPrevPct = percentChangeVsPrior(yGp, dGp);
+  const revWowPct = percentChangeVsPrior(yRev, wRev);
+  const gpWowPct = percentChangeVsPrior(yGp, wGp);
+
+  // Margin = (profit / revenue) * 100. Defaults to 0 when revenue is 0 to avoid NaN.
+  const yMargin = yRev > 0 ? (yGp / yRev) * 100 : 0;
+  const dMargin = dRev > 0 ? (dGp / dRev) * 100 : 0;
+  const marginIcon = yMargin >= dMargin ? "🟢" : "🔴";
+
+  const revWowIcon = revWowPct >= 0 ? "📈" : "📉";
+  const gpWowIcon = gpWowPct >= 0 ? "📈" : "📉";
+
+  // MTD pace: linear pro-ration of the full monthly goal through yesterday.
+  const dim = daysInMonthYm(yY, yM);
+  const dayOfMonth = parseInt(yesterday.slice(8, 10), 10);
+  const targetMtd = monthlyGoal > 0 && dim > 0 ? monthlyGoal * (dayOfMonth / dim) : 0;
+  const onPace = monthlyGoal <= 0 ? true : mtdActual + 1e-6 >= targetMtd;
+  const mtdIcon = onPace ? "✅" : "⚠️";
+
+  const dayName = formatDayOfWeek(yesterday);
+  const title = `${isTest ? "[TEST] " : ""}Adtex Summary • ${dayName} (${formatHumanDate(yesterday)})`;
+
   const mtdLine =
     monthlyGoal > 0
-      ? `MTD Profit: ${formatCurrencyShort(mtdActual)} vs ${formatCurrencyShort(monthlyGoal)} Goal`
+      ? `MTD Profit: ${formatCurrencyShort(mtdActual)} / ${formatCurrencyShort(monthlyGoal)} Goal ${mtdIcon}`
       : `MTD Profit: ${formatCurrencyShort(mtdActual)}`;
+
   const body = [
-    `Revenue: ${formatCurrencyShort(yRev)}`,
-    `GP: ${formatCurrencyShort(yGp)} (${formatSignedPercent(gpChangePercent)} vs Day Before)`,
+    `Rev: ${formatCurrencyShort(yRev)} (Prev: ${formatSignedPercent(revPrevPct)} | WoW: ${formatSignedPercent(revWowPct)} ${revWowIcon})`,
+    `GP: ${formatCurrencyShort(yGp)} (Prev: ${formatSignedPercent(gpPrevPct)} | WoW: ${formatSignedPercent(gpWowPct)} ${gpWowIcon})`,
+    `Margin: ${yMargin.toFixed(1)}% (vs ${dMargin.toFixed(1)}%) ${marginIcon}`,
+    "",
     mtdLine,
   ].join("\n");
 
