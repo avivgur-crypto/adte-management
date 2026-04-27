@@ -1,9 +1,11 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import {
   MONDAY_BOARD_IDS,
+  SIGNED_DEALS_WON_DATE_COLUMN_ID,
   FUNNEL_DEALS_STATUS_COL,
   FUNNEL_DEALS_GROUP_IDS,
   FUNNEL_OPS_STATUSES,
+  collectClosedWonDealsWithWonDate,
   fetchBoardItems,
   filterActiveItems,
   getColumnText,
@@ -17,7 +19,7 @@ import {
  * Stage 2 (Qualified):    Active Deals in groups (topics | new_group_mkmgrv50) + ALL active Contracts.
  * Stage 3 (Ops Approved): Same group-filtered Deals whose status_mkmxymkn is
  *                          Legal Negotiation / Waiting for sign / Negotiation Failed + ALL active Contracts.
- * Stage 4 (Won Deals):    ALL active items on the Contracts board.
+ * Stage 4 (Won Deals):    CRM Deals board — "Closed Won" group with Won Date (`date_mktkg4zp`), same as `syncMondayData`.
  * Win Rate:               Stage 4 / Stage 1 * 100.
  */
 export async function syncFunnelToSupabase(): Promise<{
@@ -37,6 +39,14 @@ export async function syncFunnelToSupabase(): Promise<{
     const deals = filterActiveItems(dealsRaw);
     const contracts = filterActiveItems(contractsRaw);
 
+    const { deals: closedWon, skippedMissingWonDate } =
+      collectClosedWonDealsWithWonDate(dealsRaw);
+    if (skippedMissingWonDate > 0) {
+      console.warn(
+        `[sync-funnel] ${skippedMissingWonDate} Closed Won deals missing ${SIGNED_DEALS_WON_DATE_COLUMN_ID}; excluded from won count.`,
+      );
+    }
+
     const contractsCount = contracts.length;
 
     const dealsInScope = deals.filter((i) => {
@@ -55,7 +65,7 @@ export async function syncFunnelToSupabase(): Promise<{
     const totalLeads = leads.length;
     const qualifiedLeads = dealsInScope.length + contractsCount;
     const opsApprovedLeads = opsMatchedCount + contractsCount;
-    const wonDeals = contractsCount;
+    const wonDeals = closedWon.length;
 
     const leadToQualifiedPct =
       totalLeads > 0 ? Number(((qualifiedLeads / totalLeads) * 100).toFixed(1)) : null;

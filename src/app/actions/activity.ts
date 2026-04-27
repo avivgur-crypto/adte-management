@@ -2,6 +2,7 @@
 
 import { unstable_cache } from "next/cache";
 import { withRetry } from "@/lib/resilience";
+import { SIGNED_DEALS_BOARD_ID } from "@/lib/monday-client";
 import { supabaseAdmin } from "@/lib/supabase";
 
 /** 5-min TTL — data only changes on cron sync (every 30 min). */
@@ -9,7 +10,11 @@ const CACHE_TTL = 300;
 
 const ACTIVITY_TABLE = "monday_items_activity";
 const LEADS_BOARD_ID = "7832231403";
-const CONTRACTS_BOARD_ID = "8280704003";
+/**
+ * New Signed Deals are now sourced from the CRM Deals board (Closed Won group);
+ * see `src/lib/sync/monday.ts`. Activity rows for signed deals carry this board id.
+ */
+const SIGNED_DEALS_ACTIVITY_BOARD_ID = SIGNED_DEALS_BOARD_ID;
 
 export interface ActivityMetrics {
   newLeads: number;
@@ -32,7 +37,7 @@ async function _getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
     const { data: rows, error } = await supabaseAdmin
       .from(ACTIVITY_TABLE)
       .select("board_id, created_date")
-      .in("board_id", [LEADS_BOARD_ID, CONTRACTS_BOARD_ID])
+      .in("board_id", [LEADS_BOARD_ID, SIGNED_DEALS_ACTIVITY_BOARD_ID])
       .gte("created_date", "2026-01-01")
       .lt("created_date", "2027-01-01")
       .order("created_date", { ascending: true });
@@ -49,7 +54,7 @@ async function _getActivityDataFromFunnel(): Promise<ActivityDailyRow[]> {
       const entry = byDate.get(d) ?? { leads: 0, deals: 0 };
       if (String(row.board_id) === LEADS_BOARD_ID) {
         entry.leads += 1;
-      } else if (String(row.board_id) === CONTRACTS_BOARD_ID) {
+      } else if (String(row.board_id) === SIGNED_DEALS_ACTIVITY_BOARD_ID) {
         entry.deals += 1;
       }
       byDate.set(d, entry);
@@ -75,7 +80,9 @@ export interface SignedDealCompany {
 }
 
 /**
- * Fetch all signed deals (contracts) in 2026 with Account Name (default column text_mkpw5mcs).
+ * Fetch all signed deals in 2026 with the linked Account name.
+ * Sourced from the CRM Deals board (Closed Won group) via the Monday sync;
+ * `company_name` comes from the `board_relation_mkwsdcg0` (Accounts) column.
  * Client filters by selected months and displays names under "New Signed Deals".
  */
 async function _getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
@@ -83,7 +90,7 @@ async function _getSignedDealsCompanies(): Promise<SignedDealCompany[]> {
     const { data: rows, error } = await supabaseAdmin
       .from(ACTIVITY_TABLE)
       .select("created_date, company_name")
-      .eq("board_id", CONTRACTS_BOARD_ID)
+      .eq("board_id", SIGNED_DEALS_ACTIVITY_BOARD_ID)
       .gte("created_date", "2026-01-01")
       .lt("created_date", "2027-01-01")
       .not("company_name", "is", null)

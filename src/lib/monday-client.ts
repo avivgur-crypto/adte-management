@@ -94,6 +94,20 @@ export const MONDAY_BOARD_IDS = {
   contracts: "8280704003",
 } as const;
 
+/**
+ * Source of truth for **New Signed Deals** (final stage of the Sales Funnel) is now the
+ * CRM Deals board (7832231409), filtered to the "Closed Won" group. The previous
+ * Media Contracts board (8280704003) is no longer used to count signed deals.
+ *
+ * - Group ID `closed` ("Closed Won") → only items in this group count as won.
+ * - `board_relation_mkwsdcg0` (Accounts) → linked company name for activity display.
+ * - `date_mktkg4zp` (Won Date) → reporting calendar day (Asia/Jerusalem).
+ */
+export const SIGNED_DEALS_BOARD_ID = MONDAY_BOARD_IDS.deals;
+export const SIGNED_DEALS_CLOSED_WON_GROUP_ID = "closed";
+export const SIGNED_DEALS_ACCOUNT_RELATION_COLUMN_ID = "board_relation_mkwsdcg0";
+export const SIGNED_DEALS_WON_DATE_COLUMN_ID = "date_mktkg4zp";
+
 /** Single board ID for funnel (status-based mapping). Set MONDAY_BOARD_ID in .env.local. */
 export const MONDAY_BOARD_ID = process.env.MONDAY_BOARD_ID ?? "";
 
@@ -447,6 +461,33 @@ export function getDateColumnDate(item: MondayItem, columnId: string): Date | nu
   } catch {
     return null;
   }
+}
+
+/**
+ * CRM Deals board (7832231409): items in the "Closed Won" group with a parsed Won Date
+ * (`SIGNED_DEALS_WON_DATE_COLUMN_ID`). Same rules as `syncMondayData` — items in `closed`
+ * without a date are omitted (not counted as won).
+ */
+export function collectClosedWonDealsWithWonDate(
+  dealsBoardItems: MondayItem[],
+): {
+  deals: Array<{ item: MondayItem; wonDate: Date }>;
+  skippedMissingWonDate: number;
+} {
+  const closed = dealsBoardItems.filter(
+    (i) => i.group?.id === SIGNED_DEALS_CLOSED_WON_GROUP_ID,
+  );
+  const deals: Array<{ item: MondayItem; wonDate: Date }> = [];
+  let skippedMissingWonDate = 0;
+  for (const item of closed) {
+    const wonDate = getDateColumnDate(item, SIGNED_DEALS_WON_DATE_COLUMN_ID);
+    if (!wonDate) {
+      skippedMissingWonDate += 1;
+      continue;
+    }
+    deals.push({ item, wonDate });
+  }
+  return { deals, skippedMissingWonDate };
 }
 
 /**
