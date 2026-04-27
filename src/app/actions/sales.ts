@@ -1,5 +1,6 @@
 /**
- * Funnel metrics type. Live data comes from getSalesFunnelMetricsFromMonday (Monday API).
+ * Funnel metrics type. Dashboard snapshot often uses getSalesFunnelFromCache (Supabase);
+ * Monday API path: getSalesFunnelMetricsFromMonday.
  */
 
 export interface SalesFunnelMetrics {

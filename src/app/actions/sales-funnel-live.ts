@@ -4,11 +4,9 @@ import { unstable_cache } from "next/cache";
 import {
   MONDAY_BOARD_IDS,
   CREATION_LOG_COLUMN_IDS,
-  SIGNED_DEALS_WON_DATE_COLUMN_ID,
   FUNNEL_DEALS_STATUS_COL,
   FUNNEL_DEALS_GROUP_IDS,
   FUNNEL_OPS_STATUSES,
-  collectClosedWonDealsWithWonDate,
   fetchBoardItems,
   filterActiveItems,
   getColumnText,
@@ -54,8 +52,8 @@ function leadOrDealCreatedInFilterMonth(item: MondayItem, filter: MonthFilter): 
 }
 
 /**
- * Media Contracts: for monthly funnel only — bucket by legacy signed reporting date
- * (still used for Qualified / Ops stages when a month filter is applied).
+ * Contracts (Won): bucket by **signed reporting date** (Signed Date column → file → status
+ * changed_at → updated_at → …), not `created_at`, so Anzu-type rows land in April when signed in April.
  */
 function contractSignedInFilterMonth(item: MondayItem, filter: MonthFilter): boolean {
   const d = getContractWonReportingDate(item, CREATION_LOG_COLUMN_IDS.contracts);
@@ -64,20 +62,13 @@ function contractSignedInFilterMonth(item: MondayItem, filter: MonthFilter): boo
   return y === filter.year && m === filter.month;
 }
 
-/** Closed Won on CRM Deals: bucket by Won Date (`date_mktkg4zp`) month in Israel. */
-function closedWonDateInFilterMonth(wonDate: Date, filter: MonthFilter): boolean {
-  const key = dateKeyIsrael(wonDate);
-  const [y, m] = key.split("-").map(Number);
-  return y === filter.year && m === filter.month;
-}
-
 /**
  * Core funnel computation using NEW verified logic.
  *
  * Stage 1: ALL active Leads.
- * Stage 2: Active Deals in (topics | new_group_mkmgrv50) + ALL active Contracts (Media Contracts board).
+ * Stage 2: Active Deals in (topics | new_group_mkmgrv50) + ALL active Contracts.
  * Stage 3: Same group-filtered Deals with status in [Legal Negotiation, Waiting for sign, Negotiation Failed] + ALL active Contracts.
- * Stage 4: Closed Won deals on the CRM Deals board (group `closed`) with Won Date — same source as `syncMondayData`.
+ * Stage 4: ALL active Contracts.
  * Win Rate: Stage 4 / Stage 1.
  */
 async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMetrics | null> {
@@ -94,14 +85,6 @@ async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMe
     }),
   ]);
 
-  const { deals: closedWonWithDates, skippedMissingWonDate } =
-    collectClosedWonDealsWithWonDate(dealsRaw);
-  if (skippedMissingWonDate > 0) {
-    console.warn(
-      `[sales-funnel-live] ${skippedMissingWonDate} Closed Won deals missing ${SIGNED_DEALS_WON_DATE_COLUMN_ID}; excluded from won count.`,
-    );
-  }
-
   let leads = filterActiveItems(leadsRaw);
   let deals = filterActiveItems(dealsRaw);
   let contracts = filterActiveItems(contractsRaw);
@@ -113,12 +96,6 @@ async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMe
   }
 
   const contractsCount = contracts.length;
-
-  const wonDeals = monthFilter
-    ? closedWonWithDates.filter(({ wonDate }) =>
-        closedWonDateInFilterMonth(wonDate, monthFilter),
-      ).length
-    : closedWonWithDates.length;
 
   const dealsInScope = deals.filter((i) => {
     const gid = i.group?.id;
@@ -136,6 +113,7 @@ async function fetchFunnelCore(monthFilter?: MonthFilter): Promise<SalesFunnelMe
   const totalLeads = leads.length;
   const qualifiedLeads = dealsInScope.length + contractsCount;
   const opsApprovedLeads = opsMatchedCount + contractsCount;
+  const wonDeals = contractsCount;
 
   const leadToQualifiedPercent =
     totalLeads > 0 ? Number(((qualifiedLeads / totalLeads) * 100).toFixed(1)) : null;
@@ -177,11 +155,10 @@ async function fetchFunnelFromMonday(): Promise<SalesFunnelMetrics | null> {
   return withRetry(async () => fetchFunnelCore(), { timeoutMs: FUNNEL_TIMEOUT_MS });
 }
 
-/** Bumped when won-deal source changes so stale cached counts are not served. */
-const CACHE_KEY = "sales-funnel-from-monday-crm-closed-won";
+const CACHE_KEY = "sales-funnel-from-monday";
 
 /**
- * Live Sales Funnel: Monday API — Leads, Deals (pipeline + CRM Closed Won for Stage 4), Media Contracts for Stages 2–3.
+ * Live Sales Funnel: always sourced from Monday API (Leads, Deals, Media Contracts).
  * Cache is short-lived (5 min) only to avoid hammering the API; UI refetches every 5 min
  * so data keeps updating directly from Monday.
  * Always all-time data; not affected by dashboard date filters.
