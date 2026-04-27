@@ -451,33 +451,25 @@ export async function checkLowMarginAlert(
 // 30s and Vercel Hobby's 10s limits and cause a timeout (no notification).
 // ---------------------------------------------------------------------------
 
-/** Format an ISO calendar date (YYYY-MM-DD) as "April 25, 2026" without TZ shifts. */
-function formatHumanDate(isoDate: string): string {
+/** Push title fragment: "Mon 27/04" for an ISO date (YYYY-MM-DD), TZ-stable via UTC. */
+function formatSummaryTitleDate(isoDate: string): string {
   const [y, m, d] = isoDate.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
-  return new Intl.DateTimeFormat("en-US", {
+  const dow = new Intl.DateTimeFormat("en-US", {
     timeZone: "UTC",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
+    weekday: "short",
   }).format(dt);
+  const dd = String(d).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${dow} ${dd}/${mm}`;
 }
 
-/** "Saturday" for an ISO calendar date (YYYY-MM-DD), TZ-stable via UTC anchor. */
-function formatDayOfWeek(isoDate: string): string {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "UTC",
-    weekday: "long",
-  }).format(dt);
-}
-
-/** Signed percent string e.g. "+12.3%" / "-4.1%" / "0.0%". */
-function formatSignedPercent(pct: number): string {
-  const fixed = pct.toFixed(1);
-  if (pct > 0) return `+${fixed}%`;
-  return `${fixed}%`;
+/** Signed whole percent for compact push lines e.g. "+12%" / "-4%" / "0%". */
+function formatSignedPercentInt(pct: number): string {
+  const n = Math.round(pct);
+  if (n > 0) return `+${n}%`;
+  if (n < 0) return `${n}%`;
+  return "0%";
 }
 
 export async function morningSummary(
@@ -520,31 +512,31 @@ export async function morningSummary(
   // Margin = (profit / revenue) * 100. Defaults to 0 when revenue is 0 to avoid NaN.
   const yMargin = yRev > 0 ? (yGp / yRev) * 100 : 0;
   const dMargin = dRev > 0 ? (dGp / dRev) * 100 : 0;
-  const marginIcon = yMargin >= dMargin ? "🟢" : "🔴";
+  const wMargin = wRev > 0 ? (wGp / wRev) * 100 : 0;
+  // Percentage-point change vs prior day / same weekday last week (not relative %).
+  const marginPrevPp = yMargin - dMargin;
+  const marginWowPp = yMargin - wMargin;
 
-  const revWowIcon = revWowPct >= 0 ? "📈" : "📉";
-  const gpWowIcon = gpWowPct >= 0 ? "📈" : "📉";
+  const title = `${isTest ? "[TEST] " : ""}Adtex Summary • ${formatSummaryTitleDate(yesterday)} 📊`;
 
-  // MTD pace: linear pro-ration of the full monthly goal through yesterday.
+  // Linear MTD target through "yesterday" (same pro-ration as before pace checks).
   const dim = daysInMonthYm(yY, yM);
   const dayOfMonth = parseInt(yesterday.slice(8, 10), 10);
-  const targetMtd = monthlyGoal > 0 && dim > 0 ? monthlyGoal * (dayOfMonth / dim) : 0;
-  const onPace = monthlyGoal <= 0 ? true : mtdActual + 1e-6 >= targetMtd;
-  const mtdIcon = onPace ? "✅" : "⚠️";
-
-  const dayName = formatDayOfWeek(yesterday);
-  const title = `${isTest ? "[TEST] " : ""}Adtex Summary • ${dayName} (${formatHumanDate(yesterday)})`;
+  const targetMtd =
+    monthlyGoal > 0 && dim > 0 ? monthlyGoal * (dayOfMonth / dim) : 0;
+  const mtdOnPace =
+    monthlyGoal > 0 && mtdActual + 1e-6 >= targetMtd;
+  const mtdSuffix = mtdOnPace ? " ✅" : "";
 
   const mtdLine =
     monthlyGoal > 0
-      ? `MTD Profit: ${formatCurrencyShort(mtdActual)} / ${formatCurrencyShort(monthlyGoal)} Goal ${mtdIcon}`
+      ? `MTD Profit: ${formatCurrencyShort(mtdActual)} / ${formatCurrencyShort(monthlyGoal)}${mtdSuffix}`
       : `MTD Profit: ${formatCurrencyShort(mtdActual)}`;
 
   const body = [
-    `Rev: ${formatCurrencyShort(yRev)} (Prev: ${formatSignedPercent(revPrevPct)} | WoW: ${formatSignedPercent(revWowPct)} ${revWowIcon})`,
-    `GP: ${formatCurrencyShort(yGp)} (Prev: ${formatSignedPercent(gpPrevPct)} | WoW: ${formatSignedPercent(gpWowPct)} ${gpWowIcon})`,
-    `Margin: ${yMargin.toFixed(1)}% (vs ${dMargin.toFixed(1)}%) ${marginIcon}`,
-    "",
+    `Rev: ${formatCurrencyShort(yRev)} (Prev: ${formatSignedPercentInt(revPrevPct)} | WoW: ${formatSignedPercentInt(revWowPct)})`,
+    `GP: ${formatCurrencyShort(yGp)} (Prev: ${formatSignedPercentInt(gpPrevPct)} | WoW: ${formatSignedPercentInt(gpWowPct)})`,
+    `Margin: ${Math.round(yMargin)}% (Prev: ${formatSignedPercentInt(marginPrevPp)} | WoW: ${formatSignedPercentInt(marginWowPp)})`,
     mtdLine,
   ].join("\n");
 
