@@ -465,6 +465,36 @@ export interface SyncXDASHResult {
   homeRowsWritten?: number;
 }
 
+/** Pulse comparisons only need 28 days of history; older snapshots are dead weight. */
+const HOURLY_SNAPSHOT_RETENTION_DAYS = 28;
+
+/**
+ * Delete `hourly_snapshots` rows older than the retention window (28 days).
+ * Date arithmetic is in Israel calendar to match how snapshot dates are stored.
+ * Safe to call repeatedly; never throws (logs and returns 0 on failure).
+ */
+export async function purgeOldHourlySnapshots(): Promise<number> {
+  const today = getTodayIsrael();
+  const [y, m, d] = today.split("-").map(Number);
+  const cutoff = new Date(Date.UTC(y!, m! - 1, d!));
+  cutoff.setUTCDate(cutoff.getUTCDate() - HOURLY_SNAPSHOT_RETENTION_DAYS);
+  const cutoffIso = cutoff.toISOString().slice(0, 10);
+
+  const { error, count } = await supabaseAdmin
+    .from("hourly_snapshots")
+    .delete({ count: "exact" })
+    .lt("date", cutoffIso);
+
+  if (error) {
+    console.warn(`[xdash-sync] hourly_snapshots purge failed (non-fatal):`, error.message);
+    return 0;
+  }
+  console.log(
+    `[xdash-sync] hourly_snapshots purge: removed ${count ?? 0} rows older than ${cutoffIso} (retention=${HOURLY_SNAPSHOT_RETENTION_DAYS}d)`,
+  );
+  return count ?? 0;
+}
+
 /**
  * Incremental sync with catch-up so every day from the 1st is synced, daily and in order.
  *
@@ -506,6 +536,11 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
   const rowsUpserted = await batchUpsert(records);
 
   await syncHomeTotalsForDates(toFetch, syncedAt);
+
+  // Daily housekeeping: drop hourly_snapshots older than the retention window.
+  // syncXDASHData runs once per day from /api/cron/sync, so this fires once a day.
+  await purgeOldHourlySnapshots();
+
   return { datesSynced: toFetch.length, rowsUpserted };
 }
 

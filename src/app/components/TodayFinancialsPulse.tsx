@@ -139,22 +139,24 @@ function computeMarginDelta(
 const COMPARISON_TOOLTIP =
   "Apples-to-apples: today's running cumulative vs the comparison date's cumulative at the same Israel hour (largest hour ≤ now from hourly_snapshots). % change = (current − previous) ÷ previous.";
 
-const COMPARISON_TOOLTIP_ESTIMATE =
-  "Linear estimate: no hourly_snapshot for this date, so we scaled the day's full daily_home_totals by (current Israel hour / 24). Treated as approximate.";
+const ESTIMATE_TOOLTIP =
+  "Proportional estimate based on daily total (no exact hourly data available).";
+
+const ESTIMATE_LEGEND =
+  "* Proportional estimate based on daily total (no exact hourly data available).";
 
 const MARGIN_DELTA_TOOLTIP =
   "Margin change vs the comparison date's margin at the same Israel hour (not full-day). Shown as percentage points; value in parentheses is the past day's margin at this time of day.";
 
-const MARGIN_DELTA_TOOLTIP_ESTIMATE =
-  "Linear estimate: profit and revenue scaled equally from daily_home_totals, so the margin equals the day's full-day margin.";
-
-const ESTIMATE_BADGE_CLASSES =
-  "rounded bg-amber-400/10 px-1 py-px text-[10px] font-semibold tracking-wide text-amber-300/85";
-
-function EstimateBadge() {
+/** Inline asterisk that explains itself on hover. */
+function EstimateAsterisk() {
   return (
-    <span className={ESTIMATE_BADGE_CLASSES} title={COMPARISON_TOOLTIP_ESTIMATE}>
-      est
+    <span
+      className="ml-0.5 text-white/55"
+      title={ESTIMATE_TOOLTIP}
+      aria-label={ESTIMATE_TOOLTIP}
+    >
+      *
     </span>
   );
 }
@@ -269,15 +271,10 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
       <ComparisonPill>
         <span
           className="font-medium tabular-nums text-white/45"
-          title={
-            isEstimate
-              ? COMPARISON_TOOLTIP_ESTIMATE
-              : pb != null
-                ? COMPARISON_TOOLTIP
-                : undefined
-          }
+          title={pb != null ? COMPARISON_TOOLTIP : undefined}
         >
           —
+          {isEstimate && <EstimateAsterisk />}
           {pb != null && (
             <span className="text-[11px] font-normal text-white/40">
               {" "}
@@ -285,15 +282,15 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
             </span>
           )}
         </span>
-        {isEstimate && <EstimateBadge />}
       </ComparisonPill>
     );
   }
   if (delta.kind === "na") {
     return (
       <ComparisonPill>
-        <span className="font-medium tabular-nums text-white/45">N/A</span>
-        {delta.source === "linear_estimate" && <EstimateBadge />}
+        <span className="font-medium tabular-nums text-white/45">
+          N/A{delta.source === "linear_estimate" && <EstimateAsterisk />}
+        </span>
       </ComparisonPill>
     );
   }
@@ -307,12 +304,13 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
     <ComparisonPill>
       <span
         className={`inline-flex flex-wrap items-baseline gap-x-1 font-semibold tabular-nums ${tone.main}`}
-        title={isEstimate ? COMPARISON_TOOLTIP_ESTIMATE : COMPARISON_TOOLTIP}
+        title={COMPARISON_TOOLTIP}
       >
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
           {up && <span aria-hidden>↑</span>}
           <AnimatedNumberText value={pct} format={fmtDeltaPct} className="inline" />
+          {isEstimate && <EstimateAsterisk />}
         </span>
         {pb != null && (
           <span className={`text-[11px] font-medium tabular-nums ${tone.muted}`}>
@@ -326,7 +324,6 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
           </span>
         )}
       </span>
-      {isEstimate && <EstimateBadge />}
     </ComparisonPill>
   );
 }
@@ -346,16 +343,16 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
       <ComparisonPill>
         <span
           className="inline-flex flex-wrap items-baseline gap-x-1 font-medium tabular-nums text-white/45"
-          title={isEstimate ? MARGIN_DELTA_TOOLTIP_ESTIMATE : MARGIN_DELTA_TOOLTIP}
+          title={MARGIN_DELTA_TOOLTIP}
         >
           —
+          {isEstimate && <EstimateAsterisk />}
           {pm != null && (
             <span className="text-[11px] font-medium tabular-nums text-white/40">
               (vs {formatMarginPctDisplay(pm)})
             </span>
           )}
         </span>
-        {isEstimate && <EstimateBadge />}
       </ComparisonPill>
     );
   }
@@ -369,18 +366,18 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
     <ComparisonPill>
       <span
         className={`inline-flex flex-wrap items-baseline gap-x-1 font-semibold tabular-nums ${tone.main}`}
-        title={isEstimate ? MARGIN_DELTA_TOOLTIP_ESTIMATE : MARGIN_DELTA_TOOLTIP}
+        title={MARGIN_DELTA_TOOLTIP}
       >
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
           {up && <span aria-hidden>↑</span>}
           <AnimatedNumberText value={pp} format={fmtMarginPp} className="inline" />
+          {isEstimate && <EstimateAsterisk />}
         </span>
         <span className={`text-[11px] font-medium tabular-nums ${tone.muted}`}>
           (vs {formatMarginPctDisplay(pastMarginPct)})
         </span>
       </span>
-      {isEstimate && <EstimateBadge />}
     </ComparisonPill>
   );
 }
@@ -426,6 +423,8 @@ export default function TodayFinancialsPulse({
     dailyTarget > 0 ? (
       <DailyProfitGoalRing profit={profit} dailyTarget={dailyTarget} />
     ) : null;
+
+  const hasEstimate = pastRow?.source === "linear_estimate";
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[var(--adte-funnel-bg)] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] sm:p-6">
@@ -531,6 +530,15 @@ export default function TodayFinancialsPulse({
           marginDelta={dMargin}
         />
       </div>
+
+      {hasEstimate && (
+        <p
+          className="relative mt-3 text-[11px] font-medium tabular-nums text-white/40"
+          aria-label={ESTIMATE_LEGEND}
+        >
+          {ESTIMATE_LEGEND}
+        </p>
+      )}
     </section>
   );
 }
