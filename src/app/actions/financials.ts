@@ -14,6 +14,7 @@ import {
 } from "@/lib/xdash-client";
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
+import { checkPerformance } from "@/app/actions/notifications";
 
 /**
  * Short TTL: page uses revalidate=0 so every navigation re-renders, but
@@ -876,6 +877,21 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
 
     revalidateTag(FINANCIAL_TAG, { expire: 0 });
     revalidatePath("/");
+
+    // Daily/monthly goal + low-margin alerts read `daily_home_totals` here; they only
+    // ran after `/api/auto-sync` XDASH paths before, so intraday AutoSync never fired them.
+    try {
+      const perf = await checkPerformance();
+      if (perf.sent || perf.reasons.length > 0) {
+        console.log("[refreshTodayHome] checkPerformance:", perf.log);
+      }
+    } catch (perfErr) {
+      console.warn(
+        "[refreshTodayHome] checkPerformance (non-fatal):",
+        perfErr instanceof Error ? perfErr.message : perfErr,
+      );
+    }
+
     return { updated: true };
   } catch (e) {
     console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
