@@ -66,14 +66,16 @@ type DeltaKind = "none" | "no_hist" | "na" | "flat" | "pct";
 type DeltaResult = {
   kind: DeltaKind;
   pct?: number;
-  /** Same-time-of-day cumulative value for the comparison date (largest `hour <= currentHour` from `hourly_snapshots`). */
+  /** Same-time-of-day cumulative value for the comparison date. */
   previousValue?: number;
+  /** "hourly" = real cumulative snapshot; "linear_estimate" = daily × (currentHour/24). */
+  source?: "hourly" | "linear_estimate";
 };
 
 type MarginDeltaResult =
   | { kind: "no_hist" }
-  | { kind: "na"; pastMarginPct?: number }
-  | { kind: "pp"; pp: number; pastMarginPct: number };
+  | { kind: "na"; pastMarginPct?: number; source?: "hourly" | "linear_estimate" }
+  | { kind: "pp"; pp: number; pastMarginPct: number; source?: "hourly" | "linear_estimate" };
 
 /**
  * Period-over-period change vs the same-time-of-day cumulative value on the
@@ -86,18 +88,20 @@ function computeDelta(
 ): DeltaResult {
   if (!pastRow) return { kind: "no_hist" };
   const past = pick(pastRow);
+  const source = pastRow.source;
 
   if (today === 0) {
     return {
       kind: "flat",
       previousValue: past !== 0 ? past : undefined,
+      source,
     };
   }
 
-  if (past === 0) return { kind: "na" };
+  if (past === 0) return { kind: "na", source };
 
   const pct = ((today - past) / past) * 100;
-  return { kind: "pct", pct, previousValue: past };
+  return { kind: "pct", pct, previousValue: past, source };
 }
 
 /**
@@ -111,29 +115,49 @@ function computeMarginDelta(
   pastRow: TodayHomeRow | null,
 ): MarginDeltaResult {
   if (!pastRow) return { kind: "no_hist" };
+  const source = pastRow.source;
 
   if (todayRev === 0) {
     const pastMarginPct =
       pastRow.revenue !== 0
         ? (pastRow.profit / pastRow.revenue) * 100
         : undefined;
-    return { kind: "na", pastMarginPct };
+    return { kind: "na", pastMarginPct, source };
   }
   if (pastRow.revenue === 0) {
-    return { kind: "na" };
+    return { kind: "na", source };
   }
 
+  // For linear_estimate rows, profit and revenue are scaled by the same factor,
+  // so the margin equals the full-day margin — that's a useful, unbiased baseline.
   const pastMarginPct = (pastRow.profit / pastRow.revenue) * 100;
   const todayMargin = (todayProfit / todayRev) * 100;
   const pp = todayMargin - pastMarginPct;
-  return { kind: "pp", pp, pastMarginPct };
+  return { kind: "pp", pp, pastMarginPct, source };
 }
 
 const COMPARISON_TOOLTIP =
   "Apples-to-apples: today's running cumulative vs the comparison date's cumulative at the same Israel hour (largest hour ≤ now from hourly_snapshots). % change = (current − previous) ÷ previous.";
 
+const COMPARISON_TOOLTIP_ESTIMATE =
+  "Linear estimate: no hourly_snapshot for this date, so we scaled the day's full daily_home_totals by (current Israel hour / 24). Treated as approximate.";
+
 const MARGIN_DELTA_TOOLTIP =
   "Margin change vs the comparison date's margin at the same Israel hour (not full-day). Shown as percentage points; value in parentheses is the past day's margin at this time of day.";
+
+const MARGIN_DELTA_TOOLTIP_ESTIMATE =
+  "Linear estimate: profit and revenue scaled equally from daily_home_totals, so the margin equals the day's full-day margin.";
+
+const ESTIMATE_BADGE_CLASSES =
+  "rounded bg-amber-400/10 px-1 py-px text-[10px] font-semibold tracking-wide text-amber-300/85";
+
+function EstimateBadge() {
+  return (
+    <span className={ESTIMATE_BADGE_CLASSES} title={COMPARISON_TOOLTIP_ESTIMATE}>
+      est
+    </span>
+  );
+}
 
 function deltaToneClasses(up: boolean, down: boolean) {
   if (up) {
@@ -240,11 +264,18 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
   }
   if (delta.kind === "flat") {
     const pb = delta.previousValue;
+    const isEstimate = delta.source === "linear_estimate";
     return (
       <ComparisonPill>
         <span
           className="font-medium tabular-nums text-white/45"
-          title={pb != null ? COMPARISON_TOOLTIP : undefined}
+          title={
+            isEstimate
+              ? COMPARISON_TOOLTIP_ESTIMATE
+              : pb != null
+                ? COMPARISON_TOOLTIP
+                : undefined
+          }
         >
           —
           {pb != null && (
@@ -254,6 +285,7 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
             </span>
           )}
         </span>
+        {isEstimate && <EstimateBadge />}
       </ComparisonPill>
     );
   }
@@ -261,6 +293,7 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
     return (
       <ComparisonPill>
         <span className="font-medium tabular-nums text-white/45">N/A</span>
+        {delta.source === "linear_estimate" && <EstimateBadge />}
       </ComparisonPill>
     );
   }
@@ -269,11 +302,12 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
   const down = pct < 0;
   const tone = deltaToneClasses(up, down);
   const pb = delta.previousValue;
+  const isEstimate = delta.source === "linear_estimate";
   return (
     <ComparisonPill>
       <span
         className={`inline-flex flex-wrap items-baseline gap-x-1 font-semibold tabular-nums ${tone.main}`}
-        title={COMPARISON_TOOLTIP}
+        title={isEstimate ? COMPARISON_TOOLTIP_ESTIMATE : COMPARISON_TOOLTIP}
       >
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
@@ -292,6 +326,7 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
           </span>
         )}
       </span>
+      {isEstimate && <EstimateBadge />}
     </ComparisonPill>
   );
 }
@@ -306,11 +341,12 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   }
   if (delta.kind === "na") {
     const pm = delta.pastMarginPct;
+    const isEstimate = delta.source === "linear_estimate";
     return (
       <ComparisonPill>
         <span
           className="inline-flex flex-wrap items-baseline gap-x-1 font-medium tabular-nums text-white/45"
-          title={MARGIN_DELTA_TOOLTIP}
+          title={isEstimate ? MARGIN_DELTA_TOOLTIP_ESTIMATE : MARGIN_DELTA_TOOLTIP}
         >
           —
           {pm != null && (
@@ -319,6 +355,7 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
             </span>
           )}
         </span>
+        {isEstimate && <EstimateBadge />}
       </ComparisonPill>
     );
   }
@@ -327,11 +364,12 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   const up = pp > 0;
   const down = pp < 0;
   const tone = deltaToneClasses(up, down);
+  const isEstimate = delta.source === "linear_estimate";
   return (
     <ComparisonPill>
       <span
         className={`inline-flex flex-wrap items-baseline gap-x-1 font-semibold tabular-nums ${tone.main}`}
-        title={MARGIN_DELTA_TOOLTIP}
+        title={isEstimate ? MARGIN_DELTA_TOOLTIP_ESTIMATE : MARGIN_DELTA_TOOLTIP}
       >
         <span className="inline-flex items-baseline gap-0.5">
           {down && <span aria-hidden>↓</span>}
@@ -342,6 +380,7 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
           (vs {formatMarginPctDisplay(pastMarginPct)})
         </span>
       </span>
+      {isEstimate && <EstimateBadge />}
     </ComparisonPill>
   );
 }

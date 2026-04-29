@@ -708,6 +708,14 @@ export type TodayHomeRow = {
   cost: number;
   profit: number;
   impressions: number;
+  /**
+   * On Pulse comparison rows only:
+   *  - "hourly"          → real cumulative from `hourly_snapshots` (apples-to-apples).
+   *  - "linear_estimate" → no snapshot for this date; computed from `daily_home_totals`
+   *                        as `total * (currentHour / 24)`. UI shows an "(est)" badge.
+   * Undefined for "today" / direct daily reads.
+   */
+  source?: "hourly" | "linear_estimate";
 };
 
 function mapDailyHomeRow(data: {
@@ -755,36 +763,90 @@ export type ComparisonData = {
 };
 
 /**
- * Apples-to-apples Pulse comparison.
+ * Apples-to-apples Pulse comparison with linear fallback.
  *
  * - **Today** = today’s `daily_home_totals` row (running cumulative — refreshed every
  *   AutoSync poll, finer than the hourly grid).
- * - **Past (1d / 7d / 28d ago)** = same-time-of-day cumulative value from
- *   `hourly_snapshots`: the snapshot row with the largest `hour <= currentHour` for
- *   that date. `hourly_snapshots.revenue/cost/profit` are stored as *cumulative
- *   day-so-far* values (written by `recordHourlySnapshot`), so picking MAX(hour)
- *   gives "past day at hour H IDT" — never SUM (that would multi-count cumulatives).
- *
- * Past returns `null` when no snapshot exists at hour ≤ currentHour for the date —
- * intentional: the UI shows "No historical data" rather than the full-day row,
- * which would over-state the comparison baseline.
+ * - **Past (1d / 7d / 28d ago)**:
+ *   1. **Primary** — `hourly_snapshots` row with the largest `hour <= currentHour`
+ *      for that date (`source: "hourly"`). `hourly_snapshots.revenue/cost/profit` are
+ *      stored as cumulative day-so-far values, so MAX(hour) gives "past day at hour H
+ *      IDT". Never SUM (would multi-count cumulatives).
+ *   2. **Fallback** — when no snapshot exists at hour ≤ currentHour for the date,
+ *      use `daily_home_totals` for that date and scale linearly:
+ *      `value = daily_total * (currentHour / 24)` (`source: "linear_estimate"`).
+ *      UI shows an "(est)" badge so users know it's proportional, not measured.
+ *   3. `null` only if both lookups miss (no hourly snapshot AND no daily row).
  */
 export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
   const todayKey = getIsraelDateDaysAgo(0);
   const pastKeys = offsets.map((o) => getIsraelDateDaysAgo(o));
+  const currentHour = getIsraelHour();
 
   const [todayRow, hourlyByDate] = await Promise.all([
     getHomeRowForDate(todayKey),
-    getCumulativeAtOrBeforeHour(pastKeys, getIsraelHour()),
+    getCumulativeAtOrBeforeHour(pastKeys, currentHour),
   ]);
+
+  // For dates missing an hourly snapshot, look up the daily row and scale linearly.
+  const missingForFallback = pastKeys.filter((d) => !hourlyByDate.has(d));
+  const dailyByDate = await getDailyHomeRows(missingForFallback);
 
   const past: Record<number, TodayHomeRow | null> = {};
   for (let i = 0; i < offsets.length; i++) {
     const o = offsets[i]!;
-    past[o] = hourlyByDate.get(pastKeys[i]!) ?? null;
+    const date = pastKeys[i]!;
+    const hourly = hourlyByDate.get(date);
+    if (hourly) {
+      past[o] = hourly;
+      continue;
+    }
+    const daily = dailyByDate.get(date);
+    past[o] = daily ? linearEstimateFromDaily(daily, currentHour) : null;
   }
 
   return { today: todayRow, past };
+}
+
+/**
+ * Scale a full-day row to "as-of currentHour" using a flat 1/24 distribution.
+ * `currentHour` is the Israel hour 0–23. At hour 0 returns zeros (UI will show N/A);
+ * at hour 23 returns ~96% of the day (matches the user-stated formula
+ * `daily * (currentHour / 24)`). Marked `source: "linear_estimate"` so the UI
+ * can show an "(est)" badge.
+ */
+function linearEstimateFromDaily(daily: TodayHomeRow, currentHour: number): TodayHomeRow {
+  const f = Math.max(0, Math.min(24, currentHour)) / 24;
+  return {
+    date: daily.date,
+    revenue: daily.revenue * f,
+    cost: daily.cost * f,
+    profit: daily.profit * f,
+    impressions: daily.impressions * f,
+    source: "linear_estimate",
+  };
+}
+
+/** Batched daily_home_totals read for the given dates. */
+async function getDailyHomeRows(dates: string[]): Promise<Map<string, TodayHomeRow>> {
+  const out = new Map<string, TodayHomeRow>();
+  if (dates.length === 0) return out;
+
+  const { data, error } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("date, revenue, cost, profit, impressions")
+    .in("date", dates);
+
+  if (error) {
+    console.warn("[getDailyHomeRows]", error.message);
+    return out;
+  }
+
+  for (const r of data ?? []) {
+    const key = String(r.date ?? "").slice(0, 10);
+    out.set(key, mapDailyHomeRow(r));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -955,6 +1017,7 @@ async function getCumulativeAtOrBeforeHour(
       cost: Number(r.cost ?? 0),
       profit: Number(r.profit ?? 0),
       impressions: Number(r.impressions ?? 0),
+      source: "hourly",
     });
   }
 
