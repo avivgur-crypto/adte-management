@@ -755,61 +755,36 @@ export type ComparisonData = {
 };
 
 /**
- * Fetches `daily_home_totals` for today (IL) and for each offset in calendar days ago.
- * Costs include service cost as stored (same as refreshTodayHome / fetchHomeForDate).
+ * Apples-to-apples Pulse comparison.
  *
- * **Today vs yesterday (1d):** `today.date === getIsraelDateDaysAgo(0)` and
- * `past[1]?.date === getIsraelDateDaysAgo(1)`. Yesterday’s revenue for the pulse UI is
- * `past[1]?.revenue` — that row’s `revenue` column from `daily_home_totals` for
- * `date = getIsraelDateDaysAgo(1)` (no pacing; full stored day).
+ * - **Today** = today’s `daily_home_totals` row (running cumulative — refreshed every
+ *   AutoSync poll, finer than the hourly grid).
+ * - **Past (1d / 7d / 28d ago)** = same-time-of-day cumulative value from
+ *   `hourly_snapshots`: the snapshot row with the largest `hour <= currentHour` for
+ *   that date. `hourly_snapshots.revenue/cost/profit` are stored as *cumulative
+ *   day-so-far* values (written by `recordHourlySnapshot`), so picking MAX(hour)
+ *   gives "past day at hour H IDT" — never SUM (that would multi-count cumulatives).
+ *
+ * Past returns `null` when no snapshot exists at hour ≤ currentHour for the date —
+ * intentional: the UI shows "No historical data" rather than the full-day row,
+ * which would over-state the comparison baseline.
  */
 export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
   const todayKey = getIsraelDateDaysAgo(0);
   const pastKeys = offsets.map((o) => getIsraelDateDaysAgo(o));
-  const uniqueDates = Array.from(new Set([todayKey, ...pastKeys]));
 
-  const { data: rows, error } = await supabaseAdmin
-    .from("daily_home_totals")
-    .select("date, revenue, cost, profit, impressions")
-    .in("date", uniqueDates);
-
-  if (error) {
-    console.error("[getComparisonData]", error.message);
-    return {
-      today: null,
-      past: Object.fromEntries(offsets.map((o) => [o, null])) as Record<
-        number,
-        TodayHomeRow | null
-      >,
-    };
-  }
-
-  const byDate = new Map<string, TodayHomeRow>();
-  for (const r of rows ?? []) {
-    const key = String(r.date ?? "").slice(0, 10);
-    byDate.set(key, mapDailyHomeRow(r));
-  }
-
-  // Same-time comparison for ALL offsets: try the hourly snapshot at the
-  // current Israel hour for each comparison date.  Each lookup is a primary-key
-  // hit (date, hour) so the batch is cheap.  Falls back to the full-day row
-  // when no snapshot exists yet (first 24 h of collection, or gaps).
-  const snapshotDates = offsets.map((o) => getIsraelDateDaysAgo(o));
-  const snapshots = await Promise.all(
-    snapshotDates.map((d) => getHourlyBaselineForDate(d)),
-  );
+  const [todayRow, hourlyByDate] = await Promise.all([
+    getHomeRowForDate(todayKey),
+    getCumulativeAtOrBeforeHour(pastKeys, getIsraelHour()),
+  ]);
 
   const past: Record<number, TodayHomeRow | null> = {};
   for (let i = 0; i < offsets.length; i++) {
     const o = offsets[i]!;
-    const fullDay = byDate.get(snapshotDates[i]!) ?? null;
-    past[o] = snapshots[i] ?? fullDay;
+    past[o] = hourlyByDate.get(pastKeys[i]!) ?? null;
   }
 
-  return {
-    today: byDate.get(todayKey) ?? null,
-    past,
-  };
+  return { today: todayRow, past };
 }
 
 // ---------------------------------------------------------------------------
@@ -934,37 +909,56 @@ async function recordHourlySnapshot(
 }
 
 /**
- * Same-time-of-day baseline for comparison.
+ * Time-of-day baselines for several past dates in a single round-trip.
  *
- * Tries to find yesterday's snapshot at the **current** Israel hour.
- * If a snapshot exists, it returns that partial-day row so the Pulse % reflects
- * "today at 14:00 vs yesterday at 14:00."
+ * `hourly_snapshots.revenue/cost/profit` are *cumulative* day-so-far values
+ * (written by `recordHourlySnapshot` from the running `daily_home_totals`),
+ * not per-hour deltas. The correct apples-to-apples baseline is therefore
+ * "the snapshot row with the largest `hour <= currentHour`" — equal to
+ * "cumulative revenue from 00:00 IDT through that hour". SUM would
+ * multi-count cumulative totals and is wrong.
  *
- * **CRITICAL fallback:** when no snapshot is found (first 24 h, gaps, etc.),
- * returns `null` so the caller uses the existing full-day baseline — the UI
- * never breaks.
+ * Returns a `Map<date, TodayHomeRow>` containing only dates that actually
+ * have at least one snapshot at hour ≤ currentHour. Dates without a
+ * snapshot are intentionally absent (caller treats them as "no historical
+ * data" rather than falling back to the full-day row).
  */
-async function getHourlyBaselineForDate(isoDate: string): Promise<TodayHomeRow | null> {
-  const hour = getIsraelHour();
+async function getCumulativeAtOrBeforeHour(
+  dates: string[],
+  currentHour: number,
+): Promise<Map<string, TodayHomeRow>> {
+  const out = new Map<string, TodayHomeRow>();
+  if (dates.length === 0 || currentHour < 0) return out;
+
   const { data, error } = await supabaseAdmin
     .from("hourly_snapshots")
-    .select("date, revenue, cost, profit, impressions")
-    .eq("date", isoDate)
-    .eq("hour", hour)
-    .maybeSingle();
+    .select("date, hour, revenue, cost, profit, impressions")
+    .in("date", dates)
+    .lte("hour", currentHour);
 
   if (error) {
-    console.warn("[getHourlyBaselineForDate]", isoDate, `h${hour}`, error.message);
-    return null;
+    console.warn("[getCumulativeAtOrBeforeHour]", error.message);
+    return out;
   }
-  if (!data) return null;
-  return {
-    date: String(data.date),
-    revenue: Number(data.revenue ?? 0),
-    cost: Number(data.cost ?? 0),
-    profit: Number(data.profit ?? 0),
-    impressions: Number(data.impressions ?? 0),
-  };
+
+  const bestHour = new Map<string, number>();
+  for (const r of data ?? []) {
+    const key = String(r.date ?? "").slice(0, 10);
+    const h = Number(r.hour ?? -1);
+    if (!Number.isFinite(h) || h < 0) continue;
+    const prev = bestHour.get(key);
+    if (prev != null && h <= prev) continue;
+    bestHour.set(key, h);
+    out.set(key, {
+      date: key,
+      revenue: Number(r.revenue ?? 0),
+      cost: Number(r.cost ?? 0),
+      profit: Number(r.profit ?? 0),
+      impressions: Number(r.impressions ?? 0),
+    });
+  }
+
+  return out;
 }
 
 /** Calendar yesterday in Asia/Jerusalem as YYYY-MM-DD */

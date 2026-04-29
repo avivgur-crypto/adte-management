@@ -66,7 +66,7 @@ type DeltaKind = "none" | "no_hist" | "na" | "flat" | "pct";
 type DeltaResult = {
   kind: DeltaKind;
   pct?: number;
-  /** Full-day value from `daily_home_totals` for the comparison date (the “previous” in % change). */
+  /** Same-time-of-day cumulative value for the comparison date (largest `hour <= currentHour` from `hourly_snapshots`). */
   previousValue?: number;
 };
 
@@ -76,8 +76,8 @@ type MarginDeltaResult =
   | { kind: "pp"; pp: number; pastMarginPct: number };
 
 /**
- * Period-over-period change vs the full-day row for the comparison date in Israel time.
- * % = ((current − previous) / previous) × 100 — same basis as XDASH “vs yesterday”.
+ * Period-over-period change vs the same-time-of-day cumulative value on the
+ * comparison date (Israel time). % = ((current − previous) / previous) × 100.
  */
 function computeDelta(
   today: number,
@@ -101,7 +101,8 @@ function computeDelta(
 }
 
 /**
- * Margin vs same calendar day in the past: full-day margins (no pacing).
+ * Margin vs the comparison date at the same Israel hour. Both sides use the
+ * cumulative day-so-far values, so margins are computed at matched timepoints.
  * Delta = percentage points (today margin − past margin).
  */
 function computeMarginDelta(
@@ -129,10 +130,10 @@ function computeMarginDelta(
 }
 
 const COMPARISON_TOOLTIP =
-  "Previous period: full-day value from daily_home_totals for the comparison date (Israel calendar). % change = (current − previous) ÷ previous.";
+  "Apples-to-apples: today's running cumulative vs the comparison date's cumulative at the same Israel hour (largest hour ≤ now from hourly_snapshots). % change = (current − previous) ÷ previous.";
 
 const MARGIN_DELTA_TOOLTIP =
-  "Margin change vs that day’s full-day margin (not paced). Shown as percentage points. Value in parentheses is that day’s full-day profit margin.";
+  "Margin change vs the comparison date's margin at the same Israel hour (not full-day). Shown as percentage points; value in parentheses is the past day's margin at this time of day.";
 
 function deltaToneClasses(up: boolean, down: boolean) {
   if (up) {
