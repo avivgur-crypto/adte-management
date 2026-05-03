@@ -710,12 +710,27 @@ export type TodayHomeRow = {
   impressions: number;
   /**
    * On Pulse comparison rows only:
-   *  - "hourly"          → real cumulative from `hourly_snapshots` (apples-to-apples).
-   *  - "linear_estimate" → no snapshot for this date; computed from `daily_home_totals`
-   *                        as `total * (currentHour / 24)`. UI shows an "(est)" badge.
+   *  - "hourly"          → real cumulative from `hourly_snapshots` within the
+   *                        drift window of `currentHour` (apples-to-apples).
+   *  - "linear_estimate" → no usable hourly snapshot for this date; computed from
+   *                        `daily_home_totals` as `total * (currentHour / 24)`.
+   *                        UI shows an asterisk so users know it's proportional.
    * Undefined for "today" / direct daily reads.
    */
   source?: "hourly" | "linear_estimate";
+  /**
+   * Convenience boolean mirroring `source`. `true` iff the row was produced by the
+   * linear-estimate fallback (i.e. no exact-enough hourly snapshot existed for the
+   * date). UI uses this directly to gate the asterisk so the rendering predicate
+   * stays a single boolean.
+   */
+  isEstimate?: boolean;
+  /**
+   * For `source: "hourly"` rows: the actual snapshot hour (0–23 IDT) that was
+   * matched. Useful for diagnostics and for future tooltips showing "as-of HH:00".
+   * Absent on linear-estimate rows.
+   */
+  matchedHour?: number;
 };
 
 function mapDailyHomeRow(data: {
@@ -763,20 +778,34 @@ export type ComparisonData = {
 };
 
 /**
- * Apples-to-apples Pulse comparison with linear fallback.
+ * Maximum allowed gap (in hours) between `currentHour` and a yesterday/N-day-ago
+ * `hourly_snapshots.hour` for that snapshot to count as "exact". A 2-hour grace
+ * absorbs the AutoSync 5-minute cadence and an occasional missed cron without
+ * letting genuinely stale snapshots (e.g. yesterday h6 vs today h14) masquerade
+ * as apples-to-apples. When the gap exceeds this, we fall through to the linear
+ * estimate, which is closer to a fair comparison.
+ */
+const MAX_HOUR_DRIFT_FOR_EXACT = 2;
+
+/**
+ * Apples-to-apples Pulse comparison: exact hourly first, proportional fallback second.
  *
- * - **Today** = today’s `daily_home_totals` row (running cumulative — refreshed every
+ * - **Today** = today's `daily_home_totals` row (running cumulative — refreshed every
  *   AutoSync poll, finer than the hourly grid).
  * - **Past (1d / 7d / 28d ago)**:
- *   1. **Primary** — `hourly_snapshots` row with the largest `hour <= currentHour`
- *      for that date (`source: "hourly"`). `hourly_snapshots.revenue/cost/profit` are
- *      stored as cumulative day-so-far values, so MAX(hour) gives "past day at hour H
- *      IDT". Never SUM (would multi-count cumulatives).
- *   2. **Fallback** — when no snapshot exists at hour ≤ currentHour for the date,
- *      use `daily_home_totals` for that date and scale linearly:
- *      `value = daily_total * (currentHour / 24)` (`source: "linear_estimate"`).
- *      UI shows an "(est)" badge so users know it's proportional, not measured.
- *   3. `null` only if both lookups miss (no hourly snapshot AND no daily row).
+ *   1. **Exact (primary)** — `hourly_snapshots` row with the largest
+ *      `hour <= currentHour`, *and* whose `(currentHour - hour)` ≤
+ *      `MAX_HOUR_DRIFT_FOR_EXACT`. Tagged `source: "hourly", isEstimate: false`.
+ *      Snapshots are cumulative day-so-far values, so MAX(hour) gives the past
+ *      day's running cumulative at that IDT hour.
+ *   2. **Estimate (fallback)** — when no snapshot is fresh enough (or none
+ *      exists), fetch `daily_home_totals` for the date and scale linearly:
+ *      `value = daily_total * (currentHour / 24)`. Tagged
+ *      `source: "linear_estimate", isEstimate: true`. UI shows an asterisk.
+ *   3. `null` only when both lookups miss (no fresh hourly AND no daily row).
+ *
+ * All hour/date arithmetic is in Asia/Jerusalem so it lines up with the IDT
+ * `hour` written by `recordHourlySnapshot`.
  */
 export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
   const todayKey = getIsraelDateDaysAgo(0);
@@ -785,25 +814,37 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
 
   const [todayRow, hourlyByDate] = await Promise.all([
     getHomeRowForDate(todayKey),
-    getCumulativeAtOrBeforeHour(pastKeys, currentHour),
+    getCumulativeAtOrBeforeHour(pastKeys, currentHour, MAX_HOUR_DRIFT_FOR_EXACT),
   ]);
 
-  // For dates missing an hourly snapshot, look up the daily row and scale linearly.
+  // For dates without a fresh-enough hourly snapshot, scale the daily total linearly.
   const missingForFallback = pastKeys.filter((d) => !hourlyByDate.has(d));
   const dailyByDate = await getDailyHomeRows(missingForFallback);
 
   const past: Record<number, TodayHomeRow | null> = {};
+  const auditEntries: string[] = [];
   for (let i = 0; i < offsets.length; i++) {
     const o = offsets[i]!;
     const date = pastKeys[i]!;
     const hourly = hourlyByDate.get(date);
     if (hourly) {
       past[o] = hourly;
+      auditEntries.push(`${o}d=${date} h${hourly.matchedHour ?? "?"} (exact)`);
       continue;
     }
     const daily = dailyByDate.get(date);
-    past[o] = daily ? linearEstimateFromDaily(daily, currentHour) : null;
+    if (daily) {
+      past[o] = linearEstimateFromDaily(daily, currentHour);
+      auditEntries.push(`${o}d=${date} (estimate, daily×${currentHour}/24)`);
+    } else {
+      past[o] = null;
+      auditEntries.push(`${o}d=${date} (no data)`);
+    }
   }
+
+  console.log(
+    `[getComparisonData] today=${todayKey} h${currentHour} IDT, drift≤${MAX_HOUR_DRIFT_FOR_EXACT}h | ${auditEntries.join(" | ")}`,
+  );
 
   return { today: todayRow, past };
 }
@@ -812,8 +853,8 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
  * Scale a full-day row to "as-of currentHour" using a flat 1/24 distribution.
  * `currentHour` is the Israel hour 0–23. At hour 0 returns zeros (UI will show N/A);
  * at hour 23 returns ~96% of the day (matches the user-stated formula
- * `daily * (currentHour / 24)`). Marked `source: "linear_estimate"` so the UI
- * can show an "(est)" badge.
+ * `daily * (currentHour / 24)`). Marked `source: "linear_estimate", isEstimate: true`
+ * so the UI shows the asterisk + footnote.
  */
 function linearEstimateFromDaily(daily: TodayHomeRow, currentHour: number): TodayHomeRow {
   const f = Math.max(0, Math.min(24, currentHour)) / 24;
@@ -824,6 +865,7 @@ function linearEstimateFromDaily(daily: TodayHomeRow, currentHour: number): Toda
     profit: daily.profit * f,
     impressions: daily.impressions * f,
     source: "linear_estimate",
+    isEstimate: true,
   };
 }
 
@@ -980,23 +1022,30 @@ async function recordHourlySnapshot(
  * "cumulative revenue from 00:00 IDT through that hour". SUM would
  * multi-count cumulative totals and is wrong.
  *
- * Returns a `Map<date, TodayHomeRow>` containing only dates that actually
- * have at least one snapshot at hour ≤ currentHour. Dates without a
- * snapshot are intentionally absent (caller treats them as "no historical
- * data" rather than falling back to the full-day row).
+ * Drift gate: a row only qualifies as exact when `currentHour - matchedHour`
+ * ≤ `maxDriftHours`. Older snapshots are dropped here so the caller falls
+ * through to the linear-estimate fallback (which, when the gap is large, is
+ * a more honest baseline than yesterday's stale early-morning cumulative).
+ *
+ * Returns a `Map<date, TodayHomeRow>` containing only dates with a fresh-
+ * enough snapshot. Each row is tagged `source: "hourly", isEstimate: false`
+ * and carries the matched hour for diagnostics.
  */
 async function getCumulativeAtOrBeforeHour(
   dates: string[],
   currentHour: number,
+  maxDriftHours: number,
 ): Promise<Map<string, TodayHomeRow>> {
   const out = new Map<string, TodayHomeRow>();
   if (dates.length === 0 || currentHour < 0) return out;
 
+  const minHour = Math.max(0, currentHour - maxDriftHours);
   const { data, error } = await supabaseAdmin
     .from("hourly_snapshots")
     .select("date, hour, revenue, cost, profit, impressions")
     .in("date", dates)
-    .lte("hour", currentHour);
+    .lte("hour", currentHour)
+    .gte("hour", minHour);
 
   if (error) {
     console.warn("[getCumulativeAtOrBeforeHour]", error.message);
@@ -1018,6 +1067,8 @@ async function getCumulativeAtOrBeforeHour(
       profit: Number(r.profit ?? 0),
       impressions: Number(r.impressions ?? 0),
       source: "hourly",
+      isEstimate: false,
+      matchedHour: h,
     });
   }
 

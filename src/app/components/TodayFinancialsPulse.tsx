@@ -68,14 +68,17 @@ type DeltaResult = {
   pct?: number;
   /** Same-time-of-day cumulative value for the comparison date. */
   previousValue?: number;
-  /** "hourly" = real cumulative snapshot; "linear_estimate" = daily × (currentHour/24). */
-  source?: "hourly" | "linear_estimate";
+  /**
+   * `true` iff the past row used the linear-estimate fallback (no fresh-enough
+   * hourly snapshot existed). Drives the asterisk in the UI.
+   */
+  isEstimate?: boolean;
 };
 
 type MarginDeltaResult =
   | { kind: "no_hist" }
-  | { kind: "na"; pastMarginPct?: number; source?: "hourly" | "linear_estimate" }
-  | { kind: "pp"; pp: number; pastMarginPct: number; source?: "hourly" | "linear_estimate" };
+  | { kind: "na"; pastMarginPct?: number; isEstimate?: boolean }
+  | { kind: "pp"; pp: number; pastMarginPct: number; isEstimate?: boolean };
 
 /**
  * Period-over-period change vs the same-time-of-day cumulative value on the
@@ -88,20 +91,20 @@ function computeDelta(
 ): DeltaResult {
   if (!pastRow) return { kind: "no_hist" };
   const past = pick(pastRow);
-  const source = pastRow.source;
+  const isEstimate = pastRow.isEstimate ?? pastRow.source === "linear_estimate";
 
   if (today === 0) {
     return {
       kind: "flat",
       previousValue: past !== 0 ? past : undefined,
-      source,
+      isEstimate,
     };
   }
 
-  if (past === 0) return { kind: "na", source };
+  if (past === 0) return { kind: "na", isEstimate };
 
   const pct = ((today - past) / past) * 100;
-  return { kind: "pct", pct, previousValue: past, source };
+  return { kind: "pct", pct, previousValue: past, isEstimate };
 }
 
 /**
@@ -115,17 +118,17 @@ function computeMarginDelta(
   pastRow: TodayHomeRow | null,
 ): MarginDeltaResult {
   if (!pastRow) return { kind: "no_hist" };
-  const source = pastRow.source;
+  const isEstimate = pastRow.isEstimate ?? pastRow.source === "linear_estimate";
 
   if (todayRev === 0) {
     const pastMarginPct =
       pastRow.revenue !== 0
         ? (pastRow.profit / pastRow.revenue) * 100
         : undefined;
-    return { kind: "na", pastMarginPct, source };
+    return { kind: "na", pastMarginPct, isEstimate };
   }
   if (pastRow.revenue === 0) {
-    return { kind: "na", source };
+    return { kind: "na", isEstimate };
   }
 
   // For linear_estimate rows, profit and revenue are scaled by the same factor,
@@ -133,7 +136,7 @@ function computeMarginDelta(
   const pastMarginPct = (pastRow.profit / pastRow.revenue) * 100;
   const todayMargin = (todayProfit / todayRev) * 100;
   const pp = todayMargin - pastMarginPct;
-  return { kind: "pp", pp, pastMarginPct, source };
+  return { kind: "pp", pp, pastMarginPct, isEstimate };
 }
 
 const COMPARISON_TOOLTIP =
@@ -266,7 +269,6 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
   }
   if (delta.kind === "flat") {
     const pb = delta.previousValue;
-    const isEstimate = delta.source === "linear_estimate";
     return (
       <ComparisonPill>
         <span
@@ -274,7 +276,7 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
           title={pb != null ? COMPARISON_TOOLTIP : undefined}
         >
           —
-          {isEstimate && <EstimateAsterisk />}
+          {delta.isEstimate && <EstimateAsterisk />}
           {pb != null && (
             <span className="text-[11px] font-normal text-white/40">
               {" "}
@@ -289,7 +291,7 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
     return (
       <ComparisonPill>
         <span className="font-medium tabular-nums text-white/45">
-          N/A{delta.source === "linear_estimate" && <EstimateAsterisk />}
+          N/A{delta.isEstimate && <EstimateAsterisk />}
         </span>
       </ComparisonPill>
     );
@@ -299,7 +301,6 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
   const down = pct < 0;
   const tone = deltaToneClasses(up, down);
   const pb = delta.previousValue;
-  const isEstimate = delta.source === "linear_estimate";
   return (
     <ComparisonPill>
       <span
@@ -310,7 +311,7 @@ function DeltaSubline({ delta }: { delta: DeltaResult }) {
           {down && <span aria-hidden>↓</span>}
           {up && <span aria-hidden>↑</span>}
           <AnimatedNumberText value={pct} format={fmtDeltaPct} className="inline" />
-          {isEstimate && <EstimateAsterisk />}
+          {delta.isEstimate && <EstimateAsterisk />}
         </span>
         {pb != null && (
           <span className={`text-[11px] font-medium tabular-nums ${tone.muted}`}>
@@ -338,7 +339,6 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   }
   if (delta.kind === "na") {
     const pm = delta.pastMarginPct;
-    const isEstimate = delta.source === "linear_estimate";
     return (
       <ComparisonPill>
         <span
@@ -346,7 +346,7 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
           title={MARGIN_DELTA_TOOLTIP}
         >
           —
-          {isEstimate && <EstimateAsterisk />}
+          {delta.isEstimate && <EstimateAsterisk />}
           {pm != null && (
             <span className="text-[11px] font-medium tabular-nums text-white/40">
               (vs {formatMarginPctDisplay(pm)})
@@ -361,7 +361,6 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
   const up = pp > 0;
   const down = pp < 0;
   const tone = deltaToneClasses(up, down);
-  const isEstimate = delta.source === "linear_estimate";
   return (
     <ComparisonPill>
       <span
@@ -372,7 +371,7 @@ function MarginDeltaSubline({ delta }: { delta: MarginDeltaResult }) {
           {down && <span aria-hidden>↓</span>}
           {up && <span aria-hidden>↑</span>}
           <AnimatedNumberText value={pp} format={fmtMarginPp} className="inline" />
-          {isEstimate && <EstimateAsterisk />}
+          {delta.isEstimate && <EstimateAsterisk />}
         </span>
         <span className={`text-[11px] font-medium tabular-nums ${tone.muted}`}>
           (vs {formatMarginPctDisplay(pastMarginPct)})
@@ -424,7 +423,7 @@ export default function TodayFinancialsPulse({
       <DailyProfitGoalRing profit={profit} dailyTarget={dailyTarget} />
     ) : null;
 
-  const hasEstimate = pastRow?.source === "linear_estimate";
+  const hasEstimate = pastRow?.isEstimate ?? pastRow?.source === "linear_estimate";
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[var(--adte-funnel-bg)] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] sm:p-6">
