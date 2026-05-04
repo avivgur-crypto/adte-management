@@ -8,12 +8,12 @@ import {
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
+import { flushSync } from "react-dom";
 import type { PnlEntity, PnlSnapshot } from "@/app/actions/pnl";
 import { useFilter } from "@/app/context/FilterContext";
 import {
-  getCachedPnlSnapshot,
+  getCachedPnlSnapshotAsync,
   getPnlSnapshotFromClientCache,
   getPnlViewState,
   prefetchOtherEntitiesForMonths,
@@ -23,6 +23,7 @@ import {
   setPnlViewState,
   snapshotsEqual,
 } from "@/lib/pnl-client-cache";
+import { readPnlLayoutMetrics } from "@/lib/pnl-layout-metrics";
 import PnlView from "./PnlView";
 
 const MONTH_NAMES = [
@@ -80,7 +81,6 @@ function PnlTabClient() {
   }, []);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(snapshot == null);
-  const [, startTransition] = useTransition();
   const requestIdRef = useRef(0);
   const filterChangeAtRef = useRef<number | null>(null);
   const snapshotRef = useRef<PnlSnapshot | null>(snapshot);
@@ -111,6 +111,8 @@ function PnlTabClient() {
   useEffect(() => {
     let cancelled = false;
     const myRequestId = ++requestIdRef.current;
+    let startTimer: ReturnType<typeof setTimeout> | undefined;
+    let debounce: ReturnType<typeof setTimeout> | undefined;
 
     if (deferredKeys.length === 0) {
       Promise.resolve().then(() => {
@@ -124,11 +126,17 @@ function PnlTabClient() {
       };
     }
 
-    const cacheKey = `${entity}|${monthsKey}`;
-    const cached = getCachedPnlSnapshot(deferredKeys, entity);
-    if (cached) {
-      Promise.resolve().then(() => {
-        if (cancelled || myRequestId !== requestIdRef.current) return;
+    void (async () => {
+      let cached: PnlSnapshot | null = null;
+      try {
+        cached = await getCachedPnlSnapshotAsync(deferredKeys, entity);
+      } catch {
+        cached = null;
+      }
+      if (cancelled || myRequestId !== requestIdRef.current) return;
+
+      if (cached) {
+        const cacheKey = `${entity}|${monthsKey}`;
         setSnapshot(cached);
         setLoadError(null);
         setLoading(false);
@@ -140,88 +148,85 @@ function PnlTabClient() {
           );
           filterChangeAtRef.current = null;
         }
-      });
 
-      void revalidatePnlSnapshot(deferredKeys, entity)
-        .then((fresh) => {
-          if (cancelled || myRequestId !== requestIdRef.current) return;
-          setSnapshot(fresh);
-        })
-        .catch(() => {
-          // Cached data is already on screen; silent revalidation failures should not interrupt the user.
-        });
-
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const startTimer = setTimeout(() => {
-      if (cancelled || myRequestId !== requestIdRef.current) return;
-      setLoading(true);
-      if (PNL_DEBUG && filterChangeAtRef.current != null) {
-        console.log(
-          `[pnl-client] stale overlay shown after=${(
-            performance.now() - filterChangeAtRef.current
-          ).toFixed(1)}ms`,
-        );
-      }
-    }, 0);
-
-    const debounce = setTimeout(async () => {
-      if (cancelled || myRequestId !== requestIdRef.current) return;
-      const requestStart = PNL_DEBUG ? performance.now() : 0;
-      const isFirstVisibleLoad = snapshotRef.current == null;
-      const initialKeys =
-        isFirstVisibleLoad && deferredKeys.length > 1
-          ? [primaryInitialMonth(deferredKeys)]
-          : deferredKeys;
-      const initialRes = await getPnlSnapshotFromClientCache(initialKeys, entity)
-        .then((data) => ({ ok: true as const, data }))
-        .catch((error: unknown) => ({
-          ok: false as const,
-          error: error instanceof Error ? error.message : "Could not load P&L.",
-        }));
-      if (cancelled || myRequestId !== requestIdRef.current) return;
-      if (initialRes.ok) {
-        setLoadError(null);
-        setSnapshot(initialRes.data);
-      } else {
-        setLoadError(initialRes.error);
-        setLoading(false);
-        return;
-      }
-      if (PNL_DEBUG) {
-        const networkMs = performance.now() - requestStart;
-        const totalMs =
-          filterChangeAtRef.current != null
-            ? performance.now() - filterChangeAtRef.current
-            : networkMs;
-        console.log(
-          `[pnl-client] fetch initial "${entity}|${initialKeys.join("|")}" network=${networkMs.toFixed(1)}ms total=${totalMs.toFixed(1)}ms`,
-        );
-        filterChangeAtRef.current = null;
-      }
-
-      if (initialKeys.length === deferredKeys.length) {
-        setLoading(false);
-        return;
-      }
-
-      setTimeout(() => {
-        void getPnlSnapshotFromClientCache(deferredKeys, entity)
-          .then((full) => {
+        void revalidatePnlSnapshot(deferredKeys, entity)
+          .then((fresh) => {
             if (cancelled || myRequestId !== requestIdRef.current) return;
-            setSnapshot(full);
-            setLoading(false);
+            setSnapshot(fresh);
           })
-          .catch((error: unknown) => {
-            if (cancelled || myRequestId !== requestIdRef.current) return;
-            setLoadError(error instanceof Error ? error.message : "Could not load full P&L range.");
-            setLoading(false);
+          .catch(() => {
+            // Cached data is already on screen; silent revalidation failures should not interrupt the user.
           });
+        return;
+      }
+
+      startTimer = setTimeout(() => {
+        if (cancelled || myRequestId !== requestIdRef.current) return;
+        setLoading(true);
+        if (PNL_DEBUG && filterChangeAtRef.current != null) {
+          console.log(
+            `[pnl-client] stale overlay shown after=${(
+              performance.now() - filterChangeAtRef.current
+            ).toFixed(1)}ms`,
+          );
+        }
       }, 0);
-    }, FETCH_DEBOUNCE_MS);
+
+      debounce = setTimeout(async () => {
+        if (cancelled || myRequestId !== requestIdRef.current) return;
+        const requestStart = PNL_DEBUG ? performance.now() : 0;
+        const isFirstVisibleLoad = snapshotRef.current == null;
+        const initialKeys =
+          isFirstVisibleLoad && deferredKeys.length > 1
+            ? [primaryInitialMonth(deferredKeys)]
+            : deferredKeys;
+        const initialRes = await getPnlSnapshotFromClientCache(initialKeys, entity)
+          .then((data) => ({ ok: true as const, data }))
+          .catch((error: unknown) => ({
+            ok: false as const,
+            error: error instanceof Error ? error.message : "Could not load P&L.",
+          }));
+        if (cancelled || myRequestId !== requestIdRef.current) return;
+        if (initialRes.ok) {
+          setLoadError(null);
+          setSnapshot(initialRes.data);
+        } else {
+          setLoadError(initialRes.error);
+          setLoading(false);
+          return;
+        }
+        if (PNL_DEBUG) {
+          const networkMs = performance.now() - requestStart;
+          const totalMs =
+            filterChangeAtRef.current != null
+              ? performance.now() - filterChangeAtRef.current
+              : networkMs;
+          console.log(
+            `[pnl-client] fetch initial "${entity}|${initialKeys.join("|")}" network=${networkMs.toFixed(1)}ms total=${totalMs.toFixed(1)}ms`,
+          );
+          filterChangeAtRef.current = null;
+        }
+
+        if (initialKeys.length === deferredKeys.length) {
+          setLoading(false);
+          return;
+        }
+
+        setTimeout(() => {
+          void getPnlSnapshotFromClientCache(deferredKeys, entity)
+            .then((full) => {
+              if (cancelled || myRequestId !== requestIdRef.current) return;
+              setSnapshot(full);
+              setLoading(false);
+            })
+            .catch((error: unknown) => {
+              if (cancelled || myRequestId !== requestIdRef.current) return;
+              setLoadError(error instanceof Error ? error.message : "Could not load full P&L range.");
+              setLoading(false);
+            });
+        }, 0);
+      }, FETCH_DEBOUNCE_MS);
+    })();
 
     return () => {
       cancelled = true;
@@ -236,19 +241,14 @@ function PnlTabClient() {
   const handleEntityChange = useCallback(
     (nextEntity: PnlEntity) => {
       if (nextEntity === entity) return;
-      const cached = getCachedPnlSnapshot(deferredKeys, nextEntity);
-      if (cached) {
-        startTransition(() => {
-          setEntity(nextEntity);
-          setSnapshot(cached);
-          setLoading(false);
-        });
-        return;
-      }
-      setLoading(true);
-      startTransition(() => setEntity(nextEntity));
+      flushSync(() => {
+        setEntity(nextEntity);
+        if (snapshotRef.current?.entity !== nextEntity) {
+          setLoading(true);
+        }
+      });
     },
-    [deferredKeys, entity, setSnapshot, startTransition],
+    [entity],
   );
   const handleEntityIntent = useCallback(
     (nextEntity: PnlEntity) => {
@@ -257,6 +257,8 @@ function PnlTabClient() {
     },
     [deferredKeys, entity],
   );
+
+  const layoutSkeletonHint = useMemo(() => readPnlLayoutMetrics(entity), [entity]);
 
   if (deferredKeys.length === 0 && selectedKeys.length === 0) {
     return (
@@ -276,6 +278,7 @@ function PnlTabClient() {
       <PnlView
         snapshot={snapshot}
         entity={entity}
+        layoutSkeletonHint={layoutSkeletonHint}
         onEntityChange={handleEntityChange}
         onEntityIntent={handleEntityIntent}
         monthLabel={monthLabel}

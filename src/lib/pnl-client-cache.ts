@@ -7,6 +7,7 @@ import {
   type PnlSnapshot,
   type PnlSummary,
 } from "@/app/actions/pnl";
+import { aggregateSnapshotsOffMainThread } from "@/lib/pnl-aggregate-worker-client";
 
 const CACHE_LIMIT = 48;
 const STORAGE_KEY = "adte:pnl-month-cache:v1";
@@ -129,113 +130,12 @@ function readResolved(key: string): PnlSnapshot | undefined {
   return hit;
 }
 
-function isMarginLabel(label: string): boolean {
-  const lower = label.toLowerCase();
-  return lower.includes("margin") || lower.includes("%");
-}
-
-function toPnlRow(row: { category: string; label: string; amount: number }): PnlRow {
-  return { category: row.category, label: row.label, amount: row.amount, prevAmount: null, momPercent: null };
-}
-
-function ensureSumRow(
-  rows: Map<string, { category: string; label: string; amount: number }>,
-  category: string,
-  label: string,
-  sourceLabels: string[],
-): void {
-  const sum = sourceLabels.reduce((total, sourceLabel) => total + (rows.get(sourceLabel)?.amount ?? 0), 0);
-  const existing = rows.get(label);
-  if (!existing && sum !== 0) {
-    rows.set(label, { category, label, amount: sum });
-    return;
-  }
-  if (existing && existing.amount === 0 && sum !== 0) {
-    rows.set(label, { ...existing, amount: sum });
-  }
-}
-
-function setDerivedMargin(
-  rows: Map<string, { category: string; label: string; amount: number }>,
-  label: string,
-  numeratorLabel: string,
-): void {
-  const revenue = rows.get("Total Revenue")?.amount ?? 0;
-  const numerator = rows.get(numeratorLabel)?.amount ?? 0;
-  if (revenue === 0) return;
-  const category = label === "G. Margin" ? "Gross Profit" : "Operating Profit";
-  rows.set(label, { category, label, amount: (numerator / revenue) * 100 });
-}
-
-function buildSummary(rows: Map<string, { category: string; label: string; amount: number }>): PnlSummary {
-  const totalRevenue = rows.get("Total Revenue") ?? { category: "Revenue", label: "Total Revenue", amount: 0 };
-  const totalCogs = rows.get("Total COGS") ?? { category: "COGS", label: "Total COGS", amount: 0 };
-  const grossProfit =
-    rows.get("Gross Profit") ??
-    { category: "Gross Profit", label: "Gross Profit", amount: totalRevenue.amount - totalCogs.amount };
-  const totalOpex =
-    rows.get("Total OPEX") ??
-    {
-      category: "OPEX",
-      label: "Total OPEX",
-      amount: [...rows.values()]
-        .filter((row) => row.category === "OPEX" || row.category.startsWith("OPEX -"))
-        .reduce((sum, row) => sum + row.amount, 0),
-    };
-  const ebitda =
-    rows.get("Operating Profit (EBITDA)") ??
-    {
-      category: "Operating Profit",
-      label: "Operating Profit (EBITDA)",
-      amount: grossProfit.amount - totalOpex.amount,
-    };
-
-  return {
-    totalRevenue: toPnlRow(totalRevenue),
-    totalCogs: toPnlRow(totalCogs),
-    grossProfit: toPnlRow(grossProfit),
-    totalOpex: toPnlRow(totalOpex),
-    ebitda: toPnlRow(ebitda),
-  };
-}
-
-function aggregateSnapshots(months: string[], entity: PnlEntity, snapshots: PnlSnapshot[]): PnlSnapshot {
-  const rows = new Map<string, { category: string; label: string; amount: number }>();
-
-  for (const snapshot of snapshots) {
-    for (const row of snapshot.rows) {
-      if (isMarginLabel(row.label)) continue;
-      const amount = Number.isFinite(row.amount) ? row.amount : 0;
-      const existing = rows.get(row.label);
-      if (existing) {
-        existing.amount += amount;
-      } else {
-        rows.set(row.label, { category: row.category, label: row.label, amount });
-      }
-    }
-  }
-
-  ensureSumRow(rows, "Revenue", "Total Revenue", ["Media Revenue", "SAAS Revenue", "Revenue"]);
-  ensureSumRow(rows, "COGS", "Total COGS", ["Media Costs", "Adash Costs", "SaaS Costs"]);
-  setDerivedMargin(rows, "G. Margin", "Gross Profit");
-  setDerivedMargin(rows, "P. Margin", "Operating Profit (EBITDA)");
-
-  const lastSyncedAt = snapshots.reduce<string | null>((latest, snapshot) => {
-    if (!snapshot.lastSyncedAt) return latest;
-    if (latest == null || snapshot.lastSyncedAt > latest) return snapshot.lastSyncedAt;
-    return latest;
-  }, null);
-
-  return {
-    month: months[months.length - 1] ?? "",
-    months,
-    previousMonth: null,
-    previousMonths: [],
-    entity,
-    rows: [...rows.values()].map(toPnlRow),
-    summary: buildSummary(rows),
-    lastSyncedAt,
-  };
+async function aggregateSnapshotsAsync(
+  months: string[],
+  entity: PnlEntity,
+  snapshots: PnlSnapshot[],
+): Promise<PnlSnapshot> {
+  return aggregateSnapshotsOffMainThread(months, entity, snapshots);
 }
 
 async function fetchMonth(entity: PnlEntity, month: string, options?: { force?: boolean }): Promise<PnlSnapshot> {
@@ -267,7 +167,15 @@ export function setActivePnlEntity(entity: PnlEntity): void {
   activeEntity = entity;
 }
 
-export function getCachedPnlSnapshot(months: string[], entity: PnlEntity): PnlSnapshot | null {
+/**
+ * Returns a fully aggregated snapshot when every selected month is already in the LRU
+ * (memory or localStorage). Aggregation runs off the main thread when the payload is large
+ * enough to justify worker startup (multi-month and/or wide sheets).
+ */
+export async function getCachedPnlSnapshotAsync(
+  months: string[],
+  entity: PnlEntity,
+): Promise<PnlSnapshot | null> {
   const normalized = normalizeMonthKeys(months);
   if (normalized.length === 0) return null;
   const snapshots: PnlSnapshot[] = [];
@@ -276,21 +184,21 @@ export function getCachedPnlSnapshot(months: string[], entity: PnlEntity): PnlSn
     if (!cached) return null;
     snapshots.push(cached);
   }
-  return aggregateSnapshots(normalized, entity, snapshots);
+  return aggregateSnapshotsAsync(normalized, entity, snapshots);
 }
 
 export async function getPnlSnapshotFromClientCache(months: string[], entity: PnlEntity): Promise<PnlSnapshot> {
   const normalized = normalizeMonthKeys(months);
   if (normalized.length === 0) throw new Error("At least one month is required.");
   const snapshots = await Promise.all(normalized.map((month) => fetchMonth(entity, month)));
-  return aggregateSnapshots(normalized, entity, snapshots);
+  return aggregateSnapshotsAsync(normalized, entity, snapshots);
 }
 
 export async function revalidatePnlSnapshot(months: string[], entity: PnlEntity): Promise<PnlSnapshot> {
   const normalized = normalizeMonthKeys(months);
   if (normalized.length === 0) throw new Error("At least one month is required.");
   const snapshots = await Promise.all(normalized.map((month) => fetchMonth(entity, month, { force: true })));
-  return aggregateSnapshots(normalized, entity, snapshots);
+  return aggregateSnapshotsAsync(normalized, entity, snapshots);
 }
 
 export function prefetchPnlMonth(month: string, entity: PnlEntity = activeEntity): void {

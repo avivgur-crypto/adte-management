@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { Funnel, LayoutDashboard, LogOut, Menu, Receipt, Settings, Users } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { useAuth } from "@/app/context/AuthContext";
-import { useState, useCallback, useEffect, useRef, useTransition } from "react";
+import { memo, useState, useCallback, useEffect, useMemo, useRef, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   useFilter,
@@ -45,7 +45,7 @@ const QUARTER_KEYS: Record<number, string[]> = {
   4: ["2026-10-01", "2026-11-01", "2026-12-01"],
 };
 
-function ScreenNav({ onNavigate }: { onNavigate?: () => void }) {
+const ScreenNav = memo(function ScreenNav({ onNavigate }: { onNavigate?: () => void }) {
   const { activeScreen, setActiveScreen } = useFilter();
   return (
     <nav className="mb-3 flex flex-col gap-0.5 border-b border-white/10 pb-3">
@@ -81,9 +81,9 @@ function ScreenNav({ onNavigate }: { onNavigate?: () => void }) {
       })}
     </nav>
   );
-}
+});
 
-function FilterFormContent({
+const FilterFormContent = memo(function FilterFormContent({
   state,
   onApply,
   isMobile,
@@ -191,9 +191,9 @@ function FilterFormContent({
       )}
     </div>
   );
-}
+});
 
-function DesktopSidebar() {
+const DesktopSidebar = memo(function DesktopSidebar() {
   const state = useFilter();
   const { user } = useAuth();
   const [loggingOut, startLogout] = useTransition();
@@ -254,9 +254,9 @@ function DesktopSidebar() {
       )}
     </aside>
   );
-}
+});
 
-function MobileMenuPanel() {
+const MobileMenuPanel = memo(function MobileMenuPanel() {
   const globalState = useFilter();
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
@@ -317,55 +317,58 @@ function MobileMenuPanel() {
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
 
-  const localState: FilterState = {
-    ...globalState,
-    selectedMonths: localMonths,
-    selectMonth: (k) => setLocalMonths((prev) => new Set(prev).add(k)),
-    deselectMonth: (k) =>
-      setLocalMonths((prev) => {
-        const n = new Set(prev);
-        n.delete(k);
-        return n;
-      }),
-    toggleMonth: (k) =>
-      setLocalMonths((prev) => {
-        const n = new Set(prev);
-        if (n.has(k)) n.delete(k);
-        else n.add(k);
-        return n;
-      }),
-    selectQuarter: (q) => {
-      const keys = QUARTER_KEYS[q];
-      setLocalMonths((prev) => {
-        const n = new Set(prev);
-        keys.forEach((k) => n.add(k));
-        return n;
-      });
-    },
-    deselectQuarter: (q) => {
-      const keys = QUARTER_KEYS[q];
-      setLocalMonths((prev) => {
-        const n = new Set(prev);
-        keys.forEach((k) => n.delete(k));
-        return n;
-      });
-    },
-    toggleQuarter: (q) => {
-      const keys = QUARTER_KEYS[q];
-      setLocalMonths((prev) => {
-        const all = keys.every((k) => prev.has(k));
-        const n = new Set(prev);
-        if (all) keys.forEach((k) => n.delete(k));
-        else keys.forEach((k) => n.add(k));
-        return n;
-      });
-    },
-    selectAll: () => setLocalMonths(new Set(globalState.monthKeys)),
-    selectNone: () => setLocalMonths(new Set()),
-    reset: () => setLocalMonths(new Set(globalState.monthKeys)),
-    isMonthSelected: (k) => localMonths.has(k),
-    isQuarterSelected: (q) => QUARTER_KEYS[q].every((k) => localMonths.has(k)),
-  };
+  const localState: FilterState = useMemo(
+    () => ({
+      ...globalState,
+      selectedMonths: localMonths,
+      selectMonth: (k) => setLocalMonths((prev) => new Set(prev).add(k)),
+      deselectMonth: (k) =>
+        setLocalMonths((prev) => {
+          const n = new Set(prev);
+          n.delete(k);
+          return n;
+        }),
+      toggleMonth: (k) =>
+        setLocalMonths((prev) => {
+          const n = new Set(prev);
+          if (n.has(k)) n.delete(k);
+          else n.add(k);
+          return n;
+        }),
+      selectQuarter: (q) => {
+        const keys = QUARTER_KEYS[q];
+        setLocalMonths((prev) => {
+          const n = new Set(prev);
+          keys.forEach((k) => n.add(k));
+          return n;
+        });
+      },
+      deselectQuarter: (q) => {
+        const keys = QUARTER_KEYS[q];
+        setLocalMonths((prev) => {
+          const n = new Set(prev);
+          keys.forEach((k) => n.delete(k));
+          return n;
+        });
+      },
+      toggleQuarter: (q) => {
+        const keys = QUARTER_KEYS[q];
+        setLocalMonths((prev) => {
+          const all = keys.every((k) => prev.has(k));
+          const n = new Set(prev);
+          if (all) keys.forEach((k) => n.delete(k));
+          else keys.forEach((k) => n.add(k));
+          return n;
+        });
+      },
+      selectAll: () => setLocalMonths(new Set(globalState.monthKeys)),
+      selectNone: () => setLocalMonths(new Set()),
+      reset: () => setLocalMonths(new Set(globalState.monthKeys)),
+      isMonthSelected: (k) => localMonths.has(k),
+      isQuarterSelected: (q) => QUARTER_KEYS[q].every((k) => localMonths.has(k)),
+    }),
+    [globalState, localMonths],
+  );
 
   return (
     <>
@@ -448,9 +451,9 @@ function MobileMenuPanel() {
         )}
     </>
   );
-}
+});
 
-export default function FilterSidebar() {
+function FilterSidebar() {
   return (
     <>
       <DesktopSidebar />
@@ -458,5 +461,7 @@ export default function FilterSidebar() {
     </>
   );
 }
+
+export default memo(FilterSidebar);
 
 export const filterSidebarWidth = SIDEBAR_WIDTH;

@@ -1,8 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { Urbanist } from "next/font/google";
 import type { PnlEntity, PnlRow, PnlSnapshot } from "@/app/actions/pnl";
+import type { PnlLayoutMetrics } from "@/lib/pnl-layout-metrics";
+import { writePnlLayoutMetrics } from "@/lib/pnl-layout-metrics";
 
 const urbanist = Urbanist({
   subsets: ["latin"],
@@ -106,17 +108,24 @@ const SummaryCard = memo(function SummaryCard({
     amber: "border-t-amber-400/80 bg-amber-500/[0.08] ring-amber-300/15",
     purple: "border-t-indigo-400/80 bg-indigo-500/[0.08] ring-indigo-300/15",
   }[accent];
+  const mobileAccentClass = {
+    blue: "border-b-cyan-400/70",
+    rose: "border-b-rose-500/80",
+    emerald: "border-b-emerald-400/70",
+    amber: "border-b-amber-400/70",
+    purple: "border-b-indigo-400/70",
+  }[accent];
   const valueGlowClass = {
-    blue: "before:bg-cyan-400/30 after:bg-cyan-200/10 text-cyan-50",
-    rose: "before:bg-rose-500/28 after:bg-rose-200/10 text-rose-50",
-    emerald: "before:bg-emerald-400/28 after:bg-emerald-200/10 text-emerald-50",
+    blue: "md:before:bg-cyan-400/30 md:after:bg-cyan-200/10 text-cyan-50",
+    rose: "md:before:bg-rose-500/28 md:after:bg-rose-200/10 text-rose-50",
+    emerald: "md:before:bg-emerald-400/28 md:after:bg-emerald-200/10 text-emerald-50",
     amber: "",
     purple: "",
   }[accent];
 
   return (
     <div
-      className={`grid min-h-[104px] grid-rows-[36px_1fr] rounded-2xl border border-white/10 border-t-2 bg-white/10 p-3 shadow-[0_18px_45px_-28px_rgba(0,0,0,0.9)] ring-1 backdrop-blur-sm ${accentClass}`}
+      className={`grid min-h-[104px] grid-rows-[36px_1fr] rounded-2xl border border-b-2 border-t-2 border-white/10 bg-white/10 p-3 shadow-none ring-1 md:border-b md:shadow-[0_18px_45px_-28px_rgba(0,0,0,0.9)] md:backdrop-blur-sm ${accentClass} ${mobileAccentClass}`}
     >
       <p className="flex items-start text-[10px] font-bold uppercase leading-[1.15] tracking-[0.16em] text-white/45">
         {row.label}
@@ -127,7 +136,7 @@ const SummaryCard = memo(function SummaryCard({
             positive ? (emphasized ? valueGlowClass : "text-white") : "text-red-200"
           } ${
             emphasized && positive
-              ? "before:absolute before:left-1/2 before:top-1/2 before:-z-10 before:h-8 before:w-[118%] before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:blur-xl after:absolute after:left-1/2 after:top-1/2 after:-z-10 after:h-5 after:w-[86%] after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:blur-md [text-shadow:0_1px_0_rgba(255,255,255,0.16),0_10px_26px_rgba(0,0,0,0.38)]"
+              ? "md:before:absolute md:before:left-1/2 md:before:top-1/2 md:before:-z-10 md:before:h-8 md:before:w-[118%] md:before:-translate-x-1/2 md:before:-translate-y-1/2 md:before:rounded-full md:before:blur-xl md:after:absolute md:after:left-1/2 md:after:top-1/2 md:after:-z-10 md:after:h-5 md:after:w-[86%] md:after:-translate-x-1/2 md:after:-translate-y-1/2 md:after:rounded-full md:after:blur-md md:[text-shadow:0_1px_0_rgba(255,255,255,0.16),0_10px_26px_rgba(0,0,0,0.38)]"
               : ""
           }`}
         >
@@ -142,14 +151,25 @@ const AccordionSection = memo(function AccordionSection({
   title,
   total,
   children,
+  lazyMountBody = false,
+  closedBodyMinHeight = 0,
 }: {
   title: string;
   total: number;
   children: React.ReactNode;
+  /** When true, children mount only after the user opens the section once (Tier 3 — keeps OPEX off the critical path). */
+  lazyMountBody?: boolean;
+  /** Placeholder height (px) for the collapsed body before first open when lazyMountBody is set. */
+  closedBodyMinHeight?: number;
 }) {
+  const [bodyMounted, setBodyMounted] = useState(!lazyMountBody);
   return (
     <details
       className="group overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035] shadow-[0_18px_45px_-30px_rgba(0,0,0,0.95)]"
+      onToggle={(event) => {
+        if (!lazyMountBody) return;
+        if ((event.currentTarget as HTMLDetailsElement).open) setBodyMounted(true);
+      }}
     >
       <summary className="grid min-h-11 cursor-pointer list-none grid-cols-[1fr_auto_auto] items-center gap-3 border-b border-white/10 bg-white/[0.045] px-3 py-2.5 outline-none transition-colors hover:bg-white/[0.07] marker:content-none [&::-webkit-details-marker]:hidden">
         <h2 className="min-w-0 truncate text-sm font-bold tracking-[-0.02em] text-white">{title}</h2>
@@ -161,11 +181,26 @@ const AccordionSection = memo(function AccordionSection({
         </span>
       </summary>
       <div className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-300 ease-out group-open:grid-rows-[1fr]">
-        <div className="min-h-0 overflow-hidden">{children}</div>
+        <div className="min-h-0 overflow-hidden">
+          {bodyMounted ? (
+            children
+          ) : (
+            <div
+              className="bg-white/[0.02]"
+              style={{ minHeight: Math.max(closedBodyMinHeight, 44) }}
+              aria-hidden
+            />
+          )}
+        </div>
       </div>
     </details>
   );
-}, (prev, next) => prev.title === next.title && prev.total === next.total && prev.children === next.children);
+}, (prev, next) =>
+  prev.title === next.title &&
+  prev.total === next.total &&
+  prev.children === next.children &&
+  prev.lazyMountBody === next.lazyMountBody &&
+  prev.closedBodyMinHeight === next.closedBodyMinHeight);
 
 const PnlTableRow = memo(function PnlTableRow({
   row,
@@ -230,11 +265,7 @@ function RowsTableBase({
     return <p className="px-3 py-4 text-sm text-white/45">{emptyLabel}</p>;
   }
 
-  if (visibleRows.length > 50) {
-    return <VirtualRows rows={visibleRows} />;
-  }
-
-  return <StaticRows rows={visibleRows} />;
+  return <VirtualRows rows={visibleRows} />;
 }
 
 const RowsTable = memo(
@@ -245,20 +276,10 @@ const RowsTable = memo(
     sameRows(prev.rows, next.rows),
 );
 
-const StaticRows = memo(function StaticRows({ rows }: { rows: PnlRow[] }) {
-  return (
-    <div className="divide-y divide-white/[0.055]">
-      {rows.map((row, idx) => (
-        <PnlTableRow key={`${row.category}-${row.label}`} row={row} idx={idx} />
-      ))}
-    </div>
-  );
-}, (prev, next) => sameRows(prev.rows, next.rows));
-
 const VirtualRows = memo(function VirtualRows({ rows }: { rows: PnlRow[] }) {
   const rowHeight = 44;
-  const viewportHeight = 440;
-  const overscan = 4;
+  const viewportHeight = Math.min(440, rows.length * rowHeight);
+  const overscan = 3;
   const [scrollTop, setScrollTop] = useState(0);
   const onScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     setScrollTop(event.currentTarget.scrollTop);
@@ -270,7 +291,7 @@ const VirtualRows = memo(function VirtualRows({ rows }: { rows: PnlRow[] }) {
   const visibleRows = rows.slice(start, end);
 
   return (
-    <div className="max-h-[440px] overflow-y-auto" onScroll={onScroll}>
+    <div className="overflow-y-auto" style={{ maxHeight: viewportHeight }} onScroll={onScroll}>
       <div className="relative" style={{ height: rows.length * rowHeight }}>
         {visibleRows.map((row, offset) => {
           const idx = start + offset;
@@ -289,7 +310,15 @@ const VirtualRows = memo(function VirtualRows({ rows }: { rows: PnlRow[] }) {
   );
 }, (prev, next) => sameRows(prev.rows, next.rows));
 
-function PnlContentSkeleton() {
+function PnlSmartSkeleton({ layout }: { layout?: PnlLayoutMetrics | null }) {
+  const grossRows = layout?.grossRows ?? 3;
+  const opexRows = layout?.opexRows ?? 4;
+  const bottomRows = layout?.bottomRows ?? 3;
+  const sections = [
+    { key: "gross", rows: grossRows },
+    { key: "opex", rows: opexRows },
+    { key: "bottom", rows: bottomRows },
+  ] as const;
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-5">
@@ -297,12 +326,15 @@ function PnlContentSkeleton() {
           <div key={i} className="h-[88px] animate-pulse rounded-2xl border border-white/10 bg-white/[0.06]" />
         ))}
       </div>
-      {Array.from({ length: 3 }).map((_, i) => (
-        <div key={i} className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]">
+      {sections.map((s) => (
+        <div key={s.key} className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.035]">
           <div className="h-12 animate-pulse border-b border-white/10 bg-white/[0.06]" />
           <div className="space-y-px p-0">
-            {Array.from({ length: i === 1 ? 4 : 3 }).map((__, row) => (
-              <div key={row} className={row % 2 === 0 ? "h-11 animate-pulse bg-white/[0.035]" : "h-11 animate-pulse bg-white/[0.015]"} />
+            {Array.from({ length: s.rows }).map((__, row) => (
+              <div
+                key={row}
+                className={row % 2 === 0 ? "h-11 animate-pulse bg-white/[0.035]" : "h-11 animate-pulse bg-white/[0.015]"}
+              />
             ))}
           </div>
         </div>
@@ -326,6 +358,7 @@ function formatSyncedAt(value: string | null | undefined): string {
 function PnlView({
   snapshot,
   entity,
+  layoutSkeletonHint,
   onEntityChange,
   onEntityIntent,
   monthLabel,
@@ -334,6 +367,8 @@ function PnlView({
 }: {
   snapshot: PnlSnapshot | null;
   entity: PnlEntity;
+  /** Last persisted section row counts for this entity — stabilizes skeleton height on cold switches. */
+  layoutSkeletonHint?: PnlLayoutMetrics | null;
   onEntityChange: (e: PnlEntity) => void;
   onEntityIntent?: (e: PnlEntity) => void;
   monthLabel: string;
@@ -348,8 +383,32 @@ function PnlView({
       `[pnl-view] commit #${renderCountRef.current} entity=${entity} loading=${!!isLoading} rows=${snapshot?.rows.length ?? 0}`,
     );
   });
-  const rows = useMemo(() => snapshot?.rows ?? [], [snapshot]);
+  const tableSnapshot = useDeferredValue(snapshot);
+  const rows = useMemo(() => tableSnapshot?.rows ?? [], [tableSnapshot]);
   const nonMarginRows = useMemo(() => rows.filter((row) => !isMargin(row)), [rows]);
+  const hasRenderableSnapshot = Boolean(
+    snapshot && snapshot.rows.length > 0 && snapshot.entity === entity,
+  );
+  const [detailTablesReady, setDetailTablesReady] = useState(false);
+  useEffect(() => {
+    let inner = 0;
+    let outer = 0;
+    const t = window.setTimeout(() => {
+      if (!hasRenderableSnapshot) {
+        setDetailTablesReady(false);
+        return;
+      }
+      setDetailTablesReady(false);
+      outer = requestAnimationFrame(() => {
+        inner = requestAnimationFrame(() => setDetailTablesReady(true));
+      });
+    }, 0);
+    return () => {
+      window.clearTimeout(t);
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [hasRenderableSnapshot, snapshot]);
   const cards = useMemo(() => {
     if (!snapshot) {
       return [
@@ -371,10 +430,23 @@ function PnlView({
   const gross = useMemo(() => nonMarginRows.filter(isGrossRow), [nonMarginRows]);
   const opex = useMemo(() => nonMarginRows.filter(isOpexRow), [nonMarginRows]);
   const bottom = useMemo(() => sortRows(rows.filter(isBottomRow)), [rows]);
+
+  useEffect(() => {
+    if (!snapshot || snapshot.entity !== entity) return;
+    writePnlLayoutMetrics(entity, {
+      grossRows: gross.length,
+      opexRows: Math.max(opex.length, 1),
+      bottomRows: Math.max(bottom.length, 1),
+    });
+  }, [snapshot, entity, gross.length, opex.length, bottom.length]);
   const revenueAmount = cards[0]?.amount ?? 0;
   const costsAmount = Math.abs(cards[1]?.amount ?? 0) + Math.abs(cards[3]?.amount ?? 0);
   const showZeroRevenueNotice = revenueAmount === 0 && costsAmount > 0;
   const hasSnapshot = !!snapshot && snapshot.rows.length > 0;
+  const tableIsDeferred = tableSnapshot !== snapshot;
+  const showSmartSkeleton = Boolean(isLoading && !hasRenderableSnapshot);
+  const opexPlaceholderH =
+    (layoutSkeletonHint?.opexRows ?? Math.max(opex.length, 1)) * 44;
 
   return (
     <div className={`${urbanist.className} relative flex flex-col gap-4 tracking-tight`}>
@@ -435,9 +507,9 @@ function PnlView({
         </div>
       </div>
 
-      {isLoading && !hasSnapshot ? (
-        <PnlContentSkeleton />
-      ) : !snapshot || snapshot.rows.length === 0 ? (
+      {showSmartSkeleton ? (
+        <PnlSmartSkeleton layout={layoutSkeletonHint ?? undefined} />
+      ) : !hasRenderableSnapshot && !isLoading ? (
         <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-8 text-center text-sm text-zinc-400">
           No P&amp;L rows for this month yet. Run a sync after the sheet is connected.
         </div>
@@ -466,19 +538,68 @@ function PnlView({
           ) : null}
 
           <AccordionSection title="Gross Profitability" total={cards[2]?.amount ?? 0}>
-            <RowsTable rows={gross} />
+            <div className={tableIsDeferred ? "opacity-60" : "opacity-100"}>
+              {detailTablesReady ? (
+                <RowsTable rows={gross} />
+              ) : (
+                <div
+                  className="space-y-px"
+                  style={{ minHeight: (layoutSkeletonHint?.grossRows ?? Math.max(gross.length, 1)) * 44 }}
+                  aria-hidden
+                >
+                  {Array.from({
+                    length: layoutSkeletonHint?.grossRows ?? Math.max(gross.length, 1),
+                  }).map((_, row) => (
+                    <div
+                      key={row}
+                      className={
+                        row % 2 === 0 ? "h-11 animate-pulse bg-white/[0.035]" : "h-11 animate-pulse bg-white/[0.015]"
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </AccordionSection>
 
-          <AccordionSection title="Operational Expenses (OPEX)" total={cards[3]?.amount ?? 0}>
+          <AccordionSection
+            title="Operational Expenses (OPEX)"
+            total={cards[3]?.amount ?? 0}
+            lazyMountBody={opex.length > 0}
+            closedBodyMinHeight={opexPlaceholderH}
+          >
             {opex.length === 0 ? (
               <p className="px-3 py-4 text-sm text-white/45">No OPEX rows for this section.</p>
             ) : (
-              <RowsTable rows={opex} />
+              <div className={tableIsDeferred ? "opacity-60" : "opacity-100"}>
+                <RowsTable rows={opex} />
+              </div>
             )}
           </AccordionSection>
 
           <AccordionSection title="Bottom Line (EBITDA)" total={cards[4]?.amount ?? 0}>
-            <RowsTable rows={bottom} includeProfitMargin />
+            <div className={tableIsDeferred ? "opacity-60" : "opacity-100"}>
+              {detailTablesReady ? (
+                <RowsTable rows={bottom} includeProfitMargin />
+              ) : (
+                <div
+                  className="space-y-px"
+                  style={{ minHeight: (layoutSkeletonHint?.bottomRows ?? Math.max(bottom.length, 1)) * 44 }}
+                  aria-hidden
+                >
+                  {Array.from({
+                    length: layoutSkeletonHint?.bottomRows ?? Math.max(bottom.length, 1),
+                  }).map((_, row) => (
+                    <div
+                      key={row}
+                      className={
+                        row % 2 === 0 ? "h-11 animate-pulse bg-white/[0.035]" : "h-11 animate-pulse bg-white/[0.015]"
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </AccordionSection>
         </div>
       )}
