@@ -327,6 +327,7 @@ function PnlView({
   snapshot,
   entity,
   onEntityChange,
+  onEntityIntent,
   monthLabel,
   multiMonthNote,
   isLoading,
@@ -334,6 +335,7 @@ function PnlView({
   snapshot: PnlSnapshot | null;
   entity: PnlEntity;
   onEntityChange: (e: PnlEntity) => void;
+  onEntityIntent?: (e: PnlEntity) => void;
   monthLabel: string;
   multiMonthNote?: string;
   isLoading?: boolean;
@@ -408,6 +410,7 @@ function PnlView({
         >
           {ENTITIES.map((e) => {
             const active = entity === e;
+            const handleIntent = active ? undefined : () => onEntityIntent?.(e);
             return (
               <button
                 key={e}
@@ -415,6 +418,10 @@ function PnlView({
                 role="tab"
                 aria-selected={active}
                 onClick={() => onEntityChange(e)}
+                onMouseEnter={handleIntent}
+                onFocus={handleIntent}
+                onPointerDown={handleIntent}
+                onTouchStart={handleIntent}
                 className={`min-h-11 flex-1 rounded-lg px-2 py-2 text-center text-xs font-bold tracking-[-0.01em] transition-colors sm:text-sm ${
                   active
                     ? "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/40"

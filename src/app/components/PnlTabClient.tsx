@@ -17,6 +17,7 @@ import {
   getPnlSnapshotFromClientCache,
   getPnlViewState,
   prefetchOtherEntitiesForMonths,
+  prefetchPnlSnapshot,
   revalidatePnlSnapshot,
   setActivePnlEntity,
   setPnlViewState,
@@ -249,6 +250,13 @@ function PnlTabClient() {
     },
     [deferredKeys, entity, setSnapshot, startTransition],
   );
+  const handleEntityIntent = useCallback(
+    (nextEntity: PnlEntity) => {
+      if (nextEntity === entity) return;
+      prefetchPnlSnapshot(deferredKeys, nextEntity);
+    },
+    [deferredKeys, entity],
+  );
 
   if (deferredKeys.length === 0 && selectedKeys.length === 0) {
     return (
@@ -269,6 +277,7 @@ function PnlTabClient() {
         snapshot={snapshot}
         entity={entity}
         onEntityChange={handleEntityChange}
+        onEntityIntent={handleEntityIntent}
         monthLabel={monthLabel}
         multiMonthNote={multiNote}
         isLoading={loading || isStale}

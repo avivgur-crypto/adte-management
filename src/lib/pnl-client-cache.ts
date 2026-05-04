@@ -324,6 +324,16 @@ export function prefetchOtherEntitiesForMonths(months: string[]): void {
   }
 }
 
+/**
+ * Hover / pointer-down intent helper: warm every selected month for the
+ * candidate entity in parallel. Idempotent — already-cached months no-op.
+ */
+export function prefetchPnlSnapshot(months: string[], entity: PnlEntity): void {
+  const normalized = normalizeMonthKeys(months);
+  if (normalized.length === 0) return;
+  for (const month of normalized) prefetchPnlMonth(month, entity);
+}
+
 // ---------------------------------------------------------------------------
 // View-state store (Stage 3 — minimal alternative to Zustand)
 // ---------------------------------------------------------------------------
