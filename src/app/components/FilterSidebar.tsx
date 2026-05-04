@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Funnel, LayoutDashboard, LogOut, Menu, Settings, Users } from "lucide-react";
+import { Funnel, LayoutDashboard, LogOut, Menu, Receipt, Settings, Users } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { useAuth } from "@/app/context/AuthContext";
 import { useState, useCallback, useEffect, useRef, useTransition } from "react";
@@ -12,6 +12,7 @@ import {
   type FilterState,
   type AppScreen,
 } from "@/app/context/FilterContext";
+import { prefetchPnlMonth } from "@/lib/pnl-client-cache";
 
 const AdminSyncPanel = dynamic(() => import("./AdminSyncPanel"), {
   loading: () => (
@@ -25,6 +26,7 @@ const SettingsModal = dynamic(() => import("./SettingsModal"), {
 
 const SCREENS: { key: AppScreen; label: string; icon: typeof LayoutDashboard }[] = [
   { key: "financial", label: "Financial", icon: LayoutDashboard },
+  { key: "pnl", label: "PNL", icon: Receipt },
   { key: "partners", label: "Partners", icon: Users },
   { key: "sales-funnel", label: "Sales Funnel", icon: Funnel },
 ];
@@ -35,7 +37,6 @@ const MONTH_LABELS = [
 ];
 
 const SIDEBAR_WIDTH = 280;
-const MOBILE_PANEL_WIDTH = 300;
 
 const QUARTER_KEYS: Record<number, string[]> = {
   1: ["2026-01-01", "2026-02-01", "2026-03-01"],
@@ -140,6 +141,8 @@ function FilterFormContent({
             return (
               <label
                 key={key}
+                onMouseEnter={() => prefetchPnlMonth(key)}
+                onPointerDown={() => prefetchPnlMonth(key)}
                 className="flex cursor-pointer items-center gap-1 rounded-lg py-1 pr-1 transition-colors hover:bg-white/5"
               >
                 <input
@@ -266,7 +269,11 @@ function MobileMenuPanel() {
   const [localMonths, setLocalMonths] = useState<Set<string>>(globalState.selectedMonths);
 
   useEffect(() => {
-    if (open) setLocalMonths(new Set(globalState.selectedMonths));
+    if (!open) return;
+    const timer = setTimeout(() => {
+      setLocalMonths(new Set(globalState.selectedMonths));
+    }, 0);
+    return () => clearTimeout(timer);
   }, [open, globalState.selectedMonths]);
 
   useEffect(() => {
@@ -281,20 +288,26 @@ function MobileMenuPanel() {
   useEffect(() => {
     if (open) {
       clearTimeout(closeTimerRef.current);
-      setPortalVisible(true);
       portalAlive.current = true;
+      const openTimer = setTimeout(() => setPortalVisible(true), 0);
       const raf = requestAnimationFrame(() => {
         requestAnimationFrame(() => setAnimateIn(true));
       });
-      return () => cancelAnimationFrame(raf);
+      return () => {
+        clearTimeout(openTimer);
+        cancelAnimationFrame(raf);
+      };
     }
     if (!portalAlive.current) return;
-    setAnimateIn(false);
+    const closeStartTimer = setTimeout(() => setAnimateIn(false), 0);
     closeTimerRef.current = setTimeout(() => {
       setPortalVisible(false);
       portalAlive.current = false;
     }, 300);
-    return () => clearTimeout(closeTimerRef.current);
+    return () => {
+      clearTimeout(closeStartTimer);
+      clearTimeout(closeTimerRef.current);
+    };
   }, [open]);
 
   const apply = useCallback(() => {

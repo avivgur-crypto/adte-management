@@ -24,6 +24,15 @@ const SalesTabClient = dynamic(() => import("./SalesTabClient"), {
   ),
 });
 
+const PnlTabClient = dynamic(() => import("./PnlTabClient"), {
+  loading: () => (
+    <div className="stagger-children flex flex-col gap-8">
+      <SkeletonCard lines={2} />
+      <SkeletonCard lines={6} />
+    </div>
+  ),
+});
+
 /**
  * Priority-loading tab container.
  *
@@ -52,6 +61,14 @@ export default function DashboardTabs({ children }: { children: React.ReactNode 
     const t = setTimeout(run, 2000);
     return () => clearTimeout(t);
   }, []);
+
+  if (activeScreen === "pnl") {
+    return (
+      <div key="pnl" data-tab="pnl">
+        <PnlTabClient />
+      </div>
+    );
+  }
 
   if (activeScreen === "partners") {
     return (

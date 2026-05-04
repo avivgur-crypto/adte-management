@@ -40,7 +40,7 @@ function monthIndexToKey(monthIndex: number): string {
   return `${YEAR}-${String(monthIndex).padStart(2, "0")}-01`;
 }
 
-export type AppScreen = "financial" | "partners" | "sales-funnel";
+export type AppScreen = "financial" | "pnl" | "partners" | "sales-funnel";
 
 export interface FilterState {
   activeScreen: AppScreen;

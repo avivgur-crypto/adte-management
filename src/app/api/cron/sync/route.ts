@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
+import { syncPnlData } from "@/lib/sync/pnl";
 import { syncXDASHData } from "@/lib/sync/xdash";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,7 @@ export async function GET(request: NextRequest) {
   const summary: {
     monday?: { funnelRows: number; activityRows: number };
     billing?: { monthsUpdated: number };
+    pnl?: { rowsUpserted: number; entities: string[] };
     xdash?: { datesSynced: number; rowsUpserted: number };
     partnerPairs?: { datesRequested: number; datesSynced: number; rowsUpserted: number };
     errors: string[];
@@ -50,10 +52,11 @@ export async function GET(request: NextRequest) {
 
   const xdashDisabled = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
 
-  // Phase 1: Monday + Billing + XDASH in parallel
-  const [mondayResult, billingResult, xdashResult] = await Promise.allSettled([
+  // Phase 1: Monday + Billing + P&L + XDASH in parallel
+  const [mondayResult, billingResult, pnlResult, xdashResult] = await Promise.allSettled([
     syncMondayData(),
     syncBillingData(),
+    syncPnlData(),
     xdashDisabled
       ? Promise.resolve({ datesSynced: 0, rowsUpserted: 0 })
       : syncXDASHData(),
@@ -87,6 +90,12 @@ export async function GET(request: NextRequest) {
     summary.billing = billingResult.value;
   } else {
     summary.errors.push(maskReason("Billing", billingResult.reason));
+  }
+
+  if (pnlResult.status === "fulfilled") {
+    summary.pnl = pnlResult.value;
+  } else {
+    summary.errors.push(maskReason("P&L", pnlResult.reason));
   }
 
   if (xdashResult.status === "fulfilled") {

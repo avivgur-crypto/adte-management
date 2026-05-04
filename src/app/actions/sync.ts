@@ -3,6 +3,7 @@
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
+import { syncPnlData } from "@/lib/sync/pnl";
 import { syncXDASHData } from "@/lib/sync/xdash";
 
 export type TriggerSyncResult =
@@ -24,6 +25,7 @@ async function runSyncInBackground(): Promise<void> {
     await Promise.all([
       syncMondayData(),
       syncBillingData(),
+      syncPnlData(),
       ...(xdashDisabled ? [] : [syncXDASHData()]),
     ]);
     if (!xdashDisabled) {

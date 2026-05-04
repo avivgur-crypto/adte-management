@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import FilterSidebar, { filterSidebarWidth } from "./FilterSidebar";
 import { AdteLogoHeader } from "./AdteLogo";
+import RouteActiveScreenSync from "./RouteActiveScreenSync";
+import { prefetchActiveMonthForCurrentEntity } from "@/lib/pnl-client-cache";
 
 /** Only on mobile: show header only when truly in top zone; hide when scrolled down. */
 const TOP_ZONE_PX = 72;
@@ -16,6 +18,25 @@ export default function DashboardShell({
   const [headerVisible, setHeaderVisible] = useState(true);
   const lastScrollY = useRef(0);
   const rafId = useRef<number | null>(null);
+
+  /**
+   * Stage 1 — App-level prefetch.
+   *
+   * Warm the P&L cache for the current month/entity at app boot, scheduled at
+   * idle time so it never competes with first paint or Financials interactivity.
+   * By the time the user clicks "PNL", the snapshot is already in localStorage.
+   */
+  useEffect(() => {
+    type IdleCallback = (cb: () => void, opts?: { timeout: number }) => number;
+    const win = window as unknown as { requestIdleCallback?: IdleCallback };
+    const schedule = win.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1500));
+    const handle = schedule(() => prefetchActiveMonthForCurrentEntity(), { timeout: 3000 });
+    return () => {
+      const winCancel = window as unknown as { cancelIdleCallback?: (h: number) => void };
+      if (typeof winCancel.cancelIdleCallback === "function") winCancel.cancelIdleCallback(handle as number);
+      else clearTimeout(handle as unknown as number);
+    };
+  }, []);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
@@ -47,6 +68,7 @@ export default function DashboardShell({
 
   return (
     <>
+      <RouteActiveScreenSync />
       <header
         className="sticky top-0 z-30 border-b border-white/5 bg-black/95 backdrop-blur-sm transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] md:translate-y-0"
         style={{ transform: headerVisible ? "translateY(0)" : "translateY(-100%)" }}

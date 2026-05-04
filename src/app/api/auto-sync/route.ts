@@ -14,6 +14,7 @@ import {
 import { syncFunnelToSupabase } from "@/lib/sync/funnel";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncBillingData } from "@/lib/sync/billing";
+import { syncPnlData } from "@/lib/sync/pnl";
 import { checkPerformance } from "@/app/actions/notifications";
 
 export const dynamic = "force-dynamic";
@@ -148,6 +149,17 @@ async function runBilling(): Promise<StepResult> {
   }
 }
 
+async function runPnl(): Promise<StepResult> {
+  try {
+    const r = await syncPnlData();
+    return { status: "success", rowsUpserted: r.rowsUpserted, entities: r.entities };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[sync] pnl failed:", msg);
+    return { status: "failed", error: msg };
+  }
+}
+
 async function runMonday(): Promise<StepResult> {
   try {
     // Both paths are required: syncMondayData → daily_funnel_metrics + monday_items_activity
@@ -274,14 +286,15 @@ async function executeSync(params: SyncParams): Promise<void> {
 
     if (target === "daily" || target === "billing" || target === "monday") {
       console.log(`[auto-sync] Running targeted sync: ${target}.`);
-      const [billing, monday] = await Promise.all([
+      const [billing, pnl, monday] = await Promise.all([
         target === "daily" || target === "billing" ? runBilling() : SKIP,
+        target === "daily" || target === "billing" ? runPnl() : SKIP,
         target === "daily" || target === "monday" ? runMonday() : SKIP,
       ]);
       bustCaches();
       logResult(
         target === "daily" ? "daily-heavy" : `targeted:${target}`,
-        { xdash: SKIP, pairs: SKIP, billing, monday },
+        { xdash: SKIP, pairs: SKIP, billing, pnl, monday },
         t0,
       );
       return;
@@ -296,12 +309,13 @@ async function executeSync(params: SyncParams): Promise<void> {
       const elapsedMs = Date.now() - t0;
       const TIME_BUDGET_MS = 45_000;
       let billing: StepResult = SKIP;
+      let pnl: StepResult = SKIP;
       let monday: StepResult = SKIP;
       if (elapsedMs < TIME_BUDGET_MS) {
-        [billing, monday] = await Promise.all([runBilling(), runMonday()]);
+        [billing, pnl, monday] = await Promise.all([runBilling(), runPnl(), runMonday()]);
       }
       bustCaches();
-      logResult("manual-recovery", { xdash, pairs, billing, monday }, t0, { days });
+      logResult("manual-recovery", { xdash, pairs, billing, pnl, monday }, t0, { days });
       return;
     }
 
