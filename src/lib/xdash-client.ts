@@ -619,11 +619,13 @@ const RETRY_DELAY_MS = 5000;
 const THROTTLE_MS = 2000;
 let _lastRequestTime = 0;
 
-async function throttle(): Promise<void> {
+async function throttle(opts?: { skipGap?: boolean }): Promise<void> {
   const now = Date.now();
-  const elapsed = now - _lastRequestTime;
-  if (elapsed < THROTTLE_MS) {
-    await new Promise((r) => setTimeout(r, THROTTLE_MS - elapsed));
+  if (!opts?.skipGap) {
+    const elapsed = now - _lastRequestTime;
+    if (elapsed < THROTTLE_MS) {
+      await new Promise((r) => setTimeout(r, THROTTLE_MS - elapsed));
+    }
   }
   _lastRequestTime = Date.now();
 }
@@ -637,7 +639,14 @@ function bustCache(url: string): string {
   return `${url}${sep}cache_bust=${Date.now()}`;
 }
 
-type FetchWithRetryOpts = { timeoutMs?: number };
+type FetchWithRetryOpts = {
+  timeoutMs?: number;
+  /** When true, skip the global inter-request gap (used for paired same-user refresh calls). */
+  skipThrottle?: boolean;
+  /** Network-layer attempts (default `RETRY_ATTEMPTS`). Use `1` for short serverless budgets. */
+  retries?: number;
+  retryDelayMs?: number;
+};
 
 /** Fetch with retry on network errors. Default per-attempt timeout is FETCH_TIMEOUT_MS. */
 async function fetchWithRetry(
@@ -646,12 +655,14 @@ async function fetchWithRetry(
   fetchOpts?: FetchWithRetryOpts,
 ): Promise<Response> {
   const timeoutMs = fetchOpts?.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const attempts = fetchOpts?.retries ?? RETRY_ATTEMPTS;
+  const retryDelay = fetchOpts?.retryDelayMs ?? RETRY_DELAY_MS;
   let lastErr: unknown;
-  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      await throttle();
+      await throttle({ skipGap: fetchOpts?.skipThrottle });
       const res = await fetch(bustCache(url), {
         ...options,
         signal: controller.signal,
@@ -669,8 +680,8 @@ async function fetchWithRetry(
       if (isAbort) {
         console.warn(`[xdash-client] Request timed out after ${timeoutMs / 1000}s`);
       }
-      if (attempt < RETRY_ATTEMPTS && (isNetwork || isAbort)) {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      if (attempt < attempts && (isNetwork || isAbort)) {
+        await new Promise((r) => setTimeout(r, retryDelay));
         continue;
       }
       throw e;
@@ -687,6 +698,25 @@ const HOME_OVERVIEW_TIMEOUT_MS = 90_000;
 const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
 const HOME_OVERVIEW_RETRY_ATTEMPTS = 2;
 const HOME_OVERVIEW_RETRY_DELAY_MS = 5000;
+
+/** Shorter budgets for `refreshTodayHome` (Server Action) so Vercel stays under invocation limits. */
+const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 7_500;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 1;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 800;
+const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 1;
+
+export type FetchHomeOverviewOpts = {
+  /** Per HTTP attempt (default long timeout for cron/scripts). */
+  timeoutMs?: number;
+  /** Retries when response is 502/503/504 (default 2). */
+  statusRetryAttempts?: number;
+  statusRetryDelayMs?: number;
+  /** Skip 2s gap so two same-action calls can run in parallel (today + yesterday). */
+  skipThrottle?: boolean;
+  /** fetchWithRetry network attempts (default 2). Use 1 under short serverless ceilings. */
+  networkRetries?: number;
+  networkRetryDelayMs?: number;
+};
 
 /** Global Home rollup (matches XDASH header). Older backup path was /home/overview/adServers only. */
 const HOME_OVERVIEW_GLOBAL_PATH = "/home/overview";
@@ -720,12 +750,22 @@ export function resolveHomeOverviewSelectedTotals(raw: unknown): XDashTotals | u
 /**
  * Fetches the **global** Home overview from XDASH backup (same rollup as the main header).
  * Retries on 502/503/504 (Bad Gateway / Unavailable).
+ *
+ * Pass `opts` from interactive paths (e.g. `refreshTodayHome`) so slow backups do not exceed
+ * Vercel's serverless time limit (10s Hobby / configurable Pro).
  */
 export async function fetchAdServerOverview(
-  dateRange: XDashDateRange
+  dateRange: XDashDateRange,
+  opts?: FetchHomeOverviewOpts,
 ): Promise<XDashApiResponse | XDashGlobalHomeApiResponse> {
   assertNotDisabled();
   assertEnvVars();
+
+  const timeoutMs = opts?.timeoutMs ?? HOME_OVERVIEW_TIMEOUT_MS;
+  const statusAttempts = opts?.statusRetryAttempts ?? HOME_OVERVIEW_RETRY_ATTEMPTS;
+  const statusRetryDelay = opts?.statusRetryDelayMs ?? HOME_OVERVIEW_RETRY_DELAY_MS;
+  const networkRetries = opts?.networkRetries ?? RETRY_ATTEMPTS;
+  const networkRetryDelay = opts?.networkRetryDelayMs ?? RETRY_DELAY_MS;
 
   const url = `${XDASH_API_BASE}${HOME_OVERVIEW_GLOBAL_PATH}`;
   const body = JSON.stringify({
@@ -735,9 +775,9 @@ export async function fetchAdServerOverview(
   });
 
   let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= HOME_OVERVIEW_RETRY_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= statusAttempts; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), HOME_OVERVIEW_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchWithRetry(
         url,
@@ -747,7 +787,12 @@ export async function fetchAdServerOverview(
           body,
           signal: controller.signal,
         },
-        { timeoutMs: HOME_OVERVIEW_TIMEOUT_MS },
+        {
+          timeoutMs,
+          skipThrottle: opts?.skipThrottle,
+          retries: networkRetries,
+          retryDelayMs: networkRetryDelay,
+        },
       );
       clearTimeout(timeoutId);
 
@@ -760,15 +805,15 @@ export async function fetchAdServerOverview(
       lastError = new Error(
         `XDASH API error ${response.status}: ${response.statusText}\n${errorBody}`
       );
-      if (!HOME_OVERVIEW_RETRY_ON_STATUS.includes(response.status) || attempt === HOME_OVERVIEW_RETRY_ATTEMPTS) {
+      if (!HOME_OVERVIEW_RETRY_ON_STATUS.includes(response.status) || attempt === statusAttempts) {
         throw lastError;
       }
     } catch (e) {
       clearTimeout(timeoutId);
       lastError = e instanceof Error ? e : new Error(String(e));
-      if (attempt === HOME_OVERVIEW_RETRY_ATTEMPTS) throw lastError;
+      if (attempt === statusAttempts) throw lastError;
     }
-    await new Promise((r) => setTimeout(r, HOME_OVERVIEW_RETRY_DELAY_MS));
+    await new Promise((r) => setTimeout(r, statusRetryDelay));
   }
   throw lastError ?? new Error("XDASH home overview failed");
 }
@@ -831,10 +876,21 @@ export const mapAdServerOverviewToHomeTotals = mapHomeOverviewToHomeTotals;
  */
 export async function fetchHomeForDate(
   date: string,
+  opts?: FetchHomeOverviewOpts,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
-  const raw = await fetchAdServerOverview({ startDate: date, endDate: date });
+  const raw = await fetchAdServerOverview({ startDate: date, endDate: date }, opts);
   return mapHomeOverviewToHomeTotals(raw, date);
 }
+
+/** Options for dashboard auto-refresh — fits default Vercel Hobby ~10s ceiling when both dates fetch in parallel. */
+export const fetchHomeForDateInteractiveOpts: FetchHomeOverviewOpts = {
+  timeoutMs: HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS,
+  statusRetryAttempts: HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS,
+  statusRetryDelayMs: HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS,
+  skipThrottle: true,
+  networkRetries: HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES,
+  networkRetryDelayMs: 400,
+};
 
 /**
  * Parse a numeric field if present. `0` is valid (real profit).

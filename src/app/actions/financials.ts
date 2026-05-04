@@ -1,6 +1,7 @@
 "use server";
 
 import { cache } from "react";
+import { after } from "next/server";
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
 import {
   getIsraelDate,
@@ -15,6 +16,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import {
   fetchAdServerOverview,
   fetchHomeForDate,
+  fetchHomeForDateInteractiveOpts,
   resolveHomeOverviewSelectedTotals,
   type XDashTotals,
 } from "@/lib/xdash-client";
@@ -932,8 +934,14 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
 
     let todayValues: { revenue: number; cost: number; profit: number; impressions: number } | null = null;
 
-    for (const date of dates) {
-      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
+    const homeByDate = await Promise.all(
+      dates.map(async (date) => {
+        const row = await fetchHomeForDate(date, fetchHomeForDateInteractiveOpts);
+        return { date, ...row } as const;
+      }),
+    );
+
+    for (const { date, revenue, cost, profit, impressions } of homeByDate) {
       const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
         { date, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
@@ -959,19 +967,21 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
     revalidateTag(FINANCIAL_TAG, { expire: 0 });
     revalidatePath("/");
 
-    // Daily/monthly goal + low-margin alerts read `daily_home_totals` here; they only
-    // ran after `/api/auto-sync` XDASH paths before, so intraday AutoSync never fired them.
-    try {
-      const perf = await checkPerformance();
-      if (perf.sent || perf.reasons.length > 0) {
-        console.log("[refreshTodayHome] checkPerformance:", perf.log);
+    // Daily/monthly goal + low-margin alerts — extend lifetime via `after()` so this does not
+    // inflate Server Action duration (Vercel invocation limit) and still runs to completion.
+    after(async () => {
+      try {
+        const perf = await checkPerformance();
+        if (perf.sent || perf.reasons.length > 0) {
+          console.log("[refreshTodayHome] checkPerformance:", perf.log);
+        }
+      } catch (perfErr) {
+        console.warn(
+          "[refreshTodayHome] checkPerformance (non-fatal):",
+          perfErr instanceof Error ? perfErr.message : perfErr,
+        );
       }
-    } catch (perfErr) {
-      console.warn(
-        "[refreshTodayHome] checkPerformance (non-fatal):",
-        perfErr instanceof Error ? perfErr.message : perfErr,
-      );
-    }
+    });
 
     return { updated: true };
   } catch (e) {
