@@ -70,8 +70,11 @@ export default function DashboardShell({
     <>
       <RouteActiveScreenSync />
       <header
-        className="sticky top-0 z-30 border-b border-white/5 bg-black/95 backdrop-blur-sm transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] md:translate-y-0"
-        style={{ transform: headerVisible ? "translateY(0)" : "translateY(-100%)" }}
+        className="sticky top-0 z-30 border-b border-white/5 bg-black/95 backdrop-blur-sm transition-[transform,padding] duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] md:translate-y-0 lg:pr-[var(--filter-sidebar-width)]"
+        style={{
+          transform: headerVisible ? "translateY(0)" : "translateY(-100%)",
+          ["--filter-sidebar-width" as string]: `${filterSidebarWidth}px`,
+        }}
       >
         <div className="mx-auto flex min-h-[88px] max-w-5xl items-center justify-start py-3 pl-3 pr-14 sm:pl-4 sm:pr-14 md:min-h-[96px] md:py-3.5 md:pr-4">
           <AdteLogoHeader className="min-w-0 shrink-0" />
