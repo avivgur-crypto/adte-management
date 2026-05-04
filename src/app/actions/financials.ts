@@ -2,7 +2,13 @@
 
 import { cache } from "react";
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
-import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
+import {
+  getIsraelDate,
+  getIsraelDateDaysAgo,
+  getIsraelDateTimeParts,
+  getIsraelHour,
+  utcMillisForIsraelWallClock,
+} from "@/lib/israel-date";
 import { withRetry } from "@/lib/resilience";
 import { getPacingSummary } from "@/lib/pacing";
 import { supabaseAdmin } from "@/lib/supabase";
@@ -710,27 +716,28 @@ export type TodayHomeRow = {
   impressions: number;
   /**
    * On Pulse comparison rows only:
-   *  - "hourly"          → real cumulative from `hourly_snapshots` within the
-   *                        drift window of `currentHour` (apples-to-apples).
-   *  - "linear_estimate" → no usable hourly snapshot for this date; computed from
+   *  - "hourly"          → cumulative from `hourly_snapshots`, chosen by fuzzy
+   *                        `created_at` vs same Israel wall-clock on the past
+   *                        date (±30 min). Live-vs-live, no asterisk.
+   *  - "linear_estimate" → no snapshot in that window; scaled from
    *                        `daily_home_totals` as `total * (currentHour / 24)`.
-   *                        UI shows an asterisk so users know it's proportional.
+   *                        UI shows an asterisk.
    * Undefined for "today" / direct daily reads.
    */
   source?: "hourly" | "linear_estimate";
   /**
    * Convenience boolean mirroring `source`. `true` iff the row was produced by the
-   * linear-estimate fallback (i.e. no exact-enough hourly snapshot existed for the
-   * date). UI uses this directly to gate the asterisk so the rendering predicate
-   * stays a single boolean.
+   * linear-estimate fallback (i.e. no snapshot within the fuzzy sync window).
+   * UI uses this directly to gate the asterisk.
    */
   isEstimate?: boolean;
   /**
-   * For `source: "hourly"` rows: the actual snapshot hour (0–23 IDT) that was
-   * matched. Useful for diagnostics and for future tooltips showing "as-of HH:00".
+   * For `source: "hourly"` rows: the `hour` column (0–23 IDT) of the matched snapshot.
    * Absent on linear-estimate rows.
    */
   matchedHour?: number;
+  /** For `source: "hourly"`: |created_at − target| in seconds (diagnostics / logs). */
+  matchedSkewSec?: number;
 };
 
 function mapDailyHomeRow(data: {
@@ -777,47 +784,39 @@ export type ComparisonData = {
   past: Record<number, TodayHomeRow | null>;
 };
 
-/**
- * Maximum allowed gap (in hours) between `currentHour` and a yesterday/N-day-ago
- * `hourly_snapshots.hour` for that snapshot to count as "exact". A 2-hour grace
- * absorbs the AutoSync 5-minute cadence and an occasional missed cron without
- * letting genuinely stale snapshots (e.g. yesterday h6 vs today h14) masquerade
- * as apples-to-apples. When the gap exceeds this, we fall through to the linear
- * estimate, which is closer to a fair comparison.
- */
-const MAX_HOUR_DRIFT_FOR_EXACT = 2;
+/** Max |created_at − target| for a past-day snapshot to count as "live" (no asterisk). */
+const FUZZY_SYNC_WINDOW_MS = 30 * 60 * 1000;
 
 /**
- * Apples-to-apples Pulse comparison: exact hourly first, proportional fallback second.
+ * Apples-to-apples Pulse comparison: fuzzy "live vs live" snapshot first, proportional fallback second.
  *
  * - **Today** = today's `daily_home_totals` row (running cumulative — refreshed every
- *   AutoSync poll, finer than the hourly grid).
+ *   AutoSync poll).
  * - **Past (1d / 7d / 28d ago)**:
- *   1. **Exact (primary)** — `hourly_snapshots` row with the largest
- *      `hour <= currentHour`, *and* whose `(currentHour - hour)` ≤
- *      `MAX_HOUR_DRIFT_FOR_EXACT`. Tagged `source: "hourly", isEstimate: false`.
- *      Snapshots are cumulative day-so-far values, so MAX(hour) gives the past
- *      day's running cumulative at that IDT hour.
- *   2. **Estimate (fallback)** — when no snapshot is fresh enough (or none
- *      exists), fetch `daily_home_totals` for the date and scale linearly:
- *      `value = daily_total * (currentHour / 24)`. Tagged
- *      `source: "linear_estimate", isEstimate: true`. UI shows an asterisk.
- *   3. `null` only when both lookups miss (no fresh hourly AND no daily row).
+ *   1. **Fuzzy hourly (primary)** — For each comparison calendar date `D`, build the
+ *      target instant "same Israel wall-clock as now, on date D" (e.g. 14:02 today
+ *      → 14:02 on D). Among all `hourly_snapshots` for `D`, pick the row whose
+ *      `created_at` is closest to that target in absolute time. If that distance
+ *      ≤ **30 minutes**, use its cumulative values (`source: "hourly", isEstimate: false`).
+ *      This absorbs sync jitter (e.g. snapshot at 13:55 vs dashboard at 14:02).
+ *   2. **Estimate (fallback)** — If no row exists or the closest row is outside the
+ *      30-minute window, scale `daily_home_totals` for `D` by `(currentHour / 24)`.
+ *   3. `null` only when both paths miss.
  *
- * All hour/date arithmetic is in Asia/Jerusalem so it lines up with the IDT
- * `hour` written by `recordHourlySnapshot`.
+ * Israel calendar + wall-clock for targets; `hourly_snapshots.created_at` is UTC
+ * from Postgres — comparable as epoch milliseconds.
  */
 export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
   const todayKey = getIsraelDateDaysAgo(0);
   const pastKeys = offsets.map((o) => getIsraelDateDaysAgo(o));
   const currentHour = getIsraelHour();
+  const clock = getIsraelDateTimeParts();
 
   const [todayRow, hourlyByDate] = await Promise.all([
     getHomeRowForDate(todayKey),
-    getCumulativeAtOrBeforeHour(pastKeys, currentHour, MAX_HOUR_DRIFT_FOR_EXACT),
+    getClosestPastSnapshotsByCreatedAt(pastKeys, clock),
   ]);
 
-  // For dates without a fresh-enough hourly snapshot, scale the daily total linearly.
   const missingForFallback = pastKeys.filter((d) => !hourlyByDate.has(d));
   const dailyByDate = await getDailyHomeRows(missingForFallback);
 
@@ -829,7 +828,10 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
     const hourly = hourlyByDate.get(date);
     if (hourly) {
       past[o] = hourly;
-      auditEntries.push(`${o}d=${date} h${hourly.matchedHour ?? "?"} (exact)`);
+      const skew = hourly.matchedSkewSec ?? 0;
+      auditEntries.push(
+        `${o}d=${date} h${hourly.matchedHour ?? "?"} (live, |Δsync|=${skew}s ≤${FUZZY_SYNC_WINDOW_MS / 60_000}m)`,
+      );
       continue;
     }
     const daily = dailyByDate.get(date);
@@ -843,7 +845,7 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
   }
 
   console.log(
-    `[getComparisonData] today=${todayKey} h${currentHour} IDT, drift≤${MAX_HOUR_DRIFT_FOR_EXACT}h | ${auditEntries.join(" | ")}`,
+    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} fuzzy±${FUZZY_SYNC_WINDOW_MS / 60_000}m on created_at | ${auditEntries.join(" | ")}`,
   );
 
   return { today: todayRow, past };
@@ -1012,63 +1014,88 @@ async function recordHourlySnapshot(
   }
 }
 
+type SnapshotRow = {
+  date: string;
+  hour: number;
+  revenue: number;
+  cost: number;
+  profit: number;
+  impressions: number;
+  created_at: string;
+};
+
 /**
- * Time-of-day baselines for several past dates in a single round-trip.
- *
- * `hourly_snapshots.revenue/cost/profit` are *cumulative* day-so-far values
- * (written by `recordHourlySnapshot` from the running `daily_home_totals`),
- * not per-hour deltas. The correct apples-to-apples baseline is therefore
- * "the snapshot row with the largest `hour <= currentHour`" — equal to
- * "cumulative revenue from 00:00 IDT through that hour". SUM would
- * multi-count cumulative totals and is wrong.
- *
- * Drift gate: a row only qualifies as exact when `currentHour - matchedHour`
- * ≤ `maxDriftHours`. Older snapshots are dropped here so the caller falls
- * through to the linear-estimate fallback (which, when the gap is large, is
- * a more honest baseline than yesterday's stale early-morning cumulative).
- *
- * Returns a `Map<date, TodayHomeRow>` containing only dates with a fresh-
- * enough snapshot. Each row is tagged `source: "hourly", isEstimate: false`
- * and carries the matched hour for diagnostics.
+ * For each comparison date, pick the `hourly_snapshots` row whose `created_at` is
+ * closest to "same Israel wall-clock as `clock`, on that date". Only include it
+ * when that distance ≤ `FUZZY_SYNC_WINDOW_MS` (live-vs-live).
  */
-async function getCumulativeAtOrBeforeHour(
+async function getClosestPastSnapshotsByCreatedAt(
   dates: string[],
-  currentHour: number,
-  maxDriftHours: number,
+  clock: { hour: number; minute: number; second: number },
 ): Promise<Map<string, TodayHomeRow>> {
   const out = new Map<string, TodayHomeRow>();
-  if (dates.length === 0 || currentHour < 0) return out;
+  if (dates.length === 0) return out;
 
-  const minHour = Math.max(0, currentHour - maxDriftHours);
   const { data, error } = await supabaseAdmin
     .from("hourly_snapshots")
-    .select("date, hour, revenue, cost, profit, impressions")
-    .in("date", dates)
-    .lte("hour", currentHour)
-    .gte("hour", minHour);
+    .select("date, hour, revenue, cost, profit, impressions, created_at")
+    .in("date", dates);
 
   if (error) {
-    console.warn("[getCumulativeAtOrBeforeHour]", error.message);
+    console.warn("[getClosestPastSnapshotsByCreatedAt]", error.message);
     return out;
   }
 
-  const bestHour = new Map<string, number>();
+  const byDate = new Map<string, SnapshotRow[]>();
   for (const r of data ?? []) {
     const key = String(r.date ?? "").slice(0, 10);
-    const h = Number(r.hour ?? -1);
-    if (!Number.isFinite(h) || h < 0) continue;
-    const prev = bestHour.get(key);
-    if (prev != null && h <= prev) continue;
-    bestHour.set(key, h);
-    out.set(key, {
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key)!.push({
       date: key,
+      hour: Number(r.hour ?? -1),
       revenue: Number(r.revenue ?? 0),
       cost: Number(r.cost ?? 0),
       profit: Number(r.profit ?? 0),
       impressions: Number(r.impressions ?? 0),
+      created_at: String(r.created_at ?? ""),
+    });
+  }
+
+  for (const date of dates) {
+    const rows = byDate.get(date) ?? [];
+    if (rows.length === 0) continue;
+
+    let targetUtcMs: number;
+    try {
+      targetUtcMs = utcMillisForIsraelWallClock(date, clock.hour, clock.minute, clock.second);
+    } catch (e) {
+      console.warn("[getClosestPastSnapshotsByCreatedAt] target time failed:", date, e);
+      continue;
+    }
+
+    let best: { row: SnapshotRow; diffMs: number } | null = null;
+    for (const row of rows) {
+      const t = new Date(row.created_at).getTime();
+      if (!Number.isFinite(t)) continue;
+      const diffMs = Math.abs(t - targetUtcMs);
+      if (best == null || diffMs < best.diffMs) best = { row, diffMs };
+    }
+    if (best == null || best.diffMs > FUZZY_SYNC_WINDOW_MS) continue;
+
+    const r = best.row;
+    const h = r.hour;
+    if (!Number.isFinite(h) || h < 0 || h > 23) continue;
+
+    out.set(date, {
+      date,
+      revenue: r.revenue,
+      cost: r.cost,
+      profit: r.profit,
+      impressions: r.impressions,
       source: "hourly",
       isEstimate: false,
       matchedHour: h,
+      matchedSkewSec: Math.round(best.diffMs / 1000),
     });
   }
 

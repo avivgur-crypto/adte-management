@@ -140,7 +140,7 @@ function computeMarginDelta(
 }
 
 const COMPARISON_TOOLTIP =
-  "Apples-to-apples: today's running cumulative vs the comparison date's cumulative at the same Israel hour (largest hour ≤ now from hourly_snapshots). % change = (current − previous) ÷ previous.";
+  "Apples-to-apples: today's running cumulative vs the comparison date's cumulative from the hourly snapshot whose sync time (created_at) is closest to the same Israel clock time on that date (within ±30 minutes). % change = (current − previous) ÷ previous.";
 
 const ESTIMATE_TOOLTIP =
   "Proportional estimate based on daily total (no exact hourly data available).";
