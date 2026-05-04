@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { BarChart3, CalendarSync } from "lucide-react";
 import { refreshTodayHome } from "@/app/actions/financials";
 import { useSyncStatus } from "@/app/context/SyncStatusContext";
+import { invalidatePrefetch } from "@/lib/tab-prefetch";
 
 const API_BASE = "/api/auto-sync";
 const SECRET = "Adte2026";
@@ -162,9 +163,15 @@ export default function AdminSyncPanel() {
     }
     if (lastSyncedAt) syncStatus?.setLastSyncedAt(lastSyncedAt);
 
+    // Drop the module-level prefetch cache so the Partners tab re-fetches the
+    // freshly-synced daily_partner_pairs the next time it mounts. Otherwise the
+    // tab keeps showing the stale snapshot from before this sync.
+    invalidatePrefetch();
+
     try {
       const home = await refreshTodayHome();
       if (home.updated) router.refresh();
+      else router.refresh();
     } catch (e) {
       console.error("[AdminSyncPanel] refreshTodayHome:", e);
     }

@@ -10,6 +10,7 @@ import {
 import {
   syncPartnerPairsData,
   syncPartnerPairsForDate,
+  syncPartnerPairsForDateRange,
 } from "@/lib/sync/partner-pairs";
 import { syncFunnelToSupabase } from "@/lib/sync/funnel";
 import { syncMondayData } from "@/lib/sync/monday";
@@ -276,6 +277,40 @@ async function executeSync(params: SyncParams): Promise<void> {
       return;
     }
 
+    if (target === "partner-pairs-backfill") {
+      const start = backfillStart;
+      const end = backfillEnd ?? todayIL();
+      if (!validDate(start) || !validDate(end)) {
+        logResult(
+          "targeted:partner-pairs-backfill",
+          { xdash: SKIP, pairs: { status: "failed", error: `Invalid date range ${start} → ${end}` }, billing: SKIP, monday: SKIP },
+          t0,
+        );
+        return;
+      }
+      console.log(`[auto-sync] partner-pairs backfill ${start} → ${end} (force=${force})`);
+      let pairs: StepResult;
+      try {
+        const r = await syncPartnerPairsForDateRange(start, end, { force });
+        pairs = {
+          status: "success",
+          datesRequested: r.datesRequested,
+          datesSynced: r.datesSynced,
+          rowsUpserted: r.rowsUpserted,
+        };
+      } catch (e) {
+        pairs = { status: "failed", error: e instanceof Error ? e.message : String(e) };
+      }
+      bustCaches();
+      logResult(
+        "targeted:partner-pairs-backfill",
+        { xdash: SKIP, pairs, billing: SKIP, monday: SKIP },
+        t0,
+        { range: { start, end } },
+      );
+      return;
+    }
+
     if (target === "cron-daily-pairs") {
       console.log(`[auto-sync] Running targeted sync: cron-daily-pairs for 2 days.`);
       const pairs = await runPairs();
@@ -344,7 +379,7 @@ function hasValidSyncIntent(sp: URLSearchParams): boolean {
   if (sp.get("backfill") === "true") return true;
   if (sp.get("month")) return true;
   const t = sp.get("target") ?? "";
-  if (["xdash-totals", "partner-pairs", "cron-daily-pairs", "daily", "billing", "monday"].includes(t)) {
+  if (["xdash-totals", "partner-pairs", "partner-pairs-backfill", "cron-daily-pairs", "daily", "billing", "monday"].includes(t)) {
     return true;
   }
   if (sp.get("force") === "true") return true;
@@ -391,7 +426,7 @@ export async function GET(request: NextRequest) {
     return respond(
       {
         accepted: false,
-        error: "Missing target. Use ?target=xdash-totals, ?target=cron-daily-pairs, ?target=partner-pairs, ?target=daily|billing|monday, or ?backfill=true",
+        error: "Missing target. Use ?target=xdash-totals, ?target=cron-daily-pairs, ?target=partner-pairs, ?target=partner-pairs-backfill&start=YYYY-MM-DD&end=YYYY-MM-DD, ?target=daily|billing|monday, or ?backfill=true",
       },
       400,
     );

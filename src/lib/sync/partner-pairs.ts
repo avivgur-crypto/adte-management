@@ -205,6 +205,74 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   };
 }
 
+/**
+ * Backfill partner pairs for an arbitrary inclusive date range. Skips dates that
+ * already have rows in `daily_partner_pairs` (cheap, idempotent). Use for
+ * cross-month gaps (the per-month `syncPartnerPairsData` doesn't catch up old
+ * months automatically — that's why Mar 8 → today went unfilled in prod).
+ */
+export async function syncPartnerPairsForDateRange(
+  startDate: string,
+  endDate: string,
+  options?: { force?: boolean },
+): Promise<SyncPartnerPairsResult> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    throw new Error(`syncPartnerPairsForDateRange: invalid dates ${startDate} → ${endDate}`);
+  }
+  if (startDate > endDate) {
+    return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  const allDates: string[] = [];
+  const start = new Date(`${startDate}T12:00:00Z`);
+  const end = new Date(`${endDate}T12:00:00Z`);
+  for (const cur = new Date(start); cur <= end; cur.setUTCDate(cur.getUTCDate() + 1)) {
+    allDates.push(cur.toISOString().slice(0, 10));
+  }
+  if (allDates.length === 0) {
+    return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  const force = options?.force === true;
+  const alreadySynced = force ? new Set<string>() : await getDatesAlreadySynced(allDates);
+  const toFetch = allDates.filter((d) => !alreadySynced.has(d));
+
+  console.log(
+    `[partner-pairs-sync] backfill range ${startDate} → ${endDate}: ${allDates.length} days, ${toFetch.length} to fetch (${alreadySynced.size} already present, force=${force})`,
+  );
+
+  if (toFetch.length === 0) {
+    return { datesRequested: allDates.length, datesSynced: 0, rowsUpserted: 0 };
+  }
+
+  let rowsUpserted = 0;
+  let datesSynced = 0;
+  for (let i = 0; i < toFetch.length; i++) {
+    const date = toFetch[i]!;
+    try {
+      const pairs = await fetchPairsForDate(date);
+      const n = await batchUpsert(date, pairs);
+      rowsUpserted += n;
+      datesSynced += 1;
+      console.log(`[partner-pairs-sync] ${date}: ${pairs.length} pairs → ${n} rows`);
+    } catch (e) {
+      if (isReportApi404(e)) {
+        console.error(`[partner-pairs-sync] 404 for ${date}, skipping.`);
+      } else {
+        console.error(
+          `[partner-pairs-sync] Failed for ${date}:`,
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
+    if (i < toFetch.length - 1) {
+      await new Promise((r) => setTimeout(r, INTER_DATE_DELAY_MS));
+    }
+  }
+
+  return { datesRequested: allDates.length, datesSynced, rowsUpserted };
+}
+
 /** Dates from 1st through last day of the given month, or through yesterday if that month is current. */
 function datesForMonth(year: number, month: number): string[] {
   const now = new Date();
