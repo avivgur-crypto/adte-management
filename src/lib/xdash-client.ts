@@ -1,15 +1,24 @@
 /**
- * XDASH Backup API Client
+ * XDASH API Client
  *
- * Fetches financial data from the XDASH **backup** system (weak/unstable).
- * All requests are throttled to avoid overloading it.
+ * Two transport paths:
  *
- *   - Partners overview: /partners/demand/overview + /partners/supply/overview (2 calls per date)
- *   - Reports API: one call per date with metrics Revenue/Cost/Impressions — set XDASH_USE_REPORTS=true
- *   - Home overview (global totals, matches XDASH header): POST /home/overview
+ *  1) **External Report API (preferred for dashboard totals).**
+ *     `POST $XDASH_REPORT_URL` with header `x-api-key: $XDASH_EXTERNAL_API_KEY`.
+ *     Returns an array of per-tag rows that we **sum** in JS to produce the
+ *     daily totals (`fetchHomeForDate`). This replaces the old cookie-based
+ *     `/home/overview` scraping for the user-facing pulse.
  *
- * IMPORTANT: The auth token expires periodically. Copy a fresh token from the backup site
- * (DevTools > Network > auth-token cookie) and update XDASH_AUTH_TOKEN in `.env.local`.
+ *  2) **Legacy cookie path (still used by partner endpoints / billing / monday).**
+ *     `POST $XDASH_API_BASE/...` with `Cookie: auth-token=…` from the backup
+ *     server. Throttled. Auth token rotates; see `getXDashAuthToken`.
+ *
+ * Required env for path (1):
+ *   - `XDASH_REPORT_URL`         — full HTTPS URL of the external report endpoint.
+ *   - `XDASH_EXTERNAL_API_KEY`   — API key supplied by the XDASH team.
+ *
+ * Required env for path (2) (unchanged):
+ *   - `XDASH_AUTH_TOKEN` (or rotated via `xdash_auth` table) and `XDASH_ORGANIZATION_ID`.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
@@ -40,10 +49,27 @@ const XDASH_TOKEN_CACHE_MS = 60_000;
 let _cachedXdashAuthToken: { token: string; expiresAtMs: number } | null = null;
 let _supabaseForXdashAuth: SupabaseClient | null = null;
 
+/** External Report API (used by `fetchHomeForDate` — replaces cookie-based home/overview). */
+const XDASH_REPORT_URL = process.env.XDASH_REPORT_URL ?? "";
+const XDASH_EXTERNAL_API_KEY = process.env.XDASH_EXTERNAL_API_KEY ?? "";
+
 function assertEnvVars() {
   if (!XDASH_ORGANIZATION_ID) {
     throw new Error(
       "Missing XDASH_ORGANIZATION_ID. Set it in .env.local (see .env.example)."
+    );
+  }
+}
+
+function assertExternalReportEnv() {
+  if (!XDASH_REPORT_URL) {
+    throw new Error(
+      "Missing XDASH_REPORT_URL — set it in .env.local to the external XDASH report endpoint URL.",
+    );
+  }
+  if (!XDASH_EXTERNAL_API_KEY) {
+    throw new Error(
+      "Missing XDASH_EXTERNAL_API_KEY — set it in .env.local with the API key provided by the XDASH team.",
     );
   }
 }
@@ -755,11 +781,13 @@ export function resolveHomeOverviewSelectedTotals(raw: unknown): XDashTotals | u
 }
 
 /**
- * Fetches the **global** Home overview from XDASH backup (same rollup as the main header).
- * Retries on 502/503/504 (Bad Gateway / Unavailable).
+ * **LEGACY / DIAGNOSTIC ONLY.** Fetches the global Home overview from the XDASH
+ * backup using cookie auth. Production daily-totals reads now go through the
+ * external report endpoint via `fetchHomeForDate`. This function is kept so
+ * `diagnosticXdashHomeCostFields` and a handful of one-off scripts (e.g.
+ * `audit-home-totals-raw.ts`) can still inspect the raw cookie-path response.
  *
- * Pass `opts` from interactive paths (e.g. `refreshTodayHome`) so slow backups do not exceed
- * Vercel's serverless time limit (10s Hobby / configurable Pro).
+ * Retries on 502/503/504. Pass `opts` to tune timeout/retries.
  */
 export async function fetchAdServerOverview(
   dateRange: XDashDateRange,
@@ -896,16 +924,191 @@ export function mapHomeOverviewToHomeTotals(
 /** @alias mapHomeOverviewToHomeTotals — kept for existing imports. */
 export const mapAdServerOverviewToHomeTotals = mapHomeOverviewToHomeTotals;
 
+// ============================================================================
+// External Report API — replaces cookie-based /home/overview for daily totals.
+// Uses `XDASH_REPORT_URL` + `x-api-key` header. Returns per-tag rows that we
+// sum in JS to produce the same `{ revenue, cost, profit, impressions }` shape
+// the rest of the app already consumes (Pulse, daily_home_totals, etc.).
+// ============================================================================
+
+const EXTERNAL_REPORT_RETRY_ON_STATUS = [429, 500, 502, 503, 504];
+
+type ExternalReportRow = Record<string, unknown>;
+
 /**
- * Fetch Home API totals for a single date. Returns {revenue, cost, profit, impressions}.
- * Uses **POST /home/overview** (global rollup — matches XDASH header).
+ * Pull the row array out of the external report response. Handles a few common
+ * envelopes (`rows`, `data`, `results`, `report.rows`, …) so a future shape
+ * tweak doesn't silently zero our totals.
+ */
+function extractRowsFromExternalReport(json: unknown): ExternalReportRow[] {
+  if (Array.isArray(json)) return json as ExternalReportRow[];
+  if (json && typeof json === "object") {
+    const rec = json as Record<string, unknown>;
+    for (const key of ["rows", "data", "results", "report", "items"]) {
+      const candidate = rec[key];
+      if (Array.isArray(candidate)) return candidate as ExternalReportRow[];
+      if (candidate && typeof candidate === "object") {
+        const nested =
+          (candidate as Record<string, unknown>).rows ??
+          (candidate as Record<string, unknown>).data;
+        if (Array.isArray(nested)) return nested as ExternalReportRow[];
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * Sum revenue/cost/impressions/profit across the per-tag rows. If `profit`
+ * isn't present on the rows, fall back to `revenue - cost` (same convention as
+ * the legacy `mapHomeOverviewToHomeTotals`).
+ */
+function aggregateExternalReportRows(
+  json: unknown,
+  date: string,
+): { revenue: number; cost: number; profit: number; impressions: number } {
+  const rows = extractRowsFromExternalReport(json);
+  if (rows.length === 0) {
+    console.warn(`[XDASH-External] No rows returned for ${date} — returning zeros.`);
+    return { revenue: 0, cost: 0, profit: 0, impressions: 0 };
+  }
+
+  let revenue = 0;
+  let cost = 0;
+  let impressions = 0;
+  let summedProfit = 0;
+  let hasExplicitProfit = false;
+
+  for (const row of rows) {
+    revenue += parseCurrencyValue(row.revenue);
+    cost += parseCurrencyValue(row.cost);
+    impressions += parseCurrencyValue(row.impressions);
+    const p = row.profit;
+    if (p !== undefined && p !== null) {
+      hasExplicitProfit = true;
+      summedProfit += parseCurrencyValue(p);
+    }
+  }
+
+  const profit = hasExplicitProfit ? summedProfit : revenue - cost;
+  console.log(
+    `[XDASH-External] Summed Profit for ${date}: $${profit.toFixed(2)} ` +
+      `(revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, impressions=${impressions}, rows=${rows.length})`,
+  );
+
+  return { revenue, cost, profit, impressions };
+}
+
+/**
+ * Fetch the cumulative daily totals for a single date from the external XDASH
+ * report endpoint. Aggregates the returned per-tag rows (supplyTag × demandTag)
+ * into `{ revenue, cost, profit, impressions }`.
+ *
+ * Authentication: `x-api-key` header — no cookie required.
+ * Retries: status 429/5xx + network errors, with the same Sync-Pro budgets
+ * (3 attempts × 2s + per-attempt timeout from `opts`).
+ */
+async function fetchHomeFromExternalReportApi(
+  date: string,
+  opts?: FetchHomeOverviewOpts,
+): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
+  assertNotDisabled();
+  assertExternalReportEnv();
+
+  const timeoutMs = opts?.timeoutMs ?? HOME_OVERVIEW_TIMEOUT_MS;
+  const statusAttempts = opts?.statusRetryAttempts ?? HOME_OVERVIEW_RETRY_ATTEMPTS;
+  const statusRetryDelay = opts?.statusRetryDelayMs ?? HOME_OVERVIEW_RETRY_DELAY_MS;
+  const networkRetries = opts?.networkRetries ?? RETRY_ATTEMPTS;
+  const networkRetryDelay = opts?.networkRetryDelayMs ?? RETRY_DELAY_MS;
+
+  const payload = {
+    /**
+     * Cumulative semantics: the external report endpoint returns one row per
+     * `(supplyTag, demandTag)` pair, aggregated for the inclusive date range
+     * [startDate, endDate]. For "today" we always send the same date for both
+     * — summing the rows yields the running 00:00 → now total.
+     */
+    startDate: date,
+    endDate: date,
+    metrics: ["revenue", "cost", "impressions", "profit"],
+    dimensions: ["supplyTag", "demandTag"],
+    aggregationPeriod: "sum",
+  };
+  const body = JSON.stringify(payload);
+
+  console.log(
+    `[XDASH-External] Fetching totals via API Key for ${date} ` +
+      `(url=${XDASH_REPORT_URL}, timeout=${timeoutMs}ms, statusRetries=${statusAttempts}, networkRetries=${networkRetries})`,
+  );
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= statusAttempts; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchWithRetry(
+        XDASH_REPORT_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": XDASH_EXTERNAL_API_KEY,
+          },
+          body,
+          signal: controller.signal,
+        },
+        {
+          timeoutMs,
+          skipThrottle: opts?.skipThrottle,
+          retries: networkRetries,
+          retryDelayMs: networkRetryDelay,
+        },
+      );
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const json = (await response.json()) as unknown;
+        return aggregateExternalReportRows(json, date);
+      }
+
+      const errorBody = await response.text();
+      lastError = new Error(
+        `XDASH external report ${response.status}: ${response.statusText}\n${errorBody}`,
+      );
+      if (
+        !EXTERNAL_REPORT_RETRY_ON_STATUS.includes(response.status) ||
+        attempt === statusAttempts
+      ) {
+        throw lastError;
+      }
+      console.warn(
+        `[XDASH-External] HTTP ${response.status} on attempt ${attempt}/${statusAttempts} for ${date} — retrying in ${statusRetryDelay}ms`,
+      );
+    } catch (e) {
+      clearTimeout(timeoutId);
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (attempt === statusAttempts) throw lastError;
+      console.warn(
+        `[XDASH-External] attempt ${attempt}/${statusAttempts} for ${date} failed: ${lastError.message}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, statusRetryDelay));
+  }
+  throw lastError ?? new Error("XDASH external report failed");
+}
+
+/**
+ * Fetch Home totals for a single date.
+ *
+ * Now backed by the external report endpoint (`XDASH_REPORT_URL` + `x-api-key`).
+ * The returned shape is unchanged so callers (`refreshTodayHome`,
+ * `syncHomeTotalsForDates`, scripts) keep working.
  */
 export async function fetchHomeForDate(
   date: string,
   opts?: FetchHomeOverviewOpts,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
-  const raw = await fetchAdServerOverview({ startDate: date, endDate: date }, opts);
-  return mapHomeOverviewToHomeTotals(raw, date);
+  return fetchHomeFromExternalReportApi(date, opts);
 }
 
 /**
