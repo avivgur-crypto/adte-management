@@ -775,11 +775,25 @@ export async function fetchAdServerOverview(
   const networkRetryDelay = opts?.networkRetryDelayMs ?? RETRY_DELAY_MS;
 
   const url = `${XDASH_API_BASE}${HOME_OVERVIEW_GLOBAL_PATH}`;
-  const body = JSON.stringify({
+  const payload = {
+    /**
+     * IMPORTANT — cumulative semantics:
+     * XDASH `/home/overview` returns `selectedDates.totals` aggregated for the
+     * INCLUSIVE date range [startDate, endDate]. For "today" we always send
+     * the same date for both — the response is the running cumulative total
+     * for that calendar day, NOT one specific hour. Diverging start/end (or
+     * accidentally sending the wrong field) would silently change semantics,
+     * so log the exact body we're about to POST.
+     */
     startDate: dateRange.startDate,
     endDate: dateRange.endDate,
     specificComparisonDate: dateRange.specificComparisonDate ?? null,
-  });
+  };
+  const body = JSON.stringify(payload);
+  console.log(
+    `[XDASH] POST /home/overview body=${JSON.stringify(payload)} ` +
+      `(timeout=${timeoutMs}ms, statusRetries=${statusAttempts}, networkRetries=${networkRetries})`,
+  );
 
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= statusAttempts; attempt++) {
@@ -866,8 +880,13 @@ export function mapHomeOverviewToHomeTotals(
 
   const todayIL = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
   const isToday = date === todayIL;
+  // Cumulative-day check: revenue should match what XDASH header shows for the
+  // whole day [00:00 → now] (or full day if `date` is in the past). If you ever
+  // see this number diverge from XDASH UI by a factor > 1.5×, suspect a payload
+  // shape change — start by comparing the [XDASH] body log above to what the
+  // XDASH /home page is sending in DevTools.
   console.log(
-    `[xdash-client] Home ${date}${isToday ? " (live)" : ""}: ` +
+    `[xdash-client] Home ${date}${isToday ? " (live cumulative 00:00→now)" : " (full day)"}: ` +
       `rev=$${revenue.toFixed(2)} cost=$${cost.toFixed(2)} profit=$${profit.toFixed(2)} imp=${impressions}`,
   );
 

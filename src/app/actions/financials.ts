@@ -907,24 +907,59 @@ async function getDailyHomeRows(dates: string[]): Promise<Map<string, TodayHomeR
 // Called on page load so the dashboard stays current without waiting for cron; yesterday is
 // re-fetched so end-of-day totals settle after the calendar flips.
 //
-// Sync-Pro rule: Today and Yesterday are always re-fetched. XDASH revenue/cost
-// shifts intraday and we'd rather pay 15-20s than serve stale rows.
+// Sync-Pro rule: the Server Action returns IMMEDIATELY (`{ scheduled: true }`).
+// All XDASH fetches + DB writes happen inside `after()`, AFTER the HTTP response
+// is sent. This guarantees the user never waits and the action never causes a 504.
+// AutoSync.tsx fires a delayed `router.refresh()` so the next render picks up the
+// freshly-upserted rows.
 // ---------------------------------------------------------------------------
 
-export type RefreshTodayHomeResult = { updated: boolean };
+export type RefreshTodayHomeResult = {
+  /**
+   * `true` if a background refresh has been scheduled. We do NOT know yet whether
+   * the upsert will succeed — that runs after the response is sent. Always `true`
+   * unless an exception was thrown synchronously while scheduling.
+   */
+  scheduled: boolean;
+  /**
+   * Legacy field. Kept for backwards-compat with older AutoSync builds. Always
+   * mirrors `scheduled` since the work is now non-blocking.
+   * @deprecated check `scheduled` instead.
+   */
+  updated: boolean;
+};
 
-/** Returns { updated: true } when at least one date was upserted from XDASH. */
+/** Schedule a background XDASH refresh for today + yesterday. Returns immediately. */
 export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
+  const today = getIsraelDateDaysAgo(0);
+  const yesterday = getIsraelDateDaysAgo(1);
+
+  console.log(
+    `[Sync-Pro] refreshTodayHome scheduled. Dates: ${today}, ${yesterday}. Work runs in after() with a 55s per-fetch budget.`,
+  );
+
+  after(async () => {
+    await runRefreshTodayHomeBackground(today, yesterday);
+  });
+
+  return { scheduled: true, updated: true };
+}
+
+/**
+ * Background worker for `refreshTodayHome`. Runs inside `after()` so it has the
+ * full 60s function budget without blocking the user's response. Never throws —
+ * all errors are logged + recorded in `daily_sync_logs`.
+ */
+async function runRefreshTodayHomeBackground(today: string, yesterday: string): Promise<void> {
   const startedAt = Date.now();
+  const dates = [today, yesterday] as const;
+
+  console.log(
+    `[Sync-Pro] runRefreshTodayHomeBackground starting. Dates: ${dates.join(", ")}. ` +
+      `Always-upsert mode (no stale skip). Per-call budget: 55s.`,
+  );
+
   try {
-    const today = getIsraelDateDaysAgo(0);
-    const yesterday = getIsraelDateDaysAgo(1);
-    const dates = [today, yesterday] as const;
-
-    console.log(
-      `[Sync-Pro] refreshTodayHome starting. Dates: ${dates.join(", ")}. Per-call budget: ~55s. Always-upsert mode (no stale skip).`,
-    );
-
     const syncedAt = new Date().toISOString();
 
     let todayValues: { revenue: number; cost: number; profit: number; impressions: number } | null = null;
@@ -943,8 +978,16 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
         { onConflict: "date" },
       );
       if (error) {
-        console.error(`[Sync-Pro] refreshTodayHome upsert failed (${date}):`, error.message);
-        return { updated: false };
+        console.error(`[Sync-Pro] runRefreshTodayHomeBackground upsert failed (${date}):`, error.message);
+        void recordSyncRun({
+          source: "refresh_today_home",
+          durationMs: Date.now() - startedAt,
+          datesSynced: dates.length,
+          rowsUpserted: upsertedRows,
+          ok: false,
+          errorMessage: `upsert ${date}: ${error.message}`,
+        });
+        return;
       }
       upsertedRows += 1;
       console.log(
@@ -952,6 +995,20 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       );
       if (date === today) todayValues = { revenue, cost, profit, impressions };
     }
+
+    if (todayValues) {
+      try {
+        await recordHourlySnapshot(today, todayValues);
+      } catch (e) {
+        console.warn(
+          "[runRefreshTodayHomeBackground] hourly snapshot (non-fatal):",
+          e instanceof Error ? e.message : e,
+        );
+      }
+    }
+
+    revalidateTag(FINANCIAL_TAG, { expire: 0 });
+    revalidatePath("/");
 
     void recordSyncRun({
       source: "refresh_today_home",
@@ -961,37 +1018,20 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       ok: true,
     });
 
-    // Fire-and-forget: record an hourly snapshot for "today" so same-time
-    // comparisons can be made tomorrow.  Never blocks or delays the main sync.
-    if (todayValues) {
-      recordHourlySnapshot(today, todayValues).catch((e) => {
-        console.warn("[refreshTodayHome] hourly snapshot (non-fatal):", e instanceof Error ? e.message : e);
-      });
-    }
-
-    revalidateTag(FINANCIAL_TAG, { expire: 0 });
-    revalidatePath("/");
-
-    // Daily/monthly goal + low-margin alerts — extend lifetime via `after()` so this does not
-    // inflate Server Action duration (Vercel invocation limit) and still runs to completion.
-    after(async () => {
-      try {
-        const perf = await checkPerformance();
-        if (perf.sent || perf.reasons.length > 0) {
-          console.log("[refreshTodayHome] checkPerformance:", perf.log);
-        }
-      } catch (perfErr) {
-        console.warn(
-          "[refreshTodayHome] checkPerformance (non-fatal):",
-          perfErr instanceof Error ? perfErr.message : perfErr,
-        );
+    try {
+      const perf = await checkPerformance();
+      if (perf.sent || perf.reasons.length > 0) {
+        console.log("[runRefreshTodayHomeBackground] checkPerformance:", perf.log);
       }
-    });
-
-    return { updated: true };
+    } catch (perfErr) {
+      console.warn(
+        "[runRefreshTodayHomeBackground] checkPerformance (non-fatal):",
+        perfErr instanceof Error ? perfErr.message : perfErr,
+      );
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[Sync-Pro] refreshTodayHome failed:", msg);
+    console.error("[Sync-Pro] runRefreshTodayHomeBackground failed:", msg);
     void recordSyncRun({
       source: "refresh_today_home",
       durationMs: Date.now() - startedAt,
@@ -1000,7 +1040,6 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       ok: false,
       errorMessage: msg,
     });
-    return { updated: false };
   }
 }
 
