@@ -21,6 +21,7 @@
  *   - `XDASH_AUTH_TOKEN` (or rotated via `xdash_auth` table) and `XDASH_ORGANIZATION_ID`.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { getIsraelDate } from "@/lib/israel-date";
 
 // ============================================================================
 // KILL SWITCH — set XDASH_DISABLED=true in .env.local to block ALL API calls.
@@ -1081,16 +1082,40 @@ async function fetchHomeFromExternalReportApi(
 }
 
 /**
- * Fetch Home totals for a single date.
+ * Fetch Home totals for a single date — **hybrid routing**:
  *
- * Now backed by the external report endpoint (`XDASH_REPORT_URL` + `x-api-key`).
- * The returned shape is unchanged so callers (`refreshTodayHome`,
- * `syncHomeTotalsForDates`, scripts) keep working.
+ *  - **TODAY (intraday)**  → legacy cookie-based `/home/overview` (`fetchAdServerOverview`).
+ *    The new external report endpoint returns an empty `totals` for the current
+ *    Israel calendar date, so we have to keep the cookie scrape alive for today
+ *    only. We always send `startDate === endDate === today` so the live server
+ *    runs the lightest possible single-day query.
+ *  - **HISTORY (any past date)** → fast external report API (`fetchHomeFromExternalReportApi`).
+ *    Pre-aggregated `totals` are returned at the JSON root, no scrape needed.
+ *
+ * The returned shape is identical for both paths so all downstream callers
+ * (`refreshTodayHome`, `syncHomeTotalsForDates`, scripts, Pulse) keep working
+ * without any change.
  */
 export async function fetchHomeForDate(
   date: string,
   opts?: FetchHomeOverviewOpts,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
+  // Israel calendar today — same source of truth used everywhere else
+  // (`refreshTodayHome`, sync libs, comparison logic). Avoids importing
+  // date-fns-tz for one trivial conversion.
+  const todayIL = getIsraelDate();
+
+  if (date === todayIL) {
+    console.log(
+      `[XDASH-Hybrid] Routing TODAY (${date}) to legacy cookie-based live endpoint (Lightweight 1-day query).`,
+    );
+    // Strictly bounded to a single day so the fragile live server runs the
+    // smallest possible query. Do NOT widen the range here.
+    const raw = await fetchAdServerOverview({ startDate: date, endDate: date }, opts);
+    return mapHomeOverviewToHomeTotals(raw, date);
+  }
+
+  console.log(`[XDASH-Hybrid] Routing HISTORY (${date}) to fast External API.`);
   return fetchHomeFromExternalReportApi(date, opts);
 }
 
