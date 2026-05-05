@@ -926,83 +926,66 @@ export const mapAdServerOverviewToHomeTotals = mapHomeOverviewToHomeTotals;
 
 // ============================================================================
 // External Report API — replaces cookie-based /home/overview for daily totals.
-// Uses `XDASH_REPORT_URL` + `x-api-key` header. Returns per-tag rows that we
-// sum in JS to produce the same `{ revenue, cost, profit, impressions }` shape
-// the rest of the app already consumes (Pulse, daily_home_totals, etc.).
+// Uses `XDASH_REPORT_URL` + `x-api-key` header.
+//
+// Response shape (relevant subset):
+//   {
+//     "data":   [ { dimensions: {...}, metrics: { revenue, cost, profit, impressions } }, ... ],
+//     "totals": { revenue, cost, profit, impressions }
+//   }
+//
+// We trust `totals` directly — it is pre-aggregated by the API for the requested
+// date range, which avoids the row-summing bug where per-row metrics live under
+// `row.metrics` (not on the row root). We never iterate `data` for totals.
 // ============================================================================
 
 const EXTERNAL_REPORT_RETRY_ON_STATUS = [429, 500, 502, 503, 504];
 
-type ExternalReportRow = Record<string, unknown>;
+type ExternalReportTotals = {
+  revenue?: unknown;
+  cost?: unknown;
+  profit?: unknown;
+  impressions?: unknown;
+};
 
 /**
- * Pull the row array out of the external report response. Handles a few common
- * envelopes (`rows`, `data`, `results`, `report.rows`, …) so a future shape
- * tweak doesn't silently zero our totals.
+ * Read `revenue / cost / profit / impressions` straight from the API's
+ * pre-computed `totals` object. Missing fields fall back to 0.
  */
-function extractRowsFromExternalReport(json: unknown): ExternalReportRow[] {
-  if (Array.isArray(json)) return json as ExternalReportRow[];
-  if (json && typeof json === "object") {
-    const rec = json as Record<string, unknown>;
-    for (const key of ["rows", "data", "results", "report", "items"]) {
-      const candidate = rec[key];
-      if (Array.isArray(candidate)) return candidate as ExternalReportRow[];
-      if (candidate && typeof candidate === "object") {
-        const nested =
-          (candidate as Record<string, unknown>).rows ??
-          (candidate as Record<string, unknown>).data;
-        if (Array.isArray(nested)) return nested as ExternalReportRow[];
-      }
-    }
-  }
-  return [];
-}
-
-/**
- * Sum revenue/cost/impressions/profit across the per-tag rows. If `profit`
- * isn't present on the rows, fall back to `revenue - cost` (same convention as
- * the legacy `mapHomeOverviewToHomeTotals`).
- */
-function aggregateExternalReportRows(
+function readExternalReportTotals(
   json: unknown,
   date: string,
 ): { revenue: number; cost: number; profit: number; impressions: number } {
-  const rows = extractRowsFromExternalReport(json);
-  if (rows.length === 0) {
-    console.warn(`[XDASH-External] No rows returned for ${date} — returning zeros.`);
-    return { revenue: 0, cost: 0, profit: 0, impressions: 0 };
+  const root = (json && typeof json === "object" ? (json as Record<string, unknown>) : {});
+  const totals = (root.totals && typeof root.totals === "object"
+    ? (root.totals as ExternalReportTotals)
+    : {}) as ExternalReportTotals;
+
+  if (!root.totals) {
+    console.warn(
+      `[XDASH-External] No 'totals' object in response for ${date} — returning zeros.`,
+    );
   }
 
-  let revenue = 0;
-  let cost = 0;
-  let impressions = 0;
-  let summedProfit = 0;
-  let hasExplicitProfit = false;
+  const result = {
+    revenue: parseCurrencyValue(totals.revenue ?? 0),
+    cost: parseCurrencyValue(totals.cost ?? 0),
+    profit: parseCurrencyValue(totals.profit ?? 0),
+    impressions: Number(totals.impressions) || 0,
+  };
 
-  for (const row of rows) {
-    revenue += parseCurrencyValue(row.revenue);
-    cost += parseCurrencyValue(row.cost);
-    impressions += parseCurrencyValue(row.impressions);
-    const p = row.profit;
-    if (p !== undefined && p !== null) {
-      hasExplicitProfit = true;
-      summedProfit += parseCurrencyValue(p);
-    }
-  }
-
-  const profit = hasExplicitProfit ? summedProfit : revenue - cost;
   console.log(
-    `[XDASH-External] Summed Profit for ${date}: $${profit.toFixed(2)} ` +
-      `(revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, impressions=${impressions}, rows=${rows.length})`,
+    `[XDASH-External] Extracted totals from root object for ${date}: ` +
+      `revenue=$${result.revenue.toFixed(2)}, cost=$${result.cost.toFixed(2)}, ` +
+      `profit=$${result.profit.toFixed(2)}, impressions=${result.impressions}`,
   );
 
-  return { revenue, cost, profit, impressions };
+  return result;
 }
 
 /**
  * Fetch the cumulative daily totals for a single date from the external XDASH
- * report endpoint. Aggregates the returned per-tag rows (supplyTag × demandTag)
- * into `{ revenue, cost, profit, impressions }`.
+ * report endpoint. Reads `json.totals` directly — pre-aggregated by the API.
  *
  * Authentication: `x-api-key` header — no cookie required.
  * Retries: status 429/5xx + network errors, with the same Sync-Pro budgets
@@ -1068,7 +1051,7 @@ async function fetchHomeFromExternalReportApi(
 
       if (response.ok) {
         const json = (await response.json()) as unknown;
-        return aggregateExternalReportRows(json, date);
+        return readExternalReportTotals(json, date);
       }
 
       const errorBody = await response.text();
