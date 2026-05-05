@@ -1,10 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 import { syncPnlData } from "@/lib/sync/pnl";
 import { syncXDASHData } from "@/lib/sync/xdash";
+import { checkPerformance } from "@/app/actions/notifications";
 import { recordSyncRun } from "@/lib/sync-logs";
+
+const FINANCIAL_TAG = "financial-data";
 
 export const dynamic = "force-dynamic";
 /**
@@ -146,6 +150,25 @@ export async function GET(request: NextRequest) {
     errorMessage: summary.errors[0],
     detail: summary,
   });
+
+  // Goal / margin alerts run after XDASH writes `daily_home_totals` (same as auto-sync + refreshTodayHome).
+  if (!xdashDisabled && xdashResult.status === "fulfilled") {
+    try {
+      const perf = await checkPerformance();
+      console.log("[cron/sync] checkPerformance:", perf.log);
+    } catch (e) {
+      console.warn(
+        "[cron/sync] checkPerformance (non-fatal):",
+        e instanceof Error ? e.message : e,
+      );
+    }
+    try {
+      revalidateTag(FINANCIAL_TAG, { expire: 0 });
+      revalidatePath("/");
+    } catch {
+      /* non-fatal */
+    }
+  }
 
   return NextResponse.json({ ok, summary }, { status: ok ? 200 : 500 });
 }

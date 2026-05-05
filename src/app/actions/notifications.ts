@@ -9,6 +9,8 @@
  * - Yesterday vs day-before: `daily_home_totals` for `getIsraelDateDaysAgo(1)` vs `getIsraelDateDaysAgo(2)`.
  * - Milestone dedupe: `sent_notifications` per user (UNIQUE user_id + notification_type + sent_date).
  * - Daily goal crossing: `daily_goal_sync_snapshot` last_seen_profit vs current row; no daily notify 00:00–07:59 IL.
+ *   First observation after quiet hours: if there is no snapshot yet for today and GP is already ≥ daily target,
+ *   we still notify once (deduped via `sent_notifications`) so sparse syncs / cron-only paths do not miss the alert.
  * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 33% margin (Israel 12:00+).
  * - Per-user targeting: each push type sent only to users whose `profiles.notification_settings` has the flag enabled.
  *   Legacy subscriptions (user_id IS NULL) receive all notifications.
@@ -619,10 +621,11 @@ export async function checkPerformance(): Promise<{
         prevSnap != null &&
         prevSnap + 1e-6 < dailyAvgTarget &&
         todayGp + 1e-6 >= dailyAvgTarget;
+      /** First sync of the day already at/above target (no prior snapshot to define a “cross”). */
+      const firstHit =
+        prevSnap == null && todayGp + 1e-6 >= dailyAvgTarget;
 
-      if (prevSnap == null) {
-        await upsertDailyGoalSnapshot(today, todayGp);
-      } else if (crossed) {
+      const notifyDailyGoalReached = async () => {
         reasons.push("daily_goal_reached");
         const r = await sendPushTargetedWithDedupe(
           "Daily Goal Reached! 🎯",
@@ -636,10 +639,12 @@ export async function checkPerformance(): Promise<{
         if (r.ok === 0) {
           logExtras.push("daily_goal_no_delivery");
         }
-        await upsertDailyGoalSnapshot(today, todayGp);
-      } else {
-        await upsertDailyGoalSnapshot(today, todayGp);
+      };
+
+      if (crossed || firstHit) {
+        await notifyDailyGoalReached();
       }
+      await upsertDailyGoalSnapshot(today, todayGp);
     }
   }
 
