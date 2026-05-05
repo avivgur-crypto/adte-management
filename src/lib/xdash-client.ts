@@ -612,8 +612,9 @@ function buildDatePayload(date: string): string {
   });
 }
 
-const RETRY_ATTEMPTS = 2;
-const RETRY_DELAY_MS = 5000;
+/** Vercel Pro: prefer slow + accurate over fast + flaky. 3 tries × 2s gap = ~6s of retry budget on top of the per-attempt timeout. */
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000;
 
 // Throttle: minimum gap between consecutive API calls to protect the backup server.
 const THROTTLE_MS = 2000;
@@ -696,14 +697,20 @@ async function fetchWithRetry(
 
 const HOME_OVERVIEW_TIMEOUT_MS = 90_000;
 const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
-const HOME_OVERVIEW_RETRY_ATTEMPTS = 2;
-const HOME_OVERVIEW_RETRY_DELAY_MS = 5000;
+const HOME_OVERVIEW_RETRY_ATTEMPTS = 3;
+const HOME_OVERVIEW_RETRY_DELAY_MS = 2000;
 
-/** Shorter budgets for `refreshTodayHome` (Server Action) so Vercel stays under invocation limits. */
-const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 7_500;
-const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 1;
-const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 800;
-const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 1;
+/**
+ * Sync-Pro budgets for interactive paths (`refreshTodayHome`).
+ * Vercel Pro gives a 60s function ceiling, so we trade speed for reliability:
+ * 55s per attempt + 3 status retries with 2s gap. Combined with parallel
+ * today/yesterday fetches this still fits in one Pro invocation.
+ */
+const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 55_000;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 3;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 2000;
+const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 3;
+const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRY_DELAY_MS = 2000;
 
 export type FetchHomeOverviewOpts = {
   /** Per HTTP attempt (default long timeout for cron/scripts). */
@@ -882,14 +889,21 @@ export async function fetchHomeForDate(
   return mapHomeOverviewToHomeTotals(raw, date);
 }
 
-/** Options for dashboard auto-refresh — fits default Vercel Hobby ~10s ceiling when both dates fetch in parallel. */
+/**
+ * Sync-Pro options for dashboard auto-refresh. Reliability over speed:
+ *  - 55s per attempt (well inside Vercel Pro's 60s ceiling).
+ *  - 3 status retries × 2s, 3 network retries × 2s.
+ *  - Throttle stays ON; XDASH gets unhappy when same-IP calls land back-to-back.
+ *    The 2s inter-request gap costs us 2s on the second of today/yesterday and
+ *    has been worth it in practice.
+ */
 export const fetchHomeForDateInteractiveOpts: FetchHomeOverviewOpts = {
   timeoutMs: HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS,
   statusRetryAttempts: HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS,
   statusRetryDelayMs: HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS,
-  skipThrottle: true,
+  skipThrottle: false,
   networkRetries: HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES,
-  networkRetryDelayMs: 400,
+  networkRetryDelayMs: HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRY_DELAY_MS,
 };
 
 /**

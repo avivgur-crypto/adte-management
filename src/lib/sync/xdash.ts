@@ -363,8 +363,18 @@ export async function syncHomeTotalsForDates(
     toFetch = dates.filter((d) => d === today || d === yesterday || !existing.has(d));
     const skipped = dates.length - toFetch.length;
     if (skipped > 0) {
-      console.log(`[xdash-sync] Skipping ${skipped} date(s) with existing profit data (today + yesterday always re-fetched; use force=true to override the rest)`);
+      console.log(
+        `[Sync-Pro] daily_home_totals: skipping ${skipped} settled date(s); ALWAYS re-fetching today (${today}) + yesterday (${yesterday}). Force=${force}.`,
+      );
+    } else {
+      console.log(
+        `[Sync-Pro] daily_home_totals: re-fetching all ${toFetch.length} requested date(s) (today=${today}, yesterday=${yesterday} included).`,
+      );
     }
+  } else {
+    console.log(
+      `[Sync-Pro] daily_home_totals: force=true — re-fetching all ${toFetch.length} date(s).`,
+    );
   }
 
   if (toFetch.length === 0) return 0;
@@ -416,6 +426,10 @@ export async function syncHomeTotalsForDates(
       console.log(`[xdash-sync] DB returned sample:`, JSON.stringify(sample));
     }
   }
+
+  console.log(
+    `[Sync-Pro] daily_home_totals upserted ${written} row(s) across ${pending.length} fetched date(s).`,
+  );
 
   // Final read-back for 2026-01-01 to confirm what the DB actually holds
   const { data: proof, error: proofErr } = await supabaseAdmin

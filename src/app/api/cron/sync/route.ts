@@ -4,8 +4,14 @@ import { syncMondayData } from "@/lib/sync/monday";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 import { syncPnlData } from "@/lib/sync/pnl";
 import { syncXDASHData } from "@/lib/sync/xdash";
+import { recordSyncRun } from "@/lib/sync-logs";
 
 export const dynamic = "force-dynamic";
+/**
+ * Cron-only daily sweep. Vercel Pro caps cron functions at 300s; we keep that ceiling
+ * because this route runs full-month catch-ups for every source, not the snappy
+ * 60s interactive path.
+ */
 export const maxDuration = 300;
 
 function getReceivedSecret(request: NextRequest): string {
@@ -40,6 +46,11 @@ export async function GET(request: NextRequest) {
       { status: 401 },
     );
   }
+
+  const t0 = Date.now();
+  console.log(
+    `[Sync-Pro] Starting full sync. Remaining time: 300s (cron). Phase 1 = monday+billing+pnl+xdash in parallel; Phase 2 = partner-pairs sequential.`,
+  );
 
   const summary: {
     monday?: { funnelRows: number; activityRows: number };
@@ -111,6 +122,31 @@ export async function GET(request: NextRequest) {
   }
 
   const ok = summary.errors.length === 0;
+  const durationMs = Date.now() - t0;
+
+  const datesSynced = (summary.xdash?.datesSynced ?? 0) + (summary.partnerPairs?.datesSynced ?? 0);
+  const rowsUpserted =
+    (summary.xdash?.rowsUpserted ?? 0) +
+    (summary.partnerPairs?.rowsUpserted ?? 0) +
+    (summary.pnl?.rowsUpserted ?? 0) +
+    (summary.monday?.funnelRows ?? 0) +
+    (summary.monday?.activityRows ?? 0);
+
+  console.log(
+    `[Sync-Pro] cron/sync done in ${(durationMs / 1000).toFixed(1)}s. ` +
+      `datesSynced=${datesSynced}, rowsUpserted=${rowsUpserted}, errors=${summary.errors.length}.`,
+  );
+
+  void recordSyncRun({
+    source: "cron_sync",
+    durationMs,
+    datesSynced,
+    rowsUpserted,
+    ok,
+    errorMessage: summary.errors[0],
+    detail: summary,
+  });
+
   return NextResponse.json({ ok, summary }, { status: ok ? 200 : 500 });
 }
 

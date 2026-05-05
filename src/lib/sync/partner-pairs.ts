@@ -150,14 +150,18 @@ export async function syncPartnerPairsForDate(date: string): Promise<SyncPartner
 /**
  * Sync partner pairs for the current month.
  *
- * Strategy:
- *  - Always re-sync today (partial day, data grows throughout the day).
- *  - Sync any other day in the current month that has no rows yet (catch-up).
+ * Sync-Pro strategy:
+ *  - Today and Yesterday are ALWAYS re-fetched. XDASH keeps reattributing
+ *    yesterday's pair data for several hours after midnight, and today
+ *    obviously grows intraday. Skipping these because "a row exists" is
+ *    exactly the bug that left the dashboard frozen.
+ *  - Any other day in the current month that has no rows yet is also fetched.
  *  - On 404 from Report API: log and skip that date, but continue with others.
  */
 export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   const now = new Date();
   const today = formatLocalDate(now);
+  const yesterday = formatLocalDate(getYesterday(now));
   const y = now.getFullYear();
   const m = now.getMonth() + 1;
 
@@ -171,7 +175,9 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   }
 
   const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
-  const toFetch = allDatesThisMonth.filter((d) => d === today || !alreadySynced.has(d));
+  const toFetch = allDatesThisMonth.filter(
+    (d) => d === today || d === yesterday || !alreadySynced.has(d),
+  );
 
   if (toFetch.length === 0) {
     return { datesRequested: allDatesThisMonth.length, datesSynced: 0, rowsUpserted: 0 };
@@ -186,6 +192,7 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
       const n = await batchUpsert(date, pairs);
       rowsUpserted += n;
       datesSynced += 1;
+      console.log(`[Sync-Pro] daily_partner_pairs ${date}: ${pairs.length} pairs → ${n} rows upserted`);
     } catch (e) {
       if (isReportApi404(e)) {
         console.error(`[partner-pairs-sync] 404 for ${date}, skipping.`);
@@ -197,6 +204,10 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
       await new Promise((r) => setTimeout(r, INTER_DATE_DELAY_MS));
     }
   }
+
+  console.log(
+    `[Sync-Pro] syncPartnerPairsData done: datesSynced=${datesSynced}/${toFetch.length}, rowsUpserted=${rowsUpserted}`,
+  );
 
   return {
     datesRequested: allDatesThisMonth.length,

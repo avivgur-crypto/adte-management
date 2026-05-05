@@ -23,6 +23,7 @@ import {
 import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 import { checkPerformance } from "@/app/actions/notifications";
+import { recordSyncRun } from "@/lib/sync-logs";
 
 /**
  * Short TTL: page uses revalidate=0 so every navigation re-renders, but
@@ -718,10 +719,10 @@ export type TodayHomeRow = {
   impressions: number;
   /**
    * On Pulse comparison rows only:
-   *  - "hourly"          → cumulative from `hourly_snapshots`, chosen by fuzzy
-   *                        `created_at` vs same Israel wall-clock on the past
-   *                        date (±30 min). Live-vs-live, no asterisk.
-   *  - "linear_estimate" → no snapshot in that window; scaled from
+   *  - "hourly"          → cumulative from `hourly_snapshots`, chosen by closest
+   *                        `created_at` to same Israel wall-clock on the past date,
+   *                        only if |Δ| ≤ 60 minutes. Live-vs-live, no asterisk.
+   *  - "linear_estimate" → no snapshot within that 60-minute window; scaled from
    *                        `daily_home_totals` as `total * (currentHour / 24)`.
    *                        UI shows an asterisk.
    * Undefined for "today" / direct daily reads.
@@ -729,7 +730,7 @@ export type TodayHomeRow = {
   source?: "hourly" | "linear_estimate";
   /**
    * Convenience boolean mirroring `source`. `true` iff the row was produced by the
-   * linear-estimate fallback (i.e. no snapshot within the fuzzy sync window).
+   * linear-estimate fallback (no snapshot within 60 minutes of the target time).
    * UI uses this directly to gate the asterisk.
    */
   isEstimate?: boolean;
@@ -786,24 +787,28 @@ export type ComparisonData = {
   past: Record<number, TodayHomeRow | null>;
 };
 
-/** Max |created_at − target| for a past-day snapshot to count as "live" (no asterisk). */
-const FUZZY_SYNC_WINDOW_MS = 30 * 60 * 1000;
+/**
+ * Strict live-vs-live window: the closest `hourly_snapshots.created_at` must be
+ * within this many ms of the target Israel wall-clock on the comparison date.
+ * Outside this window we treat the comparison as an estimate (asterisk).
+ */
+const LIVE_VS_LIVE_SYNC_WINDOW_MS = 60 * 60 * 1000;
 
 /**
- * Apples-to-apples Pulse comparison: fuzzy "live vs live" snapshot first, proportional fallback second.
+ * Apples-to-apples Pulse comparison: hourly snapshot only when within 60 minutes,
+ * otherwise proportional estimate (asterisk).
  *
  * - **Today** = today's `daily_home_totals` row (running cumulative — refreshed every
  *   AutoSync poll).
  * - **Past (1d / 7d / 28d ago)**:
- *   1. **Fuzzy hourly (primary)** — For each comparison calendar date `D`, build the
- *      target instant "same Israel wall-clock as now, on date D" (e.g. 14:02 today
- *      → 14:02 on D). Among all `hourly_snapshots` for `D`, pick the row whose
- *      `created_at` is closest to that target in absolute time. If that distance
- *      ≤ **30 minutes**, use its cumulative values (`source: "hourly", isEstimate: false`).
- *      This absorbs sync jitter (e.g. snapshot at 13:55 vs dashboard at 14:02).
- *   2. **Estimate (fallback)** — If no row exists or the closest row is outside the
- *      30-minute window, scale `daily_home_totals` for `D` by `(currentHour / 24)`.
- *   3. `null` only when both paths miss.
+ *   1. **Hourly snapshot** — For each comparison date `D`, target "same Israel wall-clock
+ *      as now on D". Pick the `hourly_snapshots` row for `D` whose `created_at` is
+ *      closest in absolute time. **Only if |Δ| ≤ 60 minutes** use it as live cumulative
+ *      (`source: "hourly", isEstimate: false`, no asterisk).
+ *   2. **Estimate (fallback)** — If |Δ| > 60 min or no snapshots for `D`, scale
+ *      `daily_home_totals` for `D` by `(currentHour / 24)`. Marked
+ *      `source: "linear_estimate", isEstimate: true` (asterisk).
+ *   3. `null` only when daily row is also missing.
  *
  * Israel calendar + wall-clock for targets; `hourly_snapshots.created_at` is UTC
  * from Postgres — comparable as epoch milliseconds.
@@ -830,16 +835,18 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
     const hourly = hourlyByDate.get(date);
     if (hourly) {
       past[o] = hourly;
-      const skew = hourly.matchedSkewSec ?? 0;
+      const skewSec = hourly.matchedSkewSec ?? 0;
       auditEntries.push(
-        `${o}d=${date} h${hourly.matchedHour ?? "?"} (live, |Δsync|=${skew}s ≤${FUZZY_SYNC_WINDOW_MS / 60_000}m)`,
+        `${o}d=${date} h${hourly.matchedHour ?? "?"} (live, |Δsync|=${skewSec}s ≤${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m)`,
       );
       continue;
     }
     const daily = dailyByDate.get(date);
     if (daily) {
       past[o] = linearEstimateFromDaily(daily, currentHour);
-      auditEntries.push(`${o}d=${date} (estimate, daily×${currentHour}/24)`);
+      auditEntries.push(
+        `${o}d=${date} (estimate*, daily×${currentHour}/24, no snapshot within ${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m of target)`,
+      );
     } else {
       past[o] = null;
       auditEntries.push(`${o}d=${date} (no data)`);
@@ -847,7 +854,7 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
   }
 
   console.log(
-    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} fuzzy±${FUZZY_SYNC_WINDOW_MS / 60_000}m on created_at | ${auditEntries.join(" | ")}`,
+    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} live window=${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m | ${auditEntries.join(" | ")}`,
   );
 
   return { today: todayRow, past };
@@ -899,36 +906,24 @@ async function getDailyHomeRows(dates: string[]): Promise<Map<string, TodayHomeR
 // Live refresh: fetch Home totals for today + yesterday (Israel) and upsert into Supabase.
 // Called on page load so the dashboard stays current without waiting for cron; yesterday is
 // re-fetched so end-of-day totals settle after the calendar flips.
+//
+// Sync-Pro rule: Today and Yesterday are always re-fetched. XDASH revenue/cost
+// shifts intraday and we'd rather pay 15-20s than serve stale rows.
 // ---------------------------------------------------------------------------
-
-const REFRESH_STALE_MS = 5 * 60 * 1000; // skip if both rows are fresher than this
 
 export type RefreshTodayHomeResult = { updated: boolean };
 
 /** Returns { updated: true } when at least one date was upserted from XDASH. */
 export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
+  const startedAt = Date.now();
   try {
     const today = getIsraelDateDaysAgo(0);
     const yesterday = getIsraelDateDaysAgo(1);
     const dates = [today, yesterday] as const;
 
-    const { data: existingRows, error: selectError } = await supabaseAdmin
-      .from("daily_home_totals")
-      .select("date, created_at")
-      .in("date", [...dates]);
-
-    if (selectError) {
-      console.error("[refreshTodayHome] select failed:", selectError.message);
-      return { updated: false };
-    }
-
-    const needRefresh = dates.some((d) => {
-      const row = existingRows?.find((r) => String(r.date).slice(0, 10) === d);
-      if (!row?.created_at) return true;
-      return Date.now() - new Date(row.created_at).getTime() >= REFRESH_STALE_MS;
-    });
-
-    if (!needRefresh) return { updated: false };
+    console.log(
+      `[Sync-Pro] refreshTodayHome starting. Dates: ${dates.join(", ")}. Per-call budget: ~55s. Always-upsert mode (no stale skip).`,
+    );
 
     const syncedAt = new Date().toISOString();
 
@@ -941,20 +936,30 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       }),
     );
 
+    let upsertedRows = 0;
     for (const { date, revenue, cost, profit, impressions } of homeByDate) {
       const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
         { date, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
       );
       if (error) {
-        console.error(`[refreshTodayHome] upsert failed (${date}):`, error.message);
+        console.error(`[Sync-Pro] refreshTodayHome upsert failed (${date}):`, error.message);
         return { updated: false };
       }
+      upsertedRows += 1;
       console.log(
-        `[refreshTodayHome] Updated ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
+        `[Sync-Pro] daily_home_totals upserted ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
       );
       if (date === today) todayValues = { revenue, cost, profit, impressions };
     }
+
+    void recordSyncRun({
+      source: "refresh_today_home",
+      durationMs: Date.now() - startedAt,
+      datesSynced: dates.length,
+      rowsUpserted: upsertedRows,
+      ok: true,
+    });
 
     // Fire-and-forget: record an hourly snapshot for "today" so same-time
     // comparisons can be made tomorrow.  Never blocks or delays the main sync.
@@ -985,7 +990,16 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
 
     return { updated: true };
   } catch (e) {
-    console.error("[refreshTodayHome]", e instanceof Error ? e.message : e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[Sync-Pro] refreshTodayHome failed:", msg);
+    void recordSyncRun({
+      source: "refresh_today_home",
+      durationMs: Date.now() - startedAt,
+      datesSynced: 0,
+      rowsUpserted: 0,
+      ok: false,
+      errorMessage: msg,
+    });
     return { updated: false };
   }
 }
@@ -1036,8 +1050,9 @@ type SnapshotRow = {
 
 /**
  * For each comparison date, pick the `hourly_snapshots` row whose `created_at` is
- * closest to "same Israel wall-clock as `clock`, on that date". Only include it
- * when that distance ≤ `FUZZY_SYNC_WINDOW_MS` (live-vs-live).
+ * closest to "same Israel wall-clock as `clock`, on that date".
+ * Only returns a row when |Δ| ≤ `LIVE_VS_LIVE_SYNC_WINDOW_MS` (60 minutes);
+ * otherwise the caller falls back to `linearEstimateFromDaily` (asterisk).
  */
 async function getClosestPastSnapshotsByCreatedAt(
   dates: string[],
@@ -1090,7 +1105,7 @@ async function getClosestPastSnapshotsByCreatedAt(
       const diffMs = Math.abs(t - targetUtcMs);
       if (best == null || diffMs < best.diffMs) best = { row, diffMs };
     }
-    if (best == null || best.diffMs > FUZZY_SYNC_WINDOW_MS) continue;
+    if (best == null || best.diffMs > LIVE_VS_LIVE_SYNC_WINDOW_MS) continue;
 
     const r = best.row;
     const h = r.hour;

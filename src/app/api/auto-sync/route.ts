@@ -17,6 +17,7 @@ import { syncMondayData } from "@/lib/sync/monday";
 import { syncBillingData } from "@/lib/sync/billing";
 import { syncPnlData } from "@/lib/sync/pnl";
 import { checkPerformance } from "@/app/actions/notifications";
+import { recordSyncRun } from "@/lib/sync-logs";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -97,9 +98,11 @@ const SKIP: StepResult = Object.freeze({ status: "skipped" });
 
 async function runXdash(days: number, startTime?: number, force?: boolean): Promise<StepResult> {
   try {
+    // Sync-Pro: 55s gives the day-loop enough headroom to retry XDASH once before
+    // bowing out, without bumping into the 60s function ceiling.
     const r = await syncXDASHDataLastNDays(days, {
       startTime: startTime ?? Date.now(),
-      timeBudgetMs: 45_000,
+      timeBudgetMs: 55_000,
       force,
     });
     return { status: "success", datesSynced: r.datesSynced, rowsUpserted: r.rowsUpserted };
@@ -188,14 +191,50 @@ async function runMonday(): Promise<StepResult> {
 
 type Results = Record<string, StepResult>;
 
+/** Sum `rowsUpserted` across all step results. Steps without that field contribute 0. */
+function totalRowsUpserted(results: Results): number {
+  let total = 0;
+  for (const r of Object.values(results)) {
+    if (r?.status !== "success") continue;
+    const n = (r as Record<string, unknown>).rowsUpserted;
+    if (typeof n === "number" && Number.isFinite(n)) total += n;
+  }
+  return total;
+}
+
 function logResult(mode: string, results: Results, t0: number, extra?: Record<string, unknown>) {
+  const durationMs = Date.now() - t0;
+  const rowsUpserted = totalRowsUpserted(results);
   console.log("[auto-sync] completed", JSON.stringify({
     mode,
     results,
     ...extra,
-    duration: `${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    duration: `${(durationMs / 1000).toFixed(1)}s`,
     syncedAt: new Date().toISOString(),
   }));
+  console.log(
+    `[Sync-Pro] ${mode} done in ${(durationMs / 1000).toFixed(1)}s. ` +
+      `rowsUpserted=${rowsUpserted}. ` +
+      `Remaining of 60s budget: ${Math.max(0, (FUNCTION_BUDGET_MS - durationMs) / 1000).toFixed(1)}s.`,
+  );
+  void recordSyncRun({
+    source: `auto_sync:${mode}`,
+    durationMs,
+    datesSynced: countField(results, "datesSynced"),
+    rowsUpserted,
+    ok: !Object.values(results).some((r) => r?.status === "failed"),
+    detail: { results, ...extra },
+  });
+}
+
+function countField(results: Results, key: "datesSynced" | "rowsUpserted"): number {
+  let total = 0;
+  for (const r of Object.values(results)) {
+    if (r?.status !== "success") continue;
+    const n = (r as Record<string, unknown>)[key];
+    if (typeof n === "number" && Number.isFinite(n)) total += n;
+  }
+  return total;
 }
 
 /** Parsed query — runs inside after() so cron-job.org closes before work starts. */
@@ -213,11 +252,19 @@ type SyncParams = {
 /**
  * Full sync logic (runs after HTTP response is sent).
  */
+/** Vercel Pro serverless ceiling. Used to compute "remaining time" hints in [Sync-Pro] logs. */
+const FUNCTION_BUDGET_MS = 60_000;
+
 async function executeSync(params: SyncParams): Promise<void> {
   const t0 = Date.now();
   const {
     source, target, force, backfill, daysRaw, singleDate, backfillStart, backfillEnd,
   } = params;
+
+  console.log(
+    `[Sync-Pro] Starting full sync. Remaining time: ${(FUNCTION_BUDGET_MS / 1000).toFixed(0)}s. ` +
+      `target=${target || "(default)"} backfill=${backfill} force=${force} source=${source || "(none)"}`,
+  );
 
   /** True when XDASH home sync wrote to `daily_home_totals` successfully. */
   let shouldCheckPerformance = false;
@@ -342,7 +389,7 @@ async function executeSync(params: SyncParams): Promise<void> {
       shouldCheckPerformance = xdash.status === "success";
       const pairs = await runPairs();
       const elapsedMs = Date.now() - t0;
-      const TIME_BUDGET_MS = 45_000;
+      const TIME_BUDGET_MS = 55_000;
       let billing: StepResult = SKIP;
       let pnl: StepResult = SKIP;
       let monday: StepResult = SKIP;

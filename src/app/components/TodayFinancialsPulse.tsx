@@ -69,8 +69,8 @@ type DeltaResult = {
   /** Same-time-of-day cumulative value for the comparison date. */
   previousValue?: number;
   /**
-   * `true` iff the past row used the linear-estimate fallback (no fresh-enough
-   * hourly snapshot existed). Drives the asterisk in the UI.
+   * `true` iff the past row used the linear-estimate fallback (no hourly snapshot
+   * within 60 minutes of the same-time target). Drives the asterisk in the UI.
    */
   isEstimate?: boolean;
 };
@@ -140,13 +140,13 @@ function computeMarginDelta(
 }
 
 const COMPARISON_TOOLTIP =
-  "Apples-to-apples: today's running cumulative vs the comparison date's cumulative from the hourly snapshot whose sync time (created_at) is closest to the same Israel clock time on that date (within ±30 minutes). % change = (current − previous) ÷ previous.";
+  "Live vs live: today's running cumulative vs the comparison date using the hourly snapshot whose sync time (created_at) is closest to the same Israel clock time on that date. We only show this clean comparison when that sync point falls within 60 minutes of the target time. % change = (current − previous) ÷ previous.";
 
 const ESTIMATE_TOOLTIP =
-  "Proportional estimate based on daily total (no exact hourly data available).";
+  "Estimated comparison: no hourly sync point existed within 60 minutes of the same-time target on that date, so we scale the full-day total by (current hour ÷ 24). Less precise than a true live match — shown with *.";
 
 const ESTIMATE_LEGEND =
-  "* Proportional estimate based on daily total (no exact hourly data available).";
+  "* No sync within 60 minutes of the target time — proportional estimate from daily total.";
 
 const MARGIN_DELTA_TOOLTIP =
   "Margin change vs the comparison date's margin at the same Israel hour (not full-day). Shown as percentage points; value in parentheses is the past day's margin at this time of day.";
