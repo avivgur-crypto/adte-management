@@ -1,7 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { after } from "next/server";
 import { revalidatePath, revalidateTag } from "next/cache";
-import { supabaseAdmin } from "@/lib/supabase";
 import {
   syncXDASHDataLastNDays,
   syncXDASHDataForDates,
@@ -237,7 +235,7 @@ function countField(results: Results, key: "datesSynced" | "rowsUpserted"): numb
   return total;
 }
 
-/** Parsed query — runs inside after() so cron-job.org closes before work starts. */
+/** Parsed query for the synchronous sync executor. */
 type SyncParams = {
   source: string;
   target: string;
@@ -250,7 +248,10 @@ type SyncParams = {
 };
 
 /**
- * Full sync logic (runs after HTTP response is sent).
+ * Full sync logic. Awaited by `GET()` before the HTTP response is returned, so
+ * `daily_home_totals` (and friends) are guaranteed to be written by the time
+ * the caller sees a 2xx — Vercel Pro's 60s function ceiling is enough headroom
+ * for the per-target work scheduled here.
  */
 /** Vercel Pro serverless ceiling. Used to compute "remaining time" hints in [Sync-Pro] logs. */
 const FUNCTION_BUDGET_MS = 60_000;
@@ -458,7 +459,7 @@ function parseMonthParam(month: string): { start: string; end: string } | null {
 }
 
 /* ===================================================================
- *  GET — auth, then after() for work; response returns immediately.
+ *  GET — auth, then synchronously await executeSync before responding.
  * =================================================================== */
 
 export async function GET(request: NextRequest) {
@@ -500,19 +501,39 @@ export async function GET(request: NextRequest) {
     backfillEnd: monthRange?.end ?? sp.get("end"),
   };
 
+  const mode = params.backfill
+    ? "backfill"
+    : params.target || (params.force || params.source === "manual" ? "manual-recovery" : "unknown");
+
   console.log(
-    `[auto-sync] accepted (background): source=${params.source} target=${params.target} backfill=${params.backfill}`,
+    `[auto-sync] accepted (synchronous): source=${params.source} target=${params.target} backfill=${params.backfill}`,
   );
 
-  after(async () => {
+  // Block the response until the sync completes. Vercel Pro's 60s function
+  // ceiling (`maxDuration = 60`) bounds the wait; if a step exceeds that, the
+  // platform aborts with a 504 — which is the correct signal that the sync
+  // itself is broken, rather than a silent fire-and-forget failure that left
+  // `daily_home_totals` un-upserted.
+  try {
     await executeSync(params);
-  });
+  } catch (err) {
+    console.error(
+      "[auto-sync] executeSync threw (caught at handler):",
+      err instanceof Error ? err.message : err,
+    );
+    return respond(
+      {
+        ok: false,
+        mode,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      500,
+    );
+  }
 
   return respond({
-    accepted: true,
-    message: "Sync started in background",
-    mode: params.backfill
-      ? "backfill"
-      : params.target || (params.force || params.source === "manual" ? "manual-recovery" : "unknown"),
+    ok: true,
+    mode,
+    message: "Sync completed",
   });
 }
