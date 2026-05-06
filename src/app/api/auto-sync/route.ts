@@ -18,7 +18,15 @@ import { checkPerformance } from "@/app/actions/notifications";
 import { recordSyncRun } from "@/lib/sync-logs";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+/**
+ * 300s ceiling on Vercel Pro: this route is hit both from the client
+ * (`AutoSync.tsx`, lightweight refresh) and from cron (`vercel.json` daily
+ * billing + force-recovery sweeps). We size for the worst case — the cron
+ * sweeps fan out across many dates and would silently truncate at 60s.
+ * Interactive callers still return as soon as their work completes; the cap
+ * only matters when something actually runs long.
+ */
+export const maxDuration = 300;
 export const runtime = "nodejs";
 
 /* ===================================================================
@@ -213,7 +221,7 @@ function logResult(mode: string, results: Results, t0: number, extra?: Record<st
   console.log(
     `[Sync-Pro] ${mode} done in ${(durationMs / 1000).toFixed(1)}s. ` +
       `rowsUpserted=${rowsUpserted}. ` +
-      `Remaining of 60s budget: ${Math.max(0, (FUNCTION_BUDGET_MS - durationMs) / 1000).toFixed(1)}s.`,
+      `Remaining of ${(FUNCTION_BUDGET_MS / 1000).toFixed(0)}s budget: ${Math.max(0, (FUNCTION_BUDGET_MS - durationMs) / 1000).toFixed(1)}s.`,
   );
   void recordSyncRun({
     source: `auto_sync:${mode}`,
@@ -253,8 +261,8 @@ type SyncParams = {
  * the caller sees a 2xx — Vercel Pro's 60s function ceiling is enough headroom
  * for the per-target work scheduled here.
  */
-/** Vercel Pro serverless ceiling. Used to compute "remaining time" hints in [Sync-Pro] logs. */
-const FUNCTION_BUDGET_MS = 60_000;
+/** Vercel Pro cron ceiling (matches `maxDuration` above). Used to compute "remaining time" hints in [Sync-Pro] logs. */
+const FUNCTION_BUDGET_MS = 300_000;
 
 async function executeSync(params: SyncParams): Promise<void> {
   const t0 = Date.now();
@@ -509,10 +517,10 @@ export async function GET(request: NextRequest) {
     `[auto-sync] accepted (synchronous): source=${params.source} target=${params.target} backfill=${params.backfill}`,
   );
 
-  // Block the response until the sync completes. Vercel Pro's 60s function
-  // ceiling (`maxDuration = 60`) bounds the wait; if a step exceeds that, the
-  // platform aborts with a 504 — which is the correct signal that the sync
-  // itself is broken, rather than a silent fire-and-forget failure that left
+  // Block the response until the sync completes. Vercel Pro's 300s cron ceiling
+  // (`maxDuration = 300`) bounds the wait; if a step exceeds that, the platform
+  // aborts with a 504 — which is the correct signal that the sync itself is
+  // broken, rather than a silent fire-and-forget failure that left
   // `daily_home_totals` un-upserted.
   try {
     await executeSync(params);

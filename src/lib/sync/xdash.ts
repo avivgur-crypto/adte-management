@@ -443,11 +443,15 @@ export async function syncHomeTotalsForDates(
     console.log(`[xdash-sync] READ-BACK 2026-01-01:`, JSON.stringify(proof));
   }
 
-  // Additive: record an hourly snapshot for today (fire-and-forget).
+  // Always record an hourly snapshot for today on every successful sync. This
+  // is what `getComparisonData` reads to render "live vs live" without an
+  // asterisk — fire-and-forget here used to mean cron runs sometimes finished
+  // before the snapshot landed and the dashboard showed an estimate. Awaiting
+  // costs ~1 round-trip (<200ms) and is cheap relative to the XDASH fetches.
   const todayEntry = pending.find((r) => r.date === today);
   if (todayEntry) {
     const hour = getIsraelHour();
-    supabaseAdmin
+    const { error: snapErr } = await supabaseAdmin
       .from("hourly_snapshots")
       .upsert(
         {
@@ -459,14 +463,22 @@ export async function syncHomeTotalsForDates(
           impressions: todayEntry.impressions,
         },
         { onConflict: "date,hour" },
-      )
-      .then(({ error: snapErr }) => {
-        if (snapErr) {
-          console.warn(`[xdash-sync] hourly snapshot (${todayEntry.date} h${hour}) failed:`, snapErr.message);
-        } else {
-          console.log(`[xdash-sync] hourly snapshot ${todayEntry.date} h${hour} recorded`);
-        }
-      });
+      );
+    if (snapErr) {
+      console.warn(
+        `[Sync-Pro] hourly_snapshots (${todayEntry.date} h${hour}) upsert failed (non-fatal):`,
+        snapErr.message,
+      );
+    } else {
+      console.log(
+        `[Sync-Pro] hourly_snapshots recorded for ${todayEntry.date} h${hour}: rev=$${todayEntry.revenue.toFixed(2)} profit=$${todayEntry.profit.toFixed(2)}`,
+      );
+    }
+  } else {
+    console.warn(
+      `[Sync-Pro] hourly_snapshots: no today entry in pending (today=${today}). ` +
+        `Snapshot skipped — Pulse comparisons may render an estimate until the next sync.`,
+    );
   }
 
   return written;

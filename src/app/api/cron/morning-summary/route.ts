@@ -3,7 +3,12 @@ import { morningSummary } from "@/app/actions/notifications";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 60;
+/**
+ * Cron-only: Vercel Pro allows up to 300s on cron functions. Headroom matters
+ * because the hybrid fallback in `morningSummary` may issue a live XDASH fetch
+ * for "yesterday" before sending the push, and we'd rather wait than send $0.
+ */
+export const maxDuration = 300;
 
 const NO_CACHE = {
   "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",

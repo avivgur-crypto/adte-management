@@ -24,6 +24,7 @@ import {
 import { revalidatePath, revalidateTag } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
+import { fetchHomeForDate } from "@/lib/xdash-client";
 import type { NotificationSettingKey } from "@/app/actions/notification-settings";
 
 /** Same tag used by `@/app/actions/financials` and `/api/auto-sync` so the chart
@@ -229,6 +230,73 @@ async function fetchDailyRow(isoDate: string): Promise<DailyRow | null> {
     revenue: Number(data.revenue ?? 0),
     profit: Number(data.profit ?? 0),
   };
+}
+
+/**
+ * Hybrid fallback used for the "yesterday" headline number in the morning summary.
+ *
+ * 1. Prefer the persisted row in `daily_home_totals` (fast, deterministic).
+ * 2. If the row is missing OR both revenue and profit are 0, hit XDASH live
+ *    (`fetchHomeForDate` — external report API for past dates) so a laggy /
+ *    skipped sync doesn't cause a "$0 GP" push.
+ * 3. When the live fetch returns real data, upsert it back into
+ *    `daily_home_totals` so subsequent reads (chart, comparisons) see the
+ *    same number we just sent in the push. Best-effort; failures are logged.
+ *
+ * Returns `null` only if both the DB row is empty AND the live fetch fails or
+ * also yields zeros — in which case we explicitly fall through to the existing
+ * "$0" path so we never silently swallow a legitimate zero day.
+ */
+async function fetchDailyRowWithLiveFallback(isoDate: string): Promise<DailyRow | null> {
+  const dbRow = await fetchDailyRow(isoDate);
+  const dbHasData = dbRow !== null && (dbRow.revenue > 0 || dbRow.profit > 0);
+  if (dbHasData) return dbRow;
+
+  console.warn(
+    `[morningSummary] daily_home_totals for ${isoDate} is ${dbRow ? "all zeros" : "missing"} — attempting live XDASH fallback.`,
+  );
+
+  let live: { revenue: number; cost: number; profit: number; impressions: number };
+  try {
+    live = await fetchHomeForDate(isoDate);
+  } catch (e) {
+    console.warn(
+      `[morningSummary] live XDASH fallback for ${isoDate} threw (non-fatal):`,
+      e instanceof Error ? e.message : e,
+    );
+    return dbRow;
+  }
+
+  if (live.revenue === 0 && live.profit === 0) {
+    console.warn(
+      `[morningSummary] live XDASH fallback for ${isoDate} also returned zeros — keeping DB row.`,
+    );
+    return dbRow;
+  }
+
+  console.log(
+    `[morningSummary] live fallback for ${isoDate}: revenue=$${live.revenue.toFixed(2)}, profit=$${live.profit.toFixed(2)} — writing back to daily_home_totals.`,
+  );
+
+  const { error: upsertErr } = await supabaseAdmin.from("daily_home_totals").upsert(
+    {
+      date: isoDate,
+      revenue: live.revenue,
+      cost: live.cost,
+      profit: live.profit,
+      impressions: live.impressions,
+      created_at: new Date().toISOString(),
+    },
+    { onConflict: "date" },
+  );
+  if (upsertErr) {
+    console.warn(
+      `[morningSummary] upsert of live fallback for ${isoDate} failed (non-fatal):`,
+      upsertErr.message,
+    );
+  }
+
+  return { date: isoDate, revenue: live.revenue, profit: live.profit };
 }
 
 function daysInMonthYm(year: number, month1: number): number {
@@ -490,13 +558,25 @@ export async function morningSummary(
   const [yY, yM] = yesterday.split("-").map(Number);
   const monthStart = `${yY}-${String(yM).padStart(2, "0")}-01`;
 
-  const [yRow, dRow, wRow, monthlyGoal, mtdActual] = await Promise.all([
-    fetchDailyRow(yesterday),
+  // "Yesterday" uses the hybrid fallback because that's the headline number in
+  // the push and the date most likely to be incomplete in `daily_home_totals`
+  // when XDASH is laggy at 05:00 IL. Older dates are stable in DB and don't
+  // warrant the extra XDASH round-trip.
+  const [yRow, dRow, wRow, monthlyGoal, mtdActualBase] = await Promise.all([
+    fetchDailyRowWithLiveFallback(yesterday),
     fetchDailyRow(dayBefore),
     fetchDailyRow(sameDayLastWeek),
     fetchMonthlyGoal(monthStart),
     sumProfitMtd(monthStart, yesterday),
   ]);
+
+  // If the fallback wrote a corrected yesterday row, the cached MTD sum read a
+  // moment earlier may still reflect the stale ($0) value. Reconcile by
+  // re-summing or by patching with the delta — re-summing is simpler and the
+  // table is small (≤31 rows for the month).
+  const mtdActual = yRow !== null
+    ? await sumProfitMtd(monthStart, yesterday)
+    : mtdActualBase;
 
   const yRev = yRow?.revenue ?? 0;
   const yGp = yRow?.profit ?? 0;
