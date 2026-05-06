@@ -867,7 +867,8 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
  * `source: "linear_estimate", isEstimate: true` so the UI shows the asterisk + footnote.
  */
 function linearEstimateFromDaily(daily: TodayHomeRow, dayElapsedFraction: number): TodayHomeRow {
-  const f = Math.max(0, Math.min(1, dayElapsedFraction));
+  // Avoid an all-zero baseline at exactly 00:00:00 IDT (would force bogus "N/A" % in the UI).
+  const f = Math.max(1 / 86_400, Math.min(1, dayElapsedFraction));
   return {
     date: daily.date,
     revenue: daily.revenue * f,

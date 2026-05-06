@@ -101,7 +101,11 @@ function computeDelta(
     };
   }
 
-  if (past === 0) return { kind: "na", isEstimate };
+  // Baseline is exactly zero but we *have* a comparison row — show a sensible % instead of "N/A".
+  // Matches the compact convention used elsewhere (prior 0 → treat as +100% when current > 0).
+  if (past === 0) {
+    return { kind: "pct", pct: 100, previousValue: 0, isEstimate };
+  }
 
   const pct = ((today - past) / past) * 100;
   return { kind: "pct", pct, previousValue: past, isEstimate };
@@ -128,7 +132,14 @@ function computeMarginDelta(
     return { kind: "na", pastMarginPct, isEstimate };
   }
   if (pastRow.revenue === 0) {
-    return { kind: "na", isEstimate };
+    // Same baseline as revenue delta: past "margin" at 0 revenue is undefined; treat as 0 pp baseline when profit also 0.
+    const pastMarginPct = pastRow.profit === 0 ? 0 : (pastRow.profit / pastRow.revenue) * 100;
+    if (!Number.isFinite(pastMarginPct)) {
+      return { kind: "na", isEstimate };
+    }
+    const todayMargin = (todayProfit / todayRev) * 100;
+    const pp = todayMargin - pastMarginPct;
+    return { kind: "pp", pp, pastMarginPct, isEstimate };
   }
 
   // For linear_estimate rows, profit and revenue are scaled by the same factor,
