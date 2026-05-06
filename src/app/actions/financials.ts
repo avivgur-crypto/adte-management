@@ -1,5 +1,9 @@
 "use server";
 
+// NOTE: Vercel `maxDuration` for `refreshTodayHome` must live on a route segment
+// (`src/app/page.tsx`, `src/app/financials/page.tsx`) — not in this file (Next.js
+// only allows async function exports from "use server" modules).
+
 import { cache } from "react";
 import { revalidatePath, revalidateTag, unstable_cache } from "next/cache";
 import {
@@ -940,11 +944,9 @@ async function getDailyHomeRows(dates: string[]): Promise<Map<string, TodayHomeR
 // re-fetched so end-of-day totals settle after the calendar flips.
 //
 // Sync-Pro rule (synchronous): the Server Action AWAITS every XDASH fetch and DB
-// upsert before returning. Vercel Pro's 60s function budget is enough headroom
-// for the parallel today+yesterday fetch with 55s per-call timeout. We do NOT
-// use `after()` here — past experiments showed the runtime occasionally tears
-// down the execution context as soon as the response is sent, which left
-// `daily_home_totals` un-upserted.
+// upsert. Segment `maxDuration = 300` + per-fetch timeout 120s (see xdash-client).
+// Cache revalidation runs immediately after upserts so a late timeout still
+// leaves fresh DB data for the next navigation. We do NOT use `after()` here.
 // ---------------------------------------------------------------------------
 
 export type RefreshTodayHomeResult = {
@@ -959,9 +961,8 @@ export type RefreshTodayHomeResult = {
 };
 
 /**
- * Synchronously refresh today + yesterday in `daily_home_totals`. Awaits all
- * XDASH fetches and DB writes before returning. Vercel Pro's 60s function
- * ceiling covers the parallel fetch (55s per attempt) plus the upsert.
+ * Synchronously refresh today + yesterday in `daily_home_totals`. Awaits XDASH
+ * fetches (up to 120s per attempt, parallel today/yesterday) and DB writes.
  *
  * Never throws — failures are logged and reflected as `{ updated: false }`.
  */
@@ -975,7 +976,7 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
     event: "sync_pro.refresh_today_home.start",
     branch_type: "refresh_today_home",
     status: "started",
-    detail: { dates: [...dates], mode: "always_upsert", interactive_timeout_hint_s: 55 },
+    detail: { dates: [...dates], mode: "always_upsert", interactive_timeout_hint_s: 120 },
   });
 
   try {
@@ -1024,6 +1025,11 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
       if (date === today) todayValues = { revenue, cost, profit, impressions };
     }
 
+    // Bust caches as soon as DB rows exist so a timeout during snapshot / alerts
+    // still leaves the next page load reading fresh `daily_home_totals`.
+    revalidateTag(FINANCIAL_TAG, { expire: 0 });
+    revalidatePath("/");
+
     if (todayValues) {
       try {
         await recordHourlySnapshot(today, todayValues);
@@ -1034,9 +1040,6 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
         );
       }
     }
-
-    revalidateTag(FINANCIAL_TAG, { expire: 0 });
-    revalidatePath("/");
 
     await recordSyncRun({
       source: "refresh_today_home",

@@ -15,7 +15,8 @@ import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard"
  */
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-export const maxDuration = 60;
+/** Server Action `refreshTodayHome` + RSC share this segment budget on Vercel Pro. */
+export const maxDuration = 300;
 
 function FinancialSkeleton() {
   return (

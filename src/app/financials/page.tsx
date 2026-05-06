@@ -9,7 +9,7 @@ import LastSyncLine from "@/app/components/LastSyncLine";
  * Uses force-dynamic so today’s pulse matches DB + AutoSync.
  */
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 async function LastSyncContent() {
   const lastDataUpdate = await getLastDataUpdate();

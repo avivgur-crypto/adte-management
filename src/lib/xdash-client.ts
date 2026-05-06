@@ -725,13 +725,8 @@ const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
 const HOME_OVERVIEW_RETRY_ATTEMPTS = 3;
 const HOME_OVERVIEW_RETRY_DELAY_MS = 2000;
 
-/**
- * Sync-Pro budgets for interactive paths (`refreshTodayHome`).
- * Vercel Pro gives a 60s function ceiling, so we trade speed for reliability:
- * 55s per attempt + 3 status retries with 2s gap. Combined with parallel
- * today/yesterday fetches this still fits in one Pro invocation.
- */
-const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 55_000;
+/** Per-attempt ceiling for `fetchHomeForDate` on interactive paths (manual refresh). Align with dashboard `maxDuration` 300s. */
+const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 120_000;
 const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 3;
 const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 2000;
 const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 3;
@@ -1118,12 +1113,10 @@ export async function fetchHomeForDate(
 }
 
 /**
- * Sync-Pro options for dashboard auto-refresh. Reliability over speed:
- *  - 55s per attempt (well inside Vercel Pro's 60s ceiling).
+ * Sync-Pro options for dashboard auto-refresh:
+ *  - 120s per attempt (dashboard segment maxDuration 300s).
  *  - 3 status retries × 2s, 3 network retries × 2s.
- *  - Throttle stays ON; XDASH gets unhappy when same-IP calls land back-to-back.
- *    The 2s inter-request gap costs us 2s on the second of today/yesterday and
- *    has been worth it in practice.
+ *  - Throttle ON for back-to-back today/yesterday.
  */
 export const fetchHomeForDateInteractiveOpts: FetchHomeOverviewOpts = {
   timeoutMs: HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS,
