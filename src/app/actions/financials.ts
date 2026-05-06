@@ -23,6 +23,7 @@ import { monthKeySchema, monthStartsSchema } from "@/lib/validation";
 import type { PacingSummary } from "@/lib/pacing";
 import { checkPerformance } from "@/app/actions/notifications";
 import { recordSyncRun } from "@/lib/sync-logs";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 /**
  * Short TTL: page uses revalidate=0 so every navigation re-renders, but
@@ -938,10 +939,12 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
   const dates = [today, yesterday] as const;
   const startedAt = Date.now();
 
-  console.log(
-    `[Sync-Pro] refreshTodayHome starting (synchronous). Dates: ${dates.join(", ")}. ` +
-      `Always-upsert mode (no stale skip). Per-call budget: 55s.`,
-  );
+  syncProLog({
+    event: "sync_pro.refresh_today_home.start",
+    branch_type: "refresh_today_home",
+    status: "started",
+    detail: { dates: [...dates], mode: "always_upsert", interactive_timeout_hint_s: 55 },
+  });
 
   try {
     const syncedAt = new Date().toISOString();
@@ -962,7 +965,13 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
         { onConflict: "date" },
       );
       if (error) {
-        console.error(`[Sync-Pro] refreshTodayHome upsert failed (${date}):`, error.message);
+        syncProLog({
+          event: "sync_pro.refresh_today_home.upsert_failed",
+          branch_type: "refresh_today_home",
+          status: "error",
+          message: error.message,
+          detail: { date },
+        });
         await recordSyncRun({
           source: "refresh_today_home",
           durationMs: Date.now() - startedAt,
@@ -974,9 +983,12 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
         return { scheduled: false, updated: upsertedRows > 0 };
       }
       upsertedRows += 1;
-      console.log(
-        `[Sync-Pro] daily_home_totals upserted ${date}: $${revenue.toFixed(2)} rev, $${cost.toFixed(2)} cost, $${profit.toFixed(2)} profit`,
-      );
+      syncProLog({
+        event: "sync_pro.refresh_today_home.upsert_ok",
+        branch_type: "refresh_today_home",
+        status: "ok",
+        detail: { date, revenue, cost, profit, impressions },
+      });
       if (date === today) todayValues = { revenue, cost, profit, impressions };
     }
 
@@ -1017,7 +1029,13 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
     return { scheduled: false, updated: upsertedRows > 0 };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[Sync-Pro] refreshTodayHome failed:", msg);
+    syncProLog({
+      event: "sync_pro.refresh_today_home.failed",
+      branch_type: "refresh_today_home",
+      status: "error",
+      message: msg,
+      duration_ms: Date.now() - startedAt,
+    });
     await recordSyncRun({
       source: "refresh_today_home",
       durationMs: Date.now() - startedAt,

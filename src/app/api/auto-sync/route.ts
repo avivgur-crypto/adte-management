@@ -16,6 +16,7 @@ import { syncBillingData } from "@/lib/sync/billing";
 import { syncPnlData } from "@/lib/sync/pnl";
 import { checkPerformance } from "@/app/actions/notifications";
 import { recordSyncRun } from "@/lib/sync-logs";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 export const dynamic = "force-dynamic";
 /**
@@ -218,11 +219,19 @@ function logResult(mode: string, results: Results, t0: number, extra?: Record<st
     duration: `${(durationMs / 1000).toFixed(1)}s`,
     syncedAt: new Date().toISOString(),
   }));
-  console.log(
-    `[Sync-Pro] ${mode} done in ${(durationMs / 1000).toFixed(1)}s. ` +
-      `rowsUpserted=${rowsUpserted}. ` +
-      `Remaining of ${(FUNCTION_BUDGET_MS / 1000).toFixed(0)}s budget: ${Math.max(0, (FUNCTION_BUDGET_MS - durationMs) / 1000).toFixed(1)}s.`,
-  );
+  syncProLog({
+    event: "sync_pro.auto_sync.complete",
+    branch_type: "auto_sync",
+    status: !Object.values(results).some((r) => r?.status === "failed") ? "ok" : "error",
+    duration_ms: durationMs,
+    detail: {
+      mode,
+      rowsUpserted,
+      budget_remaining_ms: Math.max(0, FUNCTION_BUDGET_MS - durationMs),
+      results,
+      ...extra,
+    },
+  });
   void recordSyncRun({
     source: `auto_sync:${mode}`,
     durationMs,
@@ -261,7 +270,7 @@ type SyncParams = {
  * the caller sees a 2xx — Vercel Pro's 60s function ceiling is enough headroom
  * for the per-target work scheduled here.
  */
-/** Vercel Pro cron ceiling (matches `maxDuration` above). Used to compute "remaining time" hints in [Sync-Pro] logs. */
+/** Vercel Pro function ceiling (matches `maxDuration` above). */
 const FUNCTION_BUDGET_MS = 300_000;
 
 async function executeSync(params: SyncParams): Promise<void> {
@@ -270,10 +279,18 @@ async function executeSync(params: SyncParams): Promise<void> {
     source, target, force, backfill, daysRaw, singleDate, backfillStart, backfillEnd,
   } = params;
 
-  console.log(
-    `[Sync-Pro] Starting full sync. Remaining time: ${(FUNCTION_BUDGET_MS / 1000).toFixed(0)}s. ` +
-      `target=${target || "(default)"} backfill=${backfill} force=${force} source=${source || "(none)"}`,
-  );
+  syncProLog({
+    event: "sync_pro.auto_sync.start",
+    branch_type: "auto_sync",
+    status: "started",
+    detail: {
+      budget_ms: FUNCTION_BUDGET_MS,
+      target: target || "(default)",
+      backfill,
+      force,
+      source: source || "(none)",
+    },
+  });
 
   /** True when XDASH home sync wrote to `daily_home_totals` successfully. */
   let shouldCheckPerformance = false;

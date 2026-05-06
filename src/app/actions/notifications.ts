@@ -149,7 +149,8 @@ type SentNotificationType =
   | "morning_summary"
   | "daily_goal_reached"
   | "monthly_total_goal_reached"
-  | "low_margin_alert";
+  | "low_margin_alert"
+  | "critical_sync_alert";
 
 /**
  * For each profile with `settingKey` enabled: skip if already deduped for this user/date;
@@ -196,6 +197,76 @@ async function sendPushTargetedWithDedupe(
   }
 
   return { ok, failed, errors };
+}
+
+/**
+ * High-priority operational alert: XDASH **totals** cron branch failed 3 times in a row.
+ * Sends Web Push to every user with at least one subscription (ignores per-type toggles).
+ * Deduped once per Israel calendar day per user via `sent_notifications`.
+ */
+export async function notifyCriticalSyncTripleFailure(
+  errorHint: string,
+): Promise<{ ok: number; failed: number; log: string }> {
+  try {
+    ensureWebPushConfigured();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: 0, failed: 0, log: `[criticalSync] skipped: ${msg}` };
+  }
+
+  const sentDate = getIsraelDate();
+  const title = "Critical: XDASH totals sync failed 3 times in a row";
+  const trimmed = errorHint.trim();
+  const body =
+    "Dashboard home totals may be stale — check Edge Config / cookie / API keys. " +
+    (trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed || "(no error detail)");
+
+  const { data: rows, error } = await supabaseAdmin.from("push_subscriptions").select("user_id");
+  if (error) {
+    return { ok: 0, failed: 0, log: `[criticalSync] load subscriptions: ${error.message}` };
+  }
+
+  const userIds = [...new Set((rows ?? []).map((r) => String(r.user_id)).filter(Boolean))];
+  let ok = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const userId of userIds) {
+    try {
+      if (await wasAlreadySent("critical_sync_alert", sentDate, userId)) continue;
+    } catch (e) {
+      errors.push(`${userId}: dedupe ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
+
+    const { data: subRows, error: subErr } = await supabaseAdmin
+      .from("push_subscriptions")
+      .select("id, subscription_json")
+      .eq("user_id", userId);
+
+    if (subErr) {
+      errors.push(`${userId}: ${subErr.message}`);
+      continue;
+    }
+    if (!subRows?.length) continue;
+
+    const payload = JSON.stringify({ title, body });
+    const r = await sendPushToRows(subRows, payload);
+    ok += r.ok;
+    failed += r.failed;
+    errors.push(...r.errors);
+    if (r.ok > 0) {
+      try {
+        await recordSent("critical_sync_alert", sentDate, userId);
+      } catch (re) {
+        errors.push(`${userId}: recordSent ${re instanceof Error ? re.message : String(re)}`);
+      }
+    }
+  }
+
+  const log = `[criticalSync] sentDate=${sentDate} deliveries_ok=${ok} failed=${failed}${errors.length ? `; ${errors.slice(0, 3).join("; ")}` : ""}`;
+  console.warn(log);
+  return { ok, failed, log };
 }
 
 // ---------------------------------------------------------------------------

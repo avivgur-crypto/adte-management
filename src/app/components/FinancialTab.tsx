@@ -13,7 +13,7 @@ import { DailyMovementChart, RevenueGoalChart } from "@/app/components/Financial
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import TodayFinancialsPulse from "@/app/components/TodayFinancialsPulse";
 import TotalOverview from "@/app/components/TotalOverview";
-import { SkeletonCard, SkeletonPacingGrid } from "@/app/components/SkeletonCard";
+import { SkeletonCard, SkeletonPacingGrid, SkeletonPulse } from "@/app/components/SkeletonCard";
 import type { GoalChartPace } from "@/app/components/RevenueGoalChart";
 
 const PACING_MONTH_KEYS: string[] = Array.from({ length: 12 }, (_, i) =>
@@ -47,29 +47,36 @@ function FinancialSkeleton() {
   );
 }
 
-async function FinancialOverview() {
-  const [overviewResult, xdashTotalsResult, comparisonResult, goalPaceResult] = await Promise.allSettled([
-    getTotalOverviewData(),
-    getMonthlyXDASHTotals(),
+async function FinancialPulse() {
+  const [comparisonResult, goalPaceResult] = await Promise.allSettled([
     getComparisonData([1, 7, 28]),
     getDailyProfitGoalPaceIsrael(),
+  ]);
+  const comparison = comparisonResult.status === "fulfilled" ? comparisonResult.value : null;
+  const dailyProfitGoalPace =
+    goalPaceResult.status === "fulfilled" ? goalPaceResult.value : null;
+
+  return (
+    <TodayFinancialsPulse
+      comparison={comparison}
+      dailyProfitGoalPace={dailyProfitGoalPace}
+    />
+  );
+}
+
+async function FinancialTotals() {
+  const [overviewResult, xdashTotalsResult] = await Promise.allSettled([
+    getTotalOverviewData(),
+    getMonthlyXDASHTotals(),
   ]);
   const overviewData = overviewResult.status === "fulfilled" ? overviewResult.value : null;
   const xdashTotals: Record<string, XDASHMonthTotals> =
     xdashTotalsResult.status === "fulfilled" ? xdashTotalsResult.value : {};
   const overview = Array.isArray(overviewData) ? overviewData : [];
   const hasError = overviewResult.status === "rejected";
-  const comparison =
-    comparisonResult.status === "fulfilled" ? comparisonResult.value : null;
-  const dailyProfitGoalPace =
-    goalPaceResult.status === "fulfilled" ? goalPaceResult.value : null;
 
   return (
     <div className="flex flex-col gap-8">
-      <TodayFinancialsPulse
-        comparison={comparison}
-        dailyProfitGoalPace={dailyProfitGoalPace}
-      />
       {hasError && (
         <div className="mb-6 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-red-200">
           Some financial data could not be loaded.
@@ -123,8 +130,11 @@ async function FinancialCharts() {
 export default function FinancialTab() {
   return (
     <div className="flex flex-col gap-8">
+      <Suspense fallback={<SkeletonPulse className="h-5 w-64" />}>
+        <FinancialPulse />
+      </Suspense>
       <Suspense fallback={<SkeletonCard lines={3} />}>
-        <FinancialOverview />
+        <FinancialTotals />
       </Suspense>
       <Suspense fallback={<FinancialSkeleton />}>
         <FinancialCharts />

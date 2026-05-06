@@ -10,6 +10,7 @@ import {
   isReportApi404,
 } from "@/lib/xdash-client";
 import { supabaseAdmin } from "@/lib/supabase";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 const TABLE = "daily_partner_pairs";
 const BATCH_UPSERT_SIZE = 500;
@@ -192,7 +193,12 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
       const n = await batchUpsert(date, pairs);
       rowsUpserted += n;
       datesSynced += 1;
-      console.log(`[Sync-Pro] daily_partner_pairs ${date}: ${pairs.length} pairs → ${n} rows upserted`);
+      syncProLog({
+        event: "sync_pro.partner_pairs_sync.date_upserted",
+        branch_type: "partner_pairs_sync",
+        status: "ok",
+        detail: { date, pairs: pairs.length, rows_upserted: n },
+      });
     } catch (e) {
       if (isReportApi404(e)) {
         console.error(`[partner-pairs-sync] 404 for ${date}, skipping.`);
@@ -205,9 +211,12 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
     }
   }
 
-  console.log(
-    `[Sync-Pro] syncPartnerPairsData done: datesSynced=${datesSynced}/${toFetch.length}, rowsUpserted=${rowsUpserted}`,
-  );
+  syncProLog({
+    event: "sync_pro.partner_pairs_sync.complete",
+    branch_type: "partner_pairs_sync",
+    status: "ok",
+    detail: { datesSynced, to_fetch: toFetch.length, rowsUpserted },
+  });
 
   return {
     datesRequested: allDatesThisMonth.length,

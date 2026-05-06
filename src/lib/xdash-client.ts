@@ -13,15 +13,19 @@
  *     `POST $XDASH_API_BASE/...` with `Cookie: auth-token=…` from the backup
  *     server. Throttled. Auth token rotates; see `getXDashAuthToken`.
  *
- * Required env for path (1):
- *   - `XDASH_REPORT_URL`         — full HTTPS URL of the external report endpoint.
- *   - `XDASH_EXTERNAL_API_KEY`   — API key supplied by the XDASH team.
+ * Required for path (1) — **Edge Config first** (keys `xdash_report_url`, `xdash_external_api_key`),
+ * then **environment variables** `XDASH_REPORT_URL` + `XDASH_EXTERNAL_API_KEY`, same as before.
  *
  * Required env for path (2) (unchanged):
  *   - `XDASH_AUTH_TOKEN` (or rotated via `xdash_auth` table) and `XDASH_ORGANIZATION_ID`.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getIsraelDate } from "@/lib/israel-date";
+import {
+  logXdashAuthSupabaseFallbackHintOnce,
+  resolveExternalReportCredentials,
+  tryGetXdashAuthTokenFromEdge,
+} from "@/lib/xdash-edge-credentials";
 
 // ============================================================================
 // KILL SWITCH — set XDASH_DISABLED=true in .env.local to block ALL API calls.
@@ -50,27 +54,10 @@ const XDASH_TOKEN_CACHE_MS = 60_000;
 let _cachedXdashAuthToken: { token: string; expiresAtMs: number } | null = null;
 let _supabaseForXdashAuth: SupabaseClient | null = null;
 
-/** External Report API (used by `fetchHomeForDate` — replaces cookie-based home/overview). */
-const XDASH_REPORT_URL = process.env.XDASH_REPORT_URL ?? "";
-const XDASH_EXTERNAL_API_KEY = process.env.XDASH_EXTERNAL_API_KEY ?? "";
-
 function assertEnvVars() {
   if (!XDASH_ORGANIZATION_ID) {
     throw new Error(
       "Missing XDASH_ORGANIZATION_ID. Set it in .env.local (see .env.example)."
-    );
-  }
-}
-
-function assertExternalReportEnv() {
-  if (!XDASH_REPORT_URL) {
-    throw new Error(
-      "Missing XDASH_REPORT_URL — set it in .env.local to the external XDASH report endpoint URL.",
-    );
-  }
-  if (!XDASH_EXTERNAL_API_KEY) {
-    throw new Error(
-      "Missing XDASH_EXTERNAL_API_KEY — set it in .env.local with the API key provided by the XDASH team.",
     );
   }
 }
@@ -96,14 +83,23 @@ function tokenFromRow(row: Record<string, unknown> | null): string | null {
 }
 
 async function getXDashAuthToken(): Promise<string> {
-  const envToken = process.env.XDASH_AUTH_TOKEN;
-  if (envToken && envToken !== 'temp_token') {
-    return envToken;
-  }
-
   if (_cachedXdashAuthToken && Date.now() < _cachedXdashAuthToken.expiresAtMs) {
     return _cachedXdashAuthToken.token;
   }
+
+  const edgeToken = await tryGetXdashAuthTokenFromEdge();
+  if (edgeToken) {
+    _cachedXdashAuthToken = { token: edgeToken, expiresAtMs: Date.now() + XDASH_TOKEN_CACHE_MS };
+    return edgeToken;
+  }
+
+  const envToken = process.env.XDASH_AUTH_TOKEN;
+  if (envToken && envToken !== "temp_token") {
+    _cachedXdashAuthToken = { token: envToken, expiresAtMs: Date.now() + XDASH_TOKEN_CACHE_MS };
+    return envToken;
+  }
+
+  logXdashAuthSupabaseFallbackHintOnce();
 
   const supabase = getSupabaseForXdashAuth();
   if (!supabase) {
@@ -111,17 +107,19 @@ async function getXDashAuthToken(): Promise<string> {
   }
 
   const { data, error } = await supabase
-    .from('xdash_auth')
-    .select('token_value')
-    .eq('id', 'current_session')
+    .from("xdash_auth")
+    .select("token_value")
+    .eq("id", "current_session")
     .single();
 
   if (error) {
-    console.error('[xdash-client] Supabase token fetch error:', error.message);
+    console.error("[xdash-client] Supabase token fetch error:", error.message);
   }
 
   if (!data?.token_value) {
-    throw new Error("Missing XDASH auth token: provide XDASH_AUTH_TOKEN in .env.local or run the login bot.");
+    throw new Error(
+      "Missing XDASH auth token: Edge Config key `xdash_auth_token`, or XDASH_AUTH_TOKEN in .env, or Supabase `xdash_auth`.",
+    );
   }
 
   _cachedXdashAuthToken = { token: data.token_value, expiresAtMs: Date.now() + XDASH_TOKEN_CACHE_MS };
@@ -927,7 +925,7 @@ export const mapAdServerOverviewToHomeTotals = mapHomeOverviewToHomeTotals;
 
 // ============================================================================
 // External Report API — replaces cookie-based /home/overview for daily totals.
-// Uses `XDASH_REPORT_URL` + `x-api-key` header.
+// Credentials: Edge Config (`xdash_report_url`, `xdash_external_api_key`) or env vars.
 //
 // Response shape (relevant subset):
 //   {
@@ -997,7 +995,7 @@ async function fetchHomeFromExternalReportApi(
   opts?: FetchHomeOverviewOpts,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
   assertNotDisabled();
-  assertExternalReportEnv();
+  const { reportUrl, apiKey } = await resolveExternalReportCredentials();
 
   const timeoutMs = opts?.timeoutMs ?? HOME_OVERVIEW_TIMEOUT_MS;
   const statusAttempts = opts?.statusRetryAttempts ?? HOME_OVERVIEW_RETRY_ATTEMPTS;
@@ -1022,7 +1020,7 @@ async function fetchHomeFromExternalReportApi(
 
   console.log(
     `[XDASH-External] Fetching totals via API Key for ${date} ` +
-      `(url=${XDASH_REPORT_URL}, timeout=${timeoutMs}ms, statusRetries=${statusAttempts}, networkRetries=${networkRetries})`,
+      `(url=${reportUrl}, timeout=${timeoutMs}ms, statusRetries=${statusAttempts}, networkRetries=${networkRetries})`,
   );
 
   let lastError: Error | null = null;
@@ -1031,12 +1029,12 @@ async function fetchHomeFromExternalReportApi(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchWithRetry(
-        XDASH_REPORT_URL,
+        reportUrl,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-api-key": XDASH_EXTERNAL_API_KEY,
+            "x-api-key": apiKey,
           },
           body,
           signal: controller.signal,

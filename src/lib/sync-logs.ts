@@ -10,6 +10,7 @@
  */
 
 import { supabaseAdmin } from "@/lib/supabase";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 export type SyncRunRecord = {
   /** Stable identifier for the entry point (e.g. `cron_sync`, `auto_sync:manual-recovery`, `refresh_today_home`). */
@@ -44,11 +45,21 @@ export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
       detail: record.detail ?? null,
     });
     if (error) {
-      console.warn(`[Sync-Pro] daily_sync_logs insert failed (non-fatal): ${error.message}`);
+      syncProLog({
+        event: "sync_pro.daily_sync_logs.insert_failed",
+        branch_type: "full_cron",
+        status: "error",
+        message: error.message,
+        detail: { source: record.source },
+      });
     }
   } catch (e) {
-    console.warn(
-      `[Sync-Pro] daily_sync_logs insert threw (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    syncProLog({
+      event: "sync_pro.daily_sync_logs.insert_threw",
+      branch_type: "full_cron",
+      status: "error",
+      message: e instanceof Error ? e.message : String(e),
+      detail: { source: record.source },
+    });
   }
 }

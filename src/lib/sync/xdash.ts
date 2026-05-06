@@ -27,6 +27,7 @@ import {
 import type { PostgrestError } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelHour } from "@/lib/israel-date";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 const TABLE = "daily_partner_performance";
 
@@ -363,18 +364,32 @@ export async function syncHomeTotalsForDates(
     toFetch = dates.filter((d) => d === today || d === yesterday || !existing.has(d));
     const skipped = dates.length - toFetch.length;
     if (skipped > 0) {
-      console.log(
-        `[Sync-Pro] daily_home_totals: skipping ${skipped} settled date(s); ALWAYS re-fetching today (${today}) + yesterday (${yesterday}). Force=${force}.`,
-      );
+      syncProLog({
+        event: "sync_pro.xdash_sync.home_totals.fetch_plan",
+        branch_type: "xdash_sync",
+        status: "ok",
+        detail: {
+          skipped_settled: skipped,
+          today,
+          yesterday,
+          force,
+        },
+      });
     } else {
-      console.log(
-        `[Sync-Pro] daily_home_totals: re-fetching all ${toFetch.length} requested date(s) (today=${today}, yesterday=${yesterday} included).`,
-      );
+      syncProLog({
+        event: "sync_pro.xdash_sync.home_totals.fetch_plan",
+        branch_type: "xdash_sync",
+        status: "ok",
+        detail: { to_fetch: toFetch.length, today, yesterday, force },
+      });
     }
   } else {
-    console.log(
-      `[Sync-Pro] daily_home_totals: force=true — re-fetching all ${toFetch.length} date(s).`,
-    );
+    syncProLog({
+      event: "sync_pro.xdash_sync.home_totals.fetch_plan",
+      branch_type: "xdash_sync",
+      status: "ok",
+      detail: { force: true, to_fetch: toFetch.length },
+    });
   }
 
   if (toFetch.length === 0) return 0;
@@ -427,9 +442,12 @@ export async function syncHomeTotalsForDates(
     }
   }
 
-  console.log(
-    `[Sync-Pro] daily_home_totals upserted ${written} row(s) across ${pending.length} fetched date(s).`,
-  );
+  syncProLog({
+    event: "sync_pro.xdash_sync.daily_home_totals.upserted",
+    branch_type: "xdash_sync",
+    status: "ok",
+    detail: { written, fetched_dates: pending.length },
+  });
 
   // Final read-back for 2026-01-01 to confirm what the DB actually holds
   const { data: proof, error: proofErr } = await supabaseAdmin
@@ -465,20 +483,34 @@ export async function syncHomeTotalsForDates(
         { onConflict: "date,hour" },
       );
     if (snapErr) {
-      console.warn(
-        `[Sync-Pro] hourly_snapshots (${todayEntry.date} h${hour}) upsert failed (non-fatal):`,
-        snapErr.message,
-      );
+      syncProLog({
+        event: "sync_pro.xdash_sync.hourly_snapshot.upsert_failed",
+        branch_type: "xdash_sync",
+        status: "error",
+        message: snapErr.message,
+        detail: { date: todayEntry.date, hour },
+      });
     } else {
-      console.log(
-        `[Sync-Pro] hourly_snapshots recorded for ${todayEntry.date} h${hour}: rev=$${todayEntry.revenue.toFixed(2)} profit=$${todayEntry.profit.toFixed(2)}`,
-      );
+      syncProLog({
+        event: "sync_pro.xdash_sync.hourly_snapshot.recorded",
+        branch_type: "xdash_sync",
+        status: "ok",
+        detail: {
+          date: todayEntry.date,
+          hour,
+          revenue: todayEntry.revenue,
+          profit: todayEntry.profit,
+        },
+      });
     }
   } else {
-    console.warn(
-      `[Sync-Pro] hourly_snapshots: no today entry in pending (today=${today}). ` +
-        `Snapshot skipped — Pulse comparisons may render an estimate until the next sync.`,
-    );
+    syncProLog({
+      event: "sync_pro.xdash_sync.hourly_snapshot.skipped",
+      branch_type: "xdash_sync",
+      status: "ok",
+      message: "no today row in pending — pulse may show estimate until next sync",
+      detail: { today },
+    });
   }
 
   return written;

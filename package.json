@@ -26,6 +26,7 @@
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.95.3",
     "@vercel/analytics": "^1.6.1",
+    "@vercel/edge-config": "^1.4.3",
     "google-auth-library": "^10.5.0",
     "googleapis": "^171.4.0",
     "lucide-react": "^0.563.0",
@@ -45,9 +46,9 @@
     "dotenv": "^17.3.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "playwright": "^1.58.2",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
-    "playwright": "^1.58.2",
     "typescript": "^5"
   }
 }

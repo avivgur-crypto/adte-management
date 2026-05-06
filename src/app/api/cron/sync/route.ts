@@ -5,10 +5,17 @@ import { syncMondayData } from "@/lib/sync/monday";
 import { syncPartnerPairsData } from "@/lib/sync/partner-pairs";
 import { syncPnlData } from "@/lib/sync/pnl";
 import { syncXDASHData } from "@/lib/sync/xdash";
-import { checkPerformance } from "@/app/actions/notifications";
+import {
+  checkPerformance,
+  notifyCriticalSyncTripleFailure,
+} from "@/app/actions/notifications";
 import { recordSyncRun } from "@/lib/sync-logs";
+import { applyXdashTotalsCronHealth } from "@/lib/sync-health";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 const FINANCIAL_TAG = "financial-data";
+/** Secondary tag (optional); safe no-op if no cache entry uses it — requested for home totals busting. */
+const HOME_TOTALS_TAG = "home-totals";
 
 export const dynamic = "force-dynamic";
 /**
@@ -51,11 +58,6 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const t0 = Date.now();
-  console.log(
-    `[Sync-Pro] Starting full sync. Remaining time: 300s (cron). Phase 1 = monday+billing+pnl+xdash in parallel; Phase 2 = partner-pairs sequential.`,
-  );
-
   const summary: {
     monday?: { funnelRows: number; activityRows: number };
     billing?: { monthsUpdated: number };
@@ -67,30 +69,141 @@ export async function GET(request: NextRequest) {
 
   const xdashDisabled = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
 
-  // Phase 1: Monday + Billing + P&L + XDASH in parallel
-  const [mondayResult, billingResult, pnlResult, xdashResult] = await Promise.allSettled([
+  const t0 = Date.now();
+  syncProLog({
+    event: "sync_pro.cron.start",
+    branch_type: "full_cron",
+    status: "started",
+    message: "cron/sync: phase1 monday+billing+pnl; phase2 xdash totals || partner-pairs",
+    detail: { max_duration_s: 300, xdash_disabled: xdashDisabled },
+  });
+
+  const phase1T0 = Date.now();
+  const [mondayResult, billingResult, pnlResult] = await Promise.allSettled([
     syncMondayData(),
     syncBillingData(),
     syncPnlData(),
-    xdashDisabled
-      ? Promise.resolve({ datesSynced: 0, rowsUpserted: 0 })
-      : syncXDASHData(),
   ]);
+  syncProLog({
+    event: "sync_pro.cron.phase1_done",
+    branch_type: "phase1",
+    status:
+      mondayResult.status === "fulfilled" &&
+      billingResult.status === "fulfilled" &&
+      pnlResult.status === "fulfilled"
+        ? "ok"
+        : "error",
+    duration_ms: Date.now() - phase1T0,
+    detail: {
+      monday: mondayResult.status,
+      billing: billingResult.status,
+      pnl: pnlResult.status,
+    },
+  });
 
-  // Phase 2: Partner pairs AFTER XDASH (same table → deadlock if parallel)
-  const partnerPairsResult = await (async () => {
-    if (xdashDisabled) return { status: "fulfilled" as const, value: { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 } };
+  // Phase 2: XDASH home/partner-performance totals vs partner-pairs — same wall-clock window, different tables
+  // (`daily_home_totals` / `hourly_snapshots` vs `daily_partner_pairs`). Start both immediately; await totals
+  // first so checkPerformance + cache bust run without waiting on the heavy pairs crawl.
+  // Start totals first so the critical path is scheduled immediately; partners runs concurrently.
+  const totalsFuture = (async () => {
+    const b0 = Date.now();
+    syncProLog({
+      event: "sync_pro.cron.branch.totals",
+      branch_type: "totals",
+      status: "started",
+    });
     try {
-      const value = await syncPartnerPairsData();
-      return { status: "fulfilled" as const, value };
-    } catch (reason) {
-      return { status: "rejected" as const, reason };
+      if (xdashDisabled) {
+        syncProLog({
+          event: "sync_pro.cron.branch.totals",
+          branch_type: "totals",
+          status: "ok",
+          duration_ms: Date.now() - b0,
+          detail: { skipped: true, reason: "XDASH_DISABLED" },
+        });
+        return { datesSynced: 0, rowsUpserted: 0 };
+      }
+      const value = await syncXDASHData();
+      syncProLog({
+        event: "sync_pro.cron.branch.totals",
+        branch_type: "totals",
+        status: "ok",
+        duration_ms: Date.now() - b0,
+        detail: { datesSynced: value.datesSynced, rowsUpserted: value.rowsUpserted },
+      });
+      return value;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      syncProLog({
+        event: "sync_pro.cron.branch.totals",
+        branch_type: "totals",
+        status: "error",
+        duration_ms: Date.now() - b0,
+        message: msg,
+      });
+      throw e;
     }
   })();
 
+  const partnersFuture = (async () => {
+    const b0 = Date.now();
+    syncProLog({
+      event: "sync_pro.cron.branch.partners",
+      branch_type: "partners",
+      status: "started",
+    });
+    try {
+      if (xdashDisabled) {
+        syncProLog({
+          event: "sync_pro.cron.branch.partners",
+          branch_type: "partners",
+          status: "ok",
+          duration_ms: Date.now() - b0,
+          detail: { skipped: true, reason: "XDASH_DISABLED" },
+        });
+        return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
+      }
+      const value = await syncPartnerPairsData();
+      syncProLog({
+        event: "sync_pro.cron.branch.partners",
+        branch_type: "partners",
+        status: "ok",
+        duration_ms: Date.now() - b0,
+        detail: {
+          datesRequested: value.datesRequested,
+          datesSynced: value.datesSynced,
+          rowsUpserted: value.rowsUpserted,
+        },
+      });
+      return value;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      syncProLog({
+        event: "sync_pro.cron.branch.partners",
+        branch_type: "partners",
+        status: "error",
+        duration_ms: Date.now() - b0,
+        message: msg,
+      });
+      throw e;
+    }
+  })();
+
+  const [totalsSettled] = await Promise.allSettled([totalsFuture]);
+  const xdashResult =
+    totalsSettled.status === "fulfilled"
+      ? ({ status: "fulfilled" as const, value: totalsSettled.value })
+      : ({ status: "rejected" as const, reason: totalsSettled.reason });
+
   function maskReason(label: string, reason: unknown): string {
     const raw = reason instanceof Error ? reason.message : String(reason);
-    console.error(`[cron-sync] ${label} failed:`, raw);
+    syncProLog({
+      event: "sync_pro.cron.step_error",
+      branch_type: "full_cron",
+      status: "error",
+      message: `${label} failed`,
+      detail: { label, raw: process.env.NODE_ENV === "production" ? undefined : raw },
+    });
     if (process.env.NODE_ENV === "production") return `${label}: sync failed`;
     return `${label}: ${raw}`;
   }
@@ -119,6 +232,69 @@ export async function GET(request: NextRequest) {
     summary.errors.push(maskReason("XDASH", xdashResult.reason));
   }
 
+  if (!xdashDisabled) {
+    const health = await applyXdashTotalsCronHealth(xdashResult.status === "fulfilled");
+    syncProLog({
+      event: "sync_pro.cron.sync_health",
+      branch_type: "sync_health",
+      status: "ok",
+      detail: {
+        consecutiveFailures: health.consecutiveFailures,
+        triple_failure_alert: health.shouldAlertTripleFailure,
+      },
+    });
+    if (health.shouldAlertTripleFailure) {
+      const hint =
+        xdashResult.status === "rejected"
+          ? xdashResult.reason instanceof Error
+            ? xdashResult.reason.message
+            : String(xdashResult.reason)
+          : "";
+      void notifyCriticalSyncTripleFailure(hint).then((r) =>
+        syncProLog({
+          event: "sync_pro.cron.critical_push",
+          branch_type: "sync_health",
+          status: r.ok > 0 ? "ok" : "error",
+          detail: { deliveries_ok: r.ok, failed: r.failed, log: r.log },
+        }),
+      );
+    }
+  }
+
+  // As soon as totals land: goal/margin alerts + bust financial caches so Home reflects revenue/profit
+  // even while the partner-pairs branch may still be running.
+  if (!xdashDisabled && xdashResult.status === "fulfilled") {
+    try {
+      const perf = await checkPerformance();
+      syncProLog({
+        event: "sync_pro.cron.check_performance",
+        branch_type: "totals",
+        status: "ok",
+        detail: { log: perf.log },
+      });
+    } catch (e) {
+      syncProLog({
+        event: "sync_pro.cron.check_performance",
+        branch_type: "totals",
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+    try {
+      revalidateTag(FINANCIAL_TAG, { expire: 0 });
+      revalidateTag(HOME_TOTALS_TAG, { expire: 0 });
+      revalidatePath("/");
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  const [partnersSettled] = await Promise.allSettled([partnersFuture]);
+  const partnerPairsResult =
+    partnersSettled.status === "fulfilled"
+      ? ({ status: "fulfilled" as const, value: partnersSettled.value })
+      : ({ status: "rejected" as const, reason: partnersSettled.reason });
+
   if (partnerPairsResult.status === "fulfilled") {
     summary.partnerPairs = partnerPairsResult.value;
   } else {
@@ -136,10 +312,26 @@ export async function GET(request: NextRequest) {
     (summary.monday?.funnelRows ?? 0) +
     (summary.monday?.activityRows ?? 0);
 
-  console.log(
-    `[Sync-Pro] cron/sync done in ${(durationMs / 1000).toFixed(1)}s. ` +
-      `datesSynced=${datesSynced}, rowsUpserted=${rowsUpserted}, errors=${summary.errors.length}.`,
-  );
+  const phase1Ok =
+    mondayResult.status === "fulfilled" &&
+    billingResult.status === "fulfilled" &&
+    pnlResult.status === "fulfilled";
+  const totalsBranchOk = xdashDisabled || xdashResult.status === "fulfilled";
+  /** Partners failing must not fail the cron HTTP status once money totals are in (monitoring / Vercel dashboard). */
+  const httpOk = phase1Ok && totalsBranchOk;
+
+  syncProLog({
+    event: "sync_pro.cron.complete",
+    branch_type: "full_cron",
+    status: ok ? "ok" : "error",
+    duration_ms: durationMs,
+    detail: {
+      datesSynced,
+      rowsUpserted,
+      error_count: summary.errors.length,
+      http_ok: httpOk,
+    },
+  });
 
   void recordSyncRun({
     source: "cron_sync",
@@ -151,26 +343,7 @@ export async function GET(request: NextRequest) {
     detail: summary,
   });
 
-  // Goal / margin alerts run after XDASH writes `daily_home_totals` (same as auto-sync + refreshTodayHome).
-  if (!xdashDisabled && xdashResult.status === "fulfilled") {
-    try {
-      const perf = await checkPerformance();
-      console.log("[cron/sync] checkPerformance:", perf.log);
-    } catch (e) {
-      console.warn(
-        "[cron/sync] checkPerformance (non-fatal):",
-        e instanceof Error ? e.message : e,
-      );
-    }
-    try {
-      revalidateTag(FINANCIAL_TAG, { expire: 0 });
-      revalidatePath("/");
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  return NextResponse.json({ ok, summary }, { status: ok ? 200 : 500 });
+  return NextResponse.json({ ok, summary }, { status: httpOk ? 200 : 500 });
 }
 
 export async function POST(request: NextRequest) {
