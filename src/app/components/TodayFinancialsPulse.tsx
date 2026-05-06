@@ -140,13 +140,13 @@ function computeMarginDelta(
 }
 
 const COMPARISON_TOOLTIP =
-  "Live vs live: today's running cumulative vs the comparison date using the hourly snapshot whose sync time (created_at) is closest to the same Israel clock time on that date. We only show this clean comparison when that sync point falls within 60 minutes of the target time. % change = (current − previous) ÷ previous.";
+  "Live vs live: today's running cumulative vs the comparison date using the hourly snapshot whose sync time (created_at) is closest to the same Israel clock time on that date, among snapshots that fall within ±60 minutes of that instant (two-hour window). % change = (current − previous) ÷ previous.";
 
 const ESTIMATE_TOOLTIP =
-  "Estimated comparison: no hourly sync point existed within 60 minutes of the same-time target on that date, so we scale the full-day total by (current hour ÷ 24). Less precise than a true live match — shown with *.";
+  "Estimated comparison: no hourly snapshot fell in that ±60-minute window around the same-time target, so we scale the full-day total from daily_home_totals by the fraction of today's Israel day elapsed (by clock, e.g. ~50% at noon). Less precise than a true live match — shown with *.";
 
 const ESTIMATE_LEGEND =
-  "* No sync within 60 minutes of the target time — proportional estimate from daily total.";
+  "* No snapshot in the ±60-minute window around the target time — proportional estimate from daily total × Israel day progress.";
 
 const MARGIN_DELTA_TOOLTIP =
   "Margin change vs the comparison date's margin at the same Israel hour (not full-day). Shown as percentage points; value in parentheses is the past day's margin at this time of day.";

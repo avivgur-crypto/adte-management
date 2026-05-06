@@ -147,3 +147,14 @@ export function utcMillisForIsraelWallClock(
   }
   return bestMs;
 }
+
+/**
+ * Fraction of the current Israel civil day that has elapsed (0 at 00:00:00, 1 at 24:00:00),
+ * based on wall-clock hour:minute:second in Asia/Jerusalem. Used for intraday scaling
+ * (e.g. Pulse “daily total × progress” estimates at ~50% around 12:00).
+ */
+export function getIsraelDayElapsedFraction(now = new Date()): number {
+  const p = getIsraelDateTimeParts(now);
+  const sec = p.hour * 3600 + p.minute * 60 + p.second;
+  return Math.max(0, Math.min(1, sec / 86_400));
+}

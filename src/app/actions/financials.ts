@@ -6,6 +6,7 @@ import {
   getIsraelDate,
   getIsraelDateDaysAgo,
   getIsraelDateTimeParts,
+  getIsraelDayElapsedFraction,
   getIsraelHour,
   utcMillisForIsraelWallClock,
 } from "@/lib/israel-date";
@@ -719,18 +720,17 @@ export type TodayHomeRow = {
   impressions: number;
   /**
    * On Pulse comparison rows only:
-   *  - "hourly"          → cumulative from `hourly_snapshots`, chosen by closest
-   *                        `created_at` to same Israel wall-clock on the past date,
-   *                        only if |Δ| ≤ 60 minutes. Live-vs-live, no asterisk.
-   *  - "linear_estimate" → no snapshot within that 60-minute window; scaled from
-   *                        `daily_home_totals` as `total * (currentHour / 24)`.
-   *                        UI shows an asterisk.
+   *  - "hourly"          → cumulative from `hourly_snapshots`: among rows on the past date
+   *                        whose `created_at` lies within ±60 minutes of the target Israel
+   *                        wall-clock, pick the closest. Live-vs-live, no asterisk.
+   *  - "linear_estimate" → no snapshot in that window; scaled from `daily_home_totals` as
+   *                        `total × (Israel day elapsed fraction)`. UI shows an asterisk.
    * Undefined for "today" / direct daily reads.
    */
   source?: "hourly" | "linear_estimate";
   /**
    * Convenience boolean mirroring `source`. `true` iff the row was produced by the
-   * linear-estimate fallback (no snapshot within 60 minutes of the target time).
+   * linear-estimate fallback (no snapshot in the ±60m window around the target time).
    * UI uses this directly to gate the asterisk.
    */
   isEstimate?: boolean;
@@ -788,27 +788,28 @@ export type ComparisonData = {
 };
 
 /**
- * Strict live-vs-live window: the closest `hourly_snapshots.created_at` must be
- * within this many ms of the target Israel wall-clock on the comparison date.
- * Outside this window we treat the comparison as an estimate (asterisk).
+ * Half-width of the Pulse “live” snapshot window: accept `created_at` within **±** this
+ * many ms of the target Israel wall-clock (total span = 2× = 120 minutes).
  */
 const LIVE_VS_LIVE_SYNC_WINDOW_MS = 60 * 60 * 1000;
 
 /**
- * Apples-to-apples Pulse comparison: hourly snapshot only when within 60 minutes,
- * otherwise proportional estimate (asterisk).
+ * Apples-to-apples Pulse comparison: hourly snapshot only when `created_at` falls in a
+ * **±60 minute** band around the same Israel wall-clock on `D` (120 minutes total);
+ * otherwise proportional estimate from `daily_home_totals` (asterisk) when that row exists.
  *
  * - **Today** = today's `daily_home_totals` row (running cumulative — refreshed every
  *   AutoSync poll).
  * - **Past (1d / 7d / 28d ago)**:
  *   1. **Hourly snapshot** — For each comparison date `D`, target "same Israel wall-clock
- *      as now on D". Pick the `hourly_snapshots` row for `D` whose `created_at` is
- *      closest in absolute time. **Only if |Δ| ≤ 60 minutes** use it as live cumulative
- *      (`source: "hourly", isEstimate: false`, no asterisk).
- *   2. **Estimate (fallback)** — If |Δ| > 60 min or no snapshots for `D`, scale
- *      `daily_home_totals` for `D` by `(currentHour / 24)`. Marked
- *      `source: "linear_estimate", isEstimate: true` (asterisk).
- *   3. `null` only when daily row is also missing.
+ *      as now on D". Among rows for `D` with **|created_at − target| ≤ 60 minutes**, pick
+ *      the **closest** match (`source: "hourly", isEstimate: false`, no asterisk).
+ *   2. **Estimate (fallback)** — If no snapshot falls in the ±60-minute window around
+ *      the target instant (120 minutes total), scale `daily_home_totals` for `D` by the
+ *      fraction of the **current** Israel day elapsed (hour:minute:second ÷ 24h). Marked
+ *      `source: "linear_estimate", isEstimate: true` (asterisk). Never N/A when that
+ *      daily row exists.
+ *   3. `null` only when there is no `daily_home_totals` row for `D` (no snapshot and no daily).
  *
  * Israel calendar + wall-clock for targets; `hourly_snapshots.created_at` is UTC
  * from Postgres — comparable as epoch milliseconds.
@@ -816,7 +817,7 @@ const LIVE_VS_LIVE_SYNC_WINDOW_MS = 60 * 60 * 1000;
 export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise<ComparisonData> {
   const todayKey = getIsraelDateDaysAgo(0);
   const pastKeys = offsets.map((o) => getIsraelDateDaysAgo(o));
-  const currentHour = getIsraelHour();
+  const dayElapsedFraction = getIsraelDayElapsedFraction();
   const clock = getIsraelDateTimeParts();
 
   const [todayRow, hourlyByDate] = await Promise.all([
@@ -843,9 +844,9 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
     }
     const daily = dailyByDate.get(date);
     if (daily) {
-      past[o] = linearEstimateFromDaily(daily, currentHour);
+      past[o] = linearEstimateFromDaily(daily, dayElapsedFraction);
       auditEntries.push(
-        `${o}d=${date} (estimate*, daily×${currentHour}/24, no snapshot within ${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m of target)`,
+        `${o}d=${date} (estimate*, daily×dayFrac=${(dayElapsedFraction * 100).toFixed(2)}%, no snapshot in ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m window)`,
       );
     } else {
       past[o] = null;
@@ -854,21 +855,19 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
   }
 
   console.log(
-    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} live window=${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m | ${auditEntries.join(" | ")}`,
+    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} snapshot ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m (120m span) dayFrac=${(dayElapsedFraction * 100).toFixed(2)}% | ${auditEntries.join(" | ")}`,
   );
 
   return { today: todayRow, past };
 }
 
 /**
- * Scale a full-day row to "as-of currentHour" using a flat 1/24 distribution.
- * `currentHour` is the Israel hour 0–23. At hour 0 returns zeros (UI will show N/A);
- * at hour 23 returns ~96% of the day (matches the user-stated formula
- * `daily * (currentHour / 24)`). Marked `source: "linear_estimate", isEstimate: true`
- * so the UI shows the asterisk + footnote.
+ * Scale a full-day row to "as-of now" using the fraction of the Israel civil day elapsed
+ * (0 at 00:00:00 IDT, 1 at end of day). E.g. 12:00:00 → 0.5. Marked
+ * `source: "linear_estimate", isEstimate: true` so the UI shows the asterisk + footnote.
  */
-function linearEstimateFromDaily(daily: TodayHomeRow, currentHour: number): TodayHomeRow {
-  const f = Math.max(0, Math.min(24, currentHour)) / 24;
+function linearEstimateFromDaily(daily: TodayHomeRow, dayElapsedFraction: number): TodayHomeRow {
+  const f = Math.max(0, Math.min(1, dayElapsedFraction));
   return {
     date: daily.date,
     revenue: daily.revenue * f,
@@ -1093,10 +1092,11 @@ type SnapshotRow = {
 };
 
 /**
- * For each comparison date, pick the `hourly_snapshots` row whose `created_at` is
- * closest to "same Israel wall-clock as `clock`, on that date".
- * Only returns a row when |Δ| ≤ `LIVE_VS_LIVE_SYNC_WINDOW_MS` (60 minutes);
- * otherwise the caller falls back to `linearEstimateFromDaily` (asterisk).
+ * For each comparison date, consider every `hourly_snapshots` row for that date whose
+ * `created_at` falls within **±60 minutes** of the target instant (same Israel wall-clock
+ * as `clock` on that date — 120-minute total window). If several qualify, pick the one
+ * with the smallest |created_at − target|. Otherwise the caller uses
+ * `linearEstimateFromDaily` (asterisk) when a daily row exists.
  */
 async function getClosestPastSnapshotsByCreatedAt(
   dates: string[],
@@ -1142,14 +1142,20 @@ async function getClosestPastSnapshotsByCreatedAt(
       continue;
     }
 
-    let best: { row: SnapshotRow; diffMs: number } | null = null;
+    const inWindow: { row: SnapshotRow; diffMs: number }[] = [];
     for (const row of rows) {
       const t = new Date(row.created_at).getTime();
       if (!Number.isFinite(t)) continue;
       const diffMs = Math.abs(t - targetUtcMs);
-      if (best == null || diffMs < best.diffMs) best = { row, diffMs };
+      if (diffMs <= LIVE_VS_LIVE_SYNC_WINDOW_MS) inWindow.push({ row, diffMs });
     }
-    if (best == null || best.diffMs > LIVE_VS_LIVE_SYNC_WINDOW_MS) continue;
+    if (inWindow.length === 0) continue;
+
+    let best = inWindow[0]!;
+    for (let i = 1; i < inWindow.length; i++) {
+      const cur = inWindow[i]!;
+      if (cur.diffMs < best.diffMs) best = cur;
+    }
 
     const r = best.row;
     const h = r.hour;
