@@ -759,6 +759,11 @@ function mapDailyHomeRow(data: {
   };
 }
 
+/** Same emptiness rule as XDASH home sync skip — a row like this is not a real intraday baseline. */
+function isVacuousHourlySnapshot(row: TodayHomeRow): boolean {
+  return row.revenue === 0 && row.cost === 0 && row.impressions === 0;
+}
+
 async function getHomeRowForDate(isoDate: string): Promise<TodayHomeRow | null> {
   const { data, error } = await supabaseAdmin
     .from("daily_home_totals")
@@ -820,42 +825,69 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
   const dayElapsedFraction = getIsraelDayElapsedFraction();
   const clock = getIsraelDateTimeParts();
 
-  const [todayRow, hourlyByDate] = await Promise.all([
+  const [todayRow, hourlyByDate, dailyByDate] = await Promise.all([
     getHomeRowForDate(todayKey),
     getClosestPastSnapshotsByCreatedAt(pastKeys, clock),
+    // Always load `daily_home_totals` for past comparison dates — same table + columns
+    // semantics as Daily Progress (`_fetchAllDailyByMonth`), so we can override bogus
+    // all-zero hourly snapshots that the chart would never show as the day total.
+    getDailyHomeRows(pastKeys),
   ]);
-
-  const missingForFallback = pastKeys.filter((d) => !hourlyByDate.has(d));
-  const dailyByDate = await getDailyHomeRows(missingForFallback);
 
   const past: Record<number, TodayHomeRow | null> = {};
   const auditEntries: string[] = [];
+  let revalidateAfterVacuousOverride = false;
+
   for (let i = 0; i < offsets.length; i++) {
     const o = offsets[i]!;
     const date = pastKeys[i]!;
-    const hourly = hourlyByDate.get(date);
-    if (hourly) {
-      past[o] = hourly;
-      const skewSec = hourly.matchedSkewSec ?? 0;
+    const hourlyRaw = hourlyByDate.get(date);
+    const daily = dailyByDate.get(date);
+
+    const hourlyOk = hourlyRaw != null && !isVacuousHourlySnapshot(hourlyRaw);
+
+    if (hourlyOk) {
+      past[o] = hourlyRaw;
+      const skewSec = hourlyRaw.matchedSkewSec ?? 0;
       auditEntries.push(
-        `${o}d=${date} h${hourly.matchedHour ?? "?"} (live, |Δsync|=${skewSec}s ≤${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m)`,
+        `${o}d=${date} h${hourlyRaw.matchedHour ?? "?"} (live, |Δsync|=${skewSec}s ≤${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m)`,
       );
       continue;
     }
-    const daily = dailyByDate.get(date);
+
     if (daily) {
-      past[o] = linearEstimateFromDaily(daily, dayElapsedFraction);
-      auditEntries.push(
-        `${o}d=${date} (estimate*, daily×dayFrac=${(dayElapsedFraction * 100).toFixed(2)}%, no snapshot in ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m window)`,
-      );
-    } else {
-      past[o] = null;
-      auditEntries.push(`${o}d=${date} (no data)`);
+      if (hourlyRaw != null && isVacuousHourlySnapshot(hourlyRaw)) {
+        revalidateAfterVacuousOverride = true;
+        const est = linearEstimateFromDaily(daily, dayElapsedFraction);
+        past[o] = est;
+        auditEntries.push(
+          `${o}d=${date} (estimate*, vacuous hourly ignored; daily rev=${daily.revenue.toFixed(0)} → scaled rev=${est.revenue.toFixed(0)} @ dayFrac=${(dayElapsedFraction * 100).toFixed(2)}%)`,
+        );
+      } else {
+        past[o] = linearEstimateFromDaily(daily, dayElapsedFraction);
+        auditEntries.push(
+          `${o}d=${date} (estimate*, daily rev=${daily.revenue.toFixed(0)} scaled rev=${past[o]!.revenue.toFixed(0)}; no usable snapshot in ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m)`,
+        );
+      }
+      continue;
+    }
+
+    past[o] = null;
+    auditEntries.push(
+      `${o}d=${date} (no daily_home_totals row${hourlyRaw != null ? "; hourly vacuous" : ""})`,
+    );
+  }
+
+  if (revalidateAfterVacuousOverride) {
+    try {
+      revalidateTag(FINANCIAL_TAG, { expire: 0 });
+    } catch {
+      /* non-fatal */
     }
   }
 
   console.log(
-    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} snapshot ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m (120m span) dayFrac=${(dayElapsedFraction * 100).toFixed(2)}% | ${auditEntries.join(" | ")}`,
+    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} snapshot ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m (120m span) dayFrac=${(dayElapsedFraction * 100).toFixed(2)}% revalidate=${revalidateAfterVacuousOverride} | ${auditEntries.join(" | ")}`,
   );
 
   return { today: todayRow, past };
