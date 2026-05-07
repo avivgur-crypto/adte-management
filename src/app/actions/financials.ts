@@ -986,7 +986,10 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
 
     const homeByDate = await Promise.all(
       dates.map(async (date) => {
-        const row = await fetchHomeForDate(date, fetchHomeForDateInteractiveOpts);
+        const row = await fetchHomeForDate(date, {
+          ...fetchHomeForDateInteractiveOpts,
+          mode: "internal",
+        });
         return { date, ...row } as const;
       }),
     );

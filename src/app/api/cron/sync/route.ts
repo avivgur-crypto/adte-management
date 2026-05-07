@@ -340,7 +340,7 @@ export async function GET(request: NextRequest) {
     rowsUpserted,
     ok,
     errorMessage: summary.errors[0],
-    detail: summary,
+    detail: { ...summary, data_source: "internal_cookie" },
   });
 
   return NextResponse.json({ ok, summary }, { status: httpOk ? 200 : 500 });

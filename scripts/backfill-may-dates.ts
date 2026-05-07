@@ -61,13 +61,19 @@ async function main() {
     event: "sync_pro.reconcile.cli.start",
     branch_type: "totals",
     status: "started",
-    detail: { dates, forceExternal: true, skipHourlySnapshots: true, force: true },
+    detail: {
+      dates,
+      mode: "internal",
+      data_source: "internal_cookie",
+      skipHourlySnapshots: true,
+      force: true,
+    },
   });
 
   try {
     const result = await syncXDASHDataForDates(dates, {
       force: true,
-      forceExternal: true,
+      mode: "internal",
       skipHourlySnapshots: true,
       skipPartnerPerformance: true,
     });

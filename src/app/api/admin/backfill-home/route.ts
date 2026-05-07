@@ -11,20 +11,18 @@ import { syncProLog } from "@/lib/sync-pro-log";
  *   ?dates=2026-05-01,2026-05-02,...
  *   ?from=2026-05-01&to=2026-05-07
  *
- * Defaults to **2026-05-01 → 2026-05-07** when no parameters are provided
- * (matches the "Ultimate Data Reconciliation" task).
+ * Defaults to **2026-05-01 → 2026-05-07** when no parameters are provided.
  *
- * Mode (Sync-Pro accuracy guarantees):
- *   - `forceExternal: true` so every fetch hits the External Report API and
- *     returns the FINALIZED revenue/cost/profit (the cookie path can return
- *     stale "live" intraday values for today).
- *   - `skipHourlySnapshots: true` so the original intraday Pulse timeline is
- *     preserved — Pulse's "live vs live" comparisons keep working without
- *     asterisks.
- *   - `force: true` so existing rows are hard-overwritten regardless of
- *     whether they already have profit > 0.
- *   - `skipPartnerPerformance: true` (default) — reconciliation only repaints
- *     the totals table. Pass `partners=true` to repaint demand/supply too.
+ * Mode (UI parity — Aviv's source-of-truth contract):
+ *   - `mode: "internal"` → cookie path (XDASH UI numbers, 1:1).
+ *     This is the default. The External API has been observed to lag (e.g.
+ *     reporting ~$70K for May 6 when the UI shows ~$63K), so we DO NOT use it.
+ *   - `?source=external` to opt back into the External Report API for
+ *     historical research older than 7 days.
+ *   - `force: true` → hard overwrite regardless of existing profit.
+ *   - `skipHourlySnapshots: true` → preserve Pulse's intraday timeline.
+ *   - `skipPartnerPerformance: true` (default) → only repaint totals. Pass
+ *     `partners=true` to also repaint demand/supply rows.
  *
  * Auth: `Authorization: Bearer $CRON_SECRET` (or `?secret=…`).
  */
@@ -138,6 +136,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "No valid dates resolved" }, { status: 400 });
   }
   const includePartners = isTrueish(request.nextUrl.searchParams.get("partners"));
+  const sourceParam = (request.nextUrl.searchParams.get("source") ?? "").toLowerCase();
+  const mode: "internal" | "external" =
+    sourceParam === "external" ? "external" : "internal";
   const t0 = Date.now();
 
   syncProLog({
@@ -145,10 +146,10 @@ export async function GET(request: NextRequest) {
     branch_type: "totals",
     status: "started",
     detail: {
-      mode: "external_only",
+      mode,
+      data_source: mode === "internal" ? "internal_cookie" : "external_api",
       dates,
       range: from && to ? { from, to } : undefined,
-      forceExternal: true,
       skipHourlySnapshots: true,
       force: true,
       includePartners,
@@ -160,7 +161,7 @@ export async function GET(request: NextRequest) {
   try {
     const result = await syncXDASHDataForDates(dates, {
       force: true,
-      forceExternal: true,
+      mode,
       skipHourlySnapshots: true,
       skipPartnerPerformance: !includePartners,
     });
@@ -193,6 +194,8 @@ export async function GET(request: NextRequest) {
       duration_ms: durationMs,
       detail: {
         dates,
+        mode,
+        data_source: mode === "internal" ? "internal_cookie" : "external_api",
         datesSynced: result.datesSynced,
         rowsUpserted: result.rowsUpserted,
         diffs,
@@ -201,7 +204,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      mode: "external_only",
+      mode,
+      data_source: mode === "internal" ? "internal_cookie" : "external_api",
       dates,
       range: from && to ? { from, to } : undefined,
       hourly_snapshots_preserved: true,

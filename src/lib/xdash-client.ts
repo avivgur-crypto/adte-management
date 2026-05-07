@@ -26,6 +26,7 @@ import {
   resolveExternalReportCredentials,
   tryGetXdashAuthTokenFromEdge,
 } from "@/lib/xdash-edge-credentials";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 // ============================================================================
 // KILL SWITCH — set XDASH_DISABLED=true in .env.local to block ALL API calls.
@@ -1075,57 +1076,108 @@ async function fetchHomeFromExternalReportApi(
 }
 
 /**
- * Fetch Home totals for a single date — **hybrid routing**:
+ * Fetch Home totals for a single date.
  *
- *  - **TODAY (intraday)**  → legacy cookie-based `/home/overview` (`fetchAdServerOverview`).
- *    The new external report endpoint returns an empty `totals` for the current
- *    Israel calendar date, so we have to keep the cookie scrape alive for today
- *    only. We always send `startDate === endDate === today` so the live server
- *    runs the lightest possible single-day query.
- *  - **HISTORY (any past date)** → fast external report API (`fetchHomeFromExternalReportApi`).
- *    Pre-aggregated `totals` are returned at the JSON root, no scrape needed.
+ * **Source-of-truth contract (since 2026-05):** the XDASH UI is the absolute
+ * source of truth. The External Report API has been observed to lag and
+ * disagree with the UI for recent dates — Aviv requires 1:1 parity with what
+ * the dashboard shows, so the **internal cookie path is the default for every
+ * sync** (live, golden sync, backfill, reconciliation).
  *
- * The returned shape is identical for both paths so all downstream callers
- * (`refreshTodayHome`, `syncHomeTotalsForDates`, scripts, Pulse) keep working
- * without any change.
+ * Modes (`opts.mode`):
+ *   - `"internal"` (default): cookie-based `/home/overview` — exact UI numbers
+ *     for any date, including today's intraday cumulative total.
+ *   - `"external"`: External Report API. Should only be used for historical
+ *     research more than 7 days old, where the lag is irrelevant.
+ *   - `"auto"`: legacy hybrid (today → cookie, history → external). Kept for
+ *     callers that explicitly opt in.
  *
- * `opts.forceExternal` (Sync-Pro reconciliation only): bypass the today
- * routing and always hit the External Report API. Use this when you
- * specifically need the *finalized* number (e.g. mid-day reconciliation of
- * earlier dates) — the External API is authoritative for any settled date and
- * returns whatever it has for today, even if that's empty.
+ * Failure mode: when the cookie path fails with a 401/403 / "Unauthorized"
+ * style error we emit `sync_pro.internal_sync.auth_expired` (high-priority log)
+ * before re-throwing, so the dashboard "UI-Synced" indicator can flag a stale
+ * cookie immediately.
  */
+export type HomeFetchMode = "internal" | "external" | "auto";
+
 export type FetchHomeForDateOpts = FetchHomeOverviewOpts & {
-  /** When true, skip the cookie-based live path and always use the External Report API. */
+  mode?: HomeFetchMode;
+  /** @deprecated use `mode: "external"`. Kept for back-compat with existing callers. */
   forceExternal?: boolean;
 };
+
+const AUTH_FAIL_PATTERNS = [
+  /\b401\b/,
+  /\b403\b/,
+  /unauthorized/i,
+  /forbidden/i,
+  /token/i,
+  /cookie/i,
+  /expired/i,
+  /not authenticated/i,
+];
+
+function looksLikeAuthExpired(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  if (!msg) return false;
+  return AUTH_FAIL_PATTERNS.some((re) => re.test(msg));
+}
+
+function resolveMode(opts: FetchHomeForDateOpts | undefined): HomeFetchMode {
+  if (opts?.mode) return opts.mode;
+  if (opts?.forceExternal) return "external";
+  return "internal";
+}
+
+async function fetchHomeFromInternalCookie(
+  date: string,
+  opts?: FetchHomeForDateOpts,
+): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
+  try {
+    const raw = await fetchAdServerOverview(
+      { startDate: date, endDate: date },
+      opts,
+    );
+    return mapHomeOverviewToHomeTotals(raw, date);
+  } catch (e) {
+    if (looksLikeAuthExpired(e)) {
+      syncProLog({
+        event: "sync_pro.internal_sync.auth_expired",
+        branch_type: "xdash_sync",
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+        detail: {
+          date,
+          hint: "XDASH cookie likely expired. Update XDASH_AUTH_TOKEN env / Edge Config / xdash_auth table.",
+        },
+      });
+    }
+    throw e;
+  }
+}
 
 export async function fetchHomeForDate(
   date: string,
   opts?: FetchHomeForDateOpts,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
-  // Israel calendar today — same source of truth used everywhere else
-  // (`refreshTodayHome`, sync libs, comparison logic). Avoids importing
-  // date-fns-tz for one trivial conversion.
+  const mode = resolveMode(opts);
   const todayIL = getIsraelDate();
 
-  if (opts?.forceExternal) {
-    console.log(`[XDASH-Hybrid] forceExternal=true → routing ${date} to External API regardless of today.`);
+  if (mode === "external") {
+    console.log(`[XDASH] mode=external → ${date} via External Report API.`);
     return fetchHomeFromExternalReportApi(date, opts);
   }
 
-  if (date === todayIL) {
-    console.log(
-      `[XDASH-Hybrid] Routing TODAY (${date}) to legacy cookie-based live endpoint (Lightweight 1-day query).`,
-    );
-    // Strictly bounded to a single day so the fragile live server runs the
-    // smallest possible query. Do NOT widen the range here.
-    const raw = await fetchAdServerOverview({ startDate: date, endDate: date }, opts);
-    return mapHomeOverviewToHomeTotals(raw, date);
+  if (mode === "auto") {
+    if (date === todayIL) {
+      console.log(`[XDASH] mode=auto, today (${date}) → cookie /home/overview.`);
+      return fetchHomeFromInternalCookie(date, opts);
+    }
+    console.log(`[XDASH] mode=auto, history (${date}) → External Report API.`);
+    return fetchHomeFromExternalReportApi(date, opts);
   }
 
-  console.log(`[XDASH-Hybrid] Routing HISTORY (${date}) to fast External API.`);
-  return fetchHomeFromExternalReportApi(date, opts);
+  console.log(`[XDASH] mode=internal → ${date} via cookie /home/overview (UI parity).`);
+  return fetchHomeFromInternalCookie(date, opts);
 }
 
 /**

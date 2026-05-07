@@ -12,7 +12,7 @@ import { syncProLog } from "@/lib/sync-pro-log";
  *
  * Sync-Pro contract:
  *   1. Single date: `getIsraelDateDaysAgo(1)`.
- *   2. `forceExternal: true` → finalized number from the External Report API.
+ *   2. `mode: "internal"` → cookie path = exact match with the XDASH UI.
  *   3. `skipHourlySnapshots: true` → preserves the genuine intraday timeline
  *      so Pulse keeps doing "live vs live" without asterisks.
  *   4. Reads the pre-sync row, runs the sync, reads the post-sync row, and
@@ -90,8 +90,8 @@ export async function GET(request: NextRequest) {
     status: "started",
     detail: {
       date: yesterday,
-      mode: "external_only",
-      forceExternal: true,
+      mode: "internal",
+      data_source: "internal_cookie",
       skipHourlySnapshots: true,
       force: true,
     },
@@ -102,7 +102,7 @@ export async function GET(request: NextRequest) {
   try {
     const result = await syncXDASHDataForDates([yesterday], {
       force: true,
-      forceExternal: true,
+      mode: "internal",
       skipHourlySnapshots: true,
       skipPartnerPerformance: true,
     });
@@ -156,6 +156,7 @@ export async function GET(request: NextRequest) {
       ok: true,
       detail: {
         date: yesterday,
+        data_source: "internal_cookie",
         previousRevenue,
         finalizedRevenue,
         revenueDelta,
@@ -190,7 +191,7 @@ export async function GET(request: NextRequest) {
       rowsUpserted: 0,
       ok: false,
       errorMessage: msg,
-      detail: { date: yesterday },
+      detail: { date: yesterday, data_source: "internal_cookie" },
     });
     return NextResponse.json({ ok: false, date: yesterday, error: msg }, { status: 500 });
   }

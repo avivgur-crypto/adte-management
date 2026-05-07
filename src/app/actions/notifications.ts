@@ -334,7 +334,7 @@ async function fetchDailyRowWithLiveFallback(isoDate: string): Promise<DailyRow 
 
   let live: { revenue: number; cost: number; profit: number; impressions: number };
   try {
-    live = await fetchHomeForDate(isoDate);
+    live = await fetchHomeForDate(isoDate, { mode: "internal" });
   } catch (e) {
     syncProLog({
       event: "sync_pro.morning_summary.live_fallback.fetch_failed",
@@ -684,13 +684,12 @@ export async function morningSummary(
     });
     try {
       // Lazy import to avoid a circular import (financials.ts imports notifications).
-      // Same recipe as Golden Sync: External Report API only (finalized numbers),
-      // hard overwrite, and DO NOT touch hourly_snapshots so Pulse keeps its
-      // intraday timeline.
+      // Same recipe as Golden Sync: cookie path (UI parity), hard overwrite,
+      // and DO NOT touch hourly_snapshots so Pulse keeps its intraday timeline.
       const { syncXDASHDataForDates } = await import("@/lib/sync/xdash");
       await syncXDASHDataForDates([yesterday], {
         force: true,
-        forceExternal: true,
+        mode: "internal",
         skipHourlySnapshots: true,
         skipPartnerPerformance: true,
       });

@@ -342,10 +342,13 @@ async function getHomeDatesWithProfit(dates: string[]): Promise<Set<string>> {
 
 export type SyncHomeTotalsOptions = {
   /**
-   * Bypass the External-API-vs-cookie hybrid and always fetch via the External
-   * Report API (authoritative finalized numbers). Required for mid-day
-   * reconciliation of dates that include "today".
+   * Source mode for every Home-totals fetch in this run.
+   *   - `"internal"` (default): cookie path → 1:1 parity with the XDASH UI.
+   *   - `"external"`: External Report API (only for >7-day-old historical research).
+   *   - `"auto"`: legacy hybrid (today→cookie, history→external).
    */
+  mode?: "internal" | "external" | "auto";
+  /** @deprecated Use `mode: "external"`. Kept for back-compat. */
   forceExternal?: boolean;
   /**
    * When true, do NOT touch `hourly_snapshots` even if `today` is in the date
@@ -412,14 +415,17 @@ export async function syncHomeTotalsForDates(
 
   const pending: Array<{ date: string; revenue: number; cost: number; profit: number; impressions: number; created_at: string }> = [];
 
+  const resolvedMode: "internal" | "external" | "auto" =
+    options?.mode ?? (options?.forceExternal ? "external" : "internal");
+
   for (let i = 0; i < toFetch.length; i++) {
     const date = toFetch[i]!;
     try {
       console.log(
-        `[xdash-sync] Fetching Home totals for ${date}…${options?.forceExternal ? " (forceExternal)" : ""}`,
+        `[xdash-sync] Fetching Home totals for ${date}… (mode=${resolvedMode})`,
       );
       const { revenue, cost, profit, impressions } = await fetchHomeForDate(date, {
-        forceExternal: options?.forceExternal,
+        mode: resolvedMode,
       });
       if (revenue === 0 && cost === 0 && impressions === 0) {
         console.warn(`[xdash-sync] Home returned zeros for ${date} — skipping`);
@@ -700,9 +706,11 @@ export async function syncXDASHDataLastNDays(
  * Sync XDASH for an explicit list of dates (e.g. a single date for chunked client-side sync).
  * Same logic as syncXDASHDataLastNDays but with a given date array.
  *
- * Sync-Pro reconciliation extras (all default false → behaviour unchanged):
- *   - `forceExternal`: route every Home-totals fetch through the External
- *     Report API regardless of today/yesterday hybrid logic.
+ * Sync-Pro extras (all default false / `mode: "internal"` → behaviour unchanged):
+ *   - `mode`: source for `daily_home_totals` fetches. Default `"internal"` →
+ *     cookie path / UI parity. `"external"` → External Report API. `"auto"` →
+ *     legacy hybrid.
+ *   - `forceExternal` (deprecated): equivalent to `mode: "external"`.
  *   - `skipHourlySnapshots`: leave `hourly_snapshots` untouched so the intraday
  *     Pulse timeline is preserved.
  *   - `skipPartnerPerformance`: skip the demand/supply batch fetch + upsert
@@ -713,6 +721,8 @@ export async function syncXDASHDataForDates(
   dates: string[],
   options?: {
     force?: boolean;
+    mode?: "internal" | "external" | "auto";
+    /** @deprecated Use `mode: "external"`. */
     forceExternal?: boolean;
     skipHourlySnapshots?: boolean;
     skipPartnerPerformance?: boolean;
@@ -741,6 +751,7 @@ export async function syncXDASHDataForDates(
   }
 
   await syncHomeTotalsForDates(dates, syncedAt, options?.force, {
+    mode: options?.mode,
     forceExternal: options?.forceExternal,
     skipHourlySnapshots: options?.skipHourlySnapshots,
   });

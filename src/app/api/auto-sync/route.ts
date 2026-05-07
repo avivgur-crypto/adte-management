@@ -238,7 +238,7 @@ function logResult(mode: string, results: Results, t0: number, extra?: Record<st
     datesSynced: countField(results, "datesSynced"),
     rowsUpserted,
     ok: !Object.values(results).some((r) => r?.status === "failed"),
-    detail: { results, ...extra },
+    detail: { results, data_source: "internal_cookie", ...extra },
   });
 }
 
