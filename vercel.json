@@ -10,6 +10,10 @@
       "schedule": "0 0 * * *"
     },
     {
+      "path": "/api/cron/golden-sync",
+      "schedule": "0 4 * * *"
+    },
+    {
       "path": "/api/cron/morning-summary",
       "schedule": "0 5 * * *"
     },

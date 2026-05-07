@@ -25,6 +25,7 @@ import { revalidatePath, revalidateTag } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelDate, getIsraelDateDaysAgo, getIsraelHour } from "@/lib/israel-date";
 import { fetchHomeForDate } from "@/lib/xdash-client";
+import { syncProLog } from "@/lib/sync-pro-log";
 import type { NotificationSettingKey } from "@/app/actions/notification-settings";
 
 /** Same tag used by `@/app/actions/financials` and `/api/auto-sync` so the chart
@@ -323,31 +324,44 @@ async function fetchDailyRowWithLiveFallback(isoDate: string): Promise<DailyRow 
   const dbHasData = dbRow !== null && (dbRow.revenue > 0 || dbRow.profit > 0);
   if (dbHasData) return dbRow;
 
-  console.warn(
-    `[morningSummary] daily_home_totals for ${isoDate} is ${dbRow ? "all zeros" : "missing"} — attempting live XDASH fallback.`,
-  );
+  syncProLog({
+    event: "sync_pro.morning_summary.live_fallback.start",
+    branch_type: "refresh_today_home",
+    status: "started",
+    detail: { isoDate, dbRow },
+    message: dbRow ? "daily_home_totals all zeros" : "daily_home_totals missing",
+  });
 
   let live: { revenue: number; cost: number; profit: number; impressions: number };
   try {
     live = await fetchHomeForDate(isoDate);
   } catch (e) {
-    console.warn(
-      `[morningSummary] live XDASH fallback for ${isoDate} threw (non-fatal):`,
-      e instanceof Error ? e.message : e,
-    );
+    syncProLog({
+      event: "sync_pro.morning_summary.live_fallback.fetch_failed",
+      branch_type: "refresh_today_home",
+      status: "error",
+      message: e instanceof Error ? e.message : String(e),
+      detail: { isoDate },
+    });
     return dbRow;
   }
 
   if (live.revenue === 0 && live.profit === 0) {
-    console.warn(
-      `[morningSummary] live XDASH fallback for ${isoDate} also returned zeros — keeping DB row.`,
-    );
+    syncProLog({
+      event: "sync_pro.morning_summary.live_fallback.zero",
+      branch_type: "refresh_today_home",
+      status: "error",
+      detail: { isoDate, live },
+    });
     return dbRow;
   }
 
-  console.log(
-    `[morningSummary] live fallback for ${isoDate}: revenue=$${live.revenue.toFixed(2)}, profit=$${live.profit.toFixed(2)} — writing back to daily_home_totals.`,
-  );
+  syncProLog({
+    event: "sync_pro.morning_summary.live_fallback.upsert",
+    branch_type: "refresh_today_home",
+    status: "ok",
+    detail: { isoDate, revenue: live.revenue, profit: live.profit },
+  });
 
   const { error: upsertErr } = await supabaseAdmin.from("daily_home_totals").upsert(
     {
@@ -361,10 +375,13 @@ async function fetchDailyRowWithLiveFallback(isoDate: string): Promise<DailyRow 
     { onConflict: "date" },
   );
   if (upsertErr) {
-    console.warn(
-      `[morningSummary] upsert of live fallback for ${isoDate} failed (non-fatal):`,
-      upsertErr.message,
-    );
+    syncProLog({
+      event: "sync_pro.morning_summary.live_fallback.upsert_failed",
+      branch_type: "refresh_today_home",
+      status: "error",
+      message: upsertErr.message,
+      detail: { isoDate },
+    });
   }
 
   return { date: isoDate, revenue: live.revenue, profit: live.profit };
@@ -617,9 +634,17 @@ export async function morningSummary(
   options: { test?: boolean } = {},
 ): Promise<{ sent: boolean; log: string }> {
   const isTest = options.test === true;
+  const t0 = Date.now();
 
   const yesterday = getIsraelDateDaysAgo(1);
   const dayBefore = getIsraelDateDaysAgo(2);
+
+  syncProLog({
+    event: "sync_pro.morning_summary.start",
+    branch_type: "refresh_today_home",
+    status: "started",
+    detail: { yesterday, dayBefore, isTest },
+  });
   // Same day-of-week last week, relative to "yesterday": yesterday is 1 day ago,
   // so the matching weekday last week is 8 days ago (1 + 7).
   const sameDayLastWeek = getIsraelDateDaysAgo(8);
@@ -633,7 +658,11 @@ export async function morningSummary(
   // the push and the date most likely to be incomplete in `daily_home_totals`
   // when XDASH is laggy at 05:00 IL. Older dates are stable in DB and don't
   // warrant the extra XDASH round-trip.
-  const [yRow, dRow, wRow, monthlyGoal, mtdActualBase] = await Promise.all([
+  // We discard the parallel MTD result if the zero-value shield triggers below
+  // (we'd recompute anyway after writing the corrected yesterday row), so a
+  // small placeholder keeps the destructure tidy while still parallelising.
+  // eslint-disable-next-line prefer-const
+  let [yRow, dRow, wRow, monthlyGoal, mtdActualParallel] = await Promise.all([
     fetchDailyRowWithLiveFallback(yesterday),
     fetchDailyRow(dayBefore),
     fetchDailyRow(sameDayLastWeek),
@@ -641,13 +670,58 @@ export async function morningSummary(
     sumProfitMtd(monthStart, yesterday),
   ]);
 
-  // If the fallback wrote a corrected yesterday row, the cached MTD sum read a
-  // moment earlier may still reflect the stale ($0) value. Reconcile by
-  // re-summing or by patching with the delta — re-summing is simpler and the
-  // table is small (≤31 rows for the month).
-  const mtdActual = yRow !== null
-    ? await sumProfitMtd(monthStart, yesterday)
-    : mtdActualBase;
+  // -- Zero-Value Shield ----------------------------------------------------
+  // Even after the hybrid fallback, "yesterday" can still be 0 if XDASH wrote a
+  // vacuous row OR the live fetch errored out. Force a synchronous, *forced*
+  // refresh of `daily_home_totals` for yesterday and re-read. If still 0 →
+  // abort instead of pushing a $0 summary.
+  if ((yRow?.revenue ?? 0) <= 0) {
+    syncProLog({
+      event: "sync_pro.morning_summary.zero_shield.start",
+      branch_type: "refresh_today_home",
+      status: "started",
+      detail: { yesterday, dbRevenue: yRow?.revenue ?? 0, dbProfit: yRow?.profit ?? 0 },
+    });
+    try {
+      // Lazy import to avoid a circular import (financials.ts imports notifications).
+      const { syncXDASHDataForDates } = await import("@/lib/sync/xdash");
+      await syncXDASHDataForDates([yesterday], { force: true });
+    } catch (e) {
+      syncProLog({
+        event: "sync_pro.morning_summary.zero_shield.refresh_failed",
+        branch_type: "refresh_today_home",
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+        detail: { yesterday },
+      });
+    }
+    yRow = await fetchDailyRow(yesterday);
+    syncProLog({
+      event: "sync_pro.morning_summary.zero_shield.after_refresh",
+      branch_type: "refresh_today_home",
+      status: (yRow?.revenue ?? 0) > 0 ? "ok" : "error",
+      detail: { yesterday, dbRevenue: yRow?.revenue ?? 0, dbProfit: yRow?.profit ?? 0 },
+    });
+  }
+
+  if ((yRow?.revenue ?? 0) <= 0) {
+    const log = `[morningSummary] aborted_zero_value yesterday=${yesterday} dbRev=${yRow?.revenue ?? 0}`;
+    syncProLog({
+      event: "morning_summary.aborted_zero_value",
+      branch_type: "refresh_today_home",
+      status: "error",
+      message: log,
+      detail: { yesterday, isTest, dbRevenue: yRow?.revenue ?? 0, dbProfit: yRow?.profit ?? 0 },
+    });
+    return { sent: false, log };
+  }
+  // -------------------------------------------------------------------------
+
+  // If the fallback / shield wrote a corrected yesterday row, the cached MTD sum
+  // read a moment earlier may still reflect the stale ($0) value. Re-sum (small).
+  // The shield guarantees `yRow` is non-null and revenue > 0 by the time we get here.
+  const mtdActual = await sumProfitMtd(monthStart, yesterday);
+  void mtdActualParallel;
 
   const yRev = yRow?.revenue ?? 0;
   const yGp = yRow?.profit ?? 0;
@@ -713,6 +787,14 @@ export async function morningSummary(
   }
 
   const log = `[morningSummary]${isTest ? " test=true" : ""} reportDay=${reportDayIsrael} yesterday=${yesterday} push ok=${ok} failed=${failed}${errors.length ? ` errors=${errors.slice(0, 3).join("; ")}` : ""}`;
+
+  syncProLog({
+    event: ok > 0 ? "sync_pro.morning_summary.delivered" : "sync_pro.morning_summary.no_subscribers",
+    branch_type: "refresh_today_home",
+    status: ok > 0 ? "ok" : "error",
+    duration_ms: Date.now() - t0,
+    detail: { reportDayIsrael, yesterday, ok, failed, isTest, errorsSample: errors.slice(0, 3) },
+  });
 
   return { sent: ok > 0, log };
 }

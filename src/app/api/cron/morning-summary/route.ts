@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { morningSummary } from "@/app/actions/notifications";
+import { syncProLog } from "@/lib/sync-pro-log";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,9 +29,12 @@ function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
   if (!expected) return { ok: true };
   const received = getReceivedSecret(request);
   if (received === expected) return { ok: true };
-  console.log(
-    `[morning-summary] auth fail: received ${received.length} chars, expected ${expected.length} chars`,
-  );
+  syncProLog({
+    event: "sync_pro.morning_summary.auth_fail",
+    branch_type: "refresh_today_home",
+    status: "error",
+    detail: { receivedChars: received.length, expectedChars: expected.length },
+  });
   return {
     ok: false,
     detail: `Secret mismatch (${received.length} vs ${expected.length} chars)`,
@@ -56,15 +60,32 @@ export async function GET(request: NextRequest) {
   // real once-per-day slot recorded in `sent_notifications`.
   const test = isTrueish(request.nextUrl.searchParams.get("test"));
 
+  const t0 = Date.now();
   try {
     const result = await morningSummary({ test });
+    syncProLog({
+      event: result.sent
+        ? "sync_pro.morning_summary.sent"
+        : "sync_pro.morning_summary.skipped",
+      branch_type: "refresh_today_home",
+      status: result.sent ? "ok" : "error",
+      duration_ms: Date.now() - t0,
+      detail: { test, log: result.log },
+    });
     return NextResponse.json(
       { ok: true, test, ...result },
       { status: 200, headers: NO_CACHE },
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[morning-summary]", msg);
+    syncProLog({
+      event: "sync_pro.morning_summary.error",
+      branch_type: "refresh_today_home",
+      status: "error",
+      duration_ms: Date.now() - t0,
+      message: msg,
+      detail: { test },
+    });
     return NextResponse.json(
       { ok: false, error: msg },
       { status: 500, headers: NO_CACHE },
