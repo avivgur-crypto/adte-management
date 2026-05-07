@@ -1088,15 +1088,31 @@ async function fetchHomeFromExternalReportApi(
  * The returned shape is identical for both paths so all downstream callers
  * (`refreshTodayHome`, `syncHomeTotalsForDates`, scripts, Pulse) keep working
  * without any change.
+ *
+ * `opts.forceExternal` (Sync-Pro reconciliation only): bypass the today
+ * routing and always hit the External Report API. Use this when you
+ * specifically need the *finalized* number (e.g. mid-day reconciliation of
+ * earlier dates) — the External API is authoritative for any settled date and
+ * returns whatever it has for today, even if that's empty.
  */
+export type FetchHomeForDateOpts = FetchHomeOverviewOpts & {
+  /** When true, skip the cookie-based live path and always use the External Report API. */
+  forceExternal?: boolean;
+};
+
 export async function fetchHomeForDate(
   date: string,
-  opts?: FetchHomeOverviewOpts,
+  opts?: FetchHomeForDateOpts,
 ): Promise<{ revenue: number; cost: number; profit: number; impressions: number }> {
   // Israel calendar today — same source of truth used everywhere else
   // (`refreshTodayHome`, sync libs, comparison logic). Avoids importing
   // date-fns-tz for one trivial conversion.
   const todayIL = getIsraelDate();
+
+  if (opts?.forceExternal) {
+    console.log(`[XDASH-Hybrid] forceExternal=true → routing ${date} to External API regardless of today.`);
+    return fetchHomeFromExternalReportApi(date, opts);
+  }
 
   if (date === todayIL) {
     console.log(

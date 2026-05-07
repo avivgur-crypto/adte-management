@@ -684,8 +684,16 @@ export async function morningSummary(
     });
     try {
       // Lazy import to avoid a circular import (financials.ts imports notifications).
+      // Same recipe as Golden Sync: External Report API only (finalized numbers),
+      // hard overwrite, and DO NOT touch hourly_snapshots so Pulse keeps its
+      // intraday timeline.
       const { syncXDASHDataForDates } = await import("@/lib/sync/xdash");
-      await syncXDASHDataForDates([yesterday], { force: true });
+      await syncXDASHDataForDates([yesterday], {
+        force: true,
+        forceExternal: true,
+        skipHourlySnapshots: true,
+        skipPartnerPerformance: true,
+      });
     } catch (e) {
       syncProLog({
         event: "sync_pro.morning_summary.zero_shield.refresh_failed",

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath, revalidateTag } from "next/cache";
+import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelDateDaysAgo } from "@/lib/israel-date";
 import { syncXDASHDataForDates } from "@/lib/sync/xdash";
 import { recordSyncRun } from "@/lib/sync-logs";
@@ -9,11 +10,14 @@ import { syncProLog } from "@/lib/sync-pro-log";
  * “Golden Sync” — runs at 04:00 UTC (06:00 Israel) to lock in YESTERDAY’s final
  * `daily_home_totals` numbers before the 08:00 IL morning summary fires.
  *
- * Distinct from `/api/cron/sync` because:
- *  1. Targets a single date (`getIsraelDateDaysAgo(1)`) — no current-day intraday work.
- *  2. Forces re-fetch (`force=true`) regardless of whether a row already exists.
- *  3. Bumps `revalidateTag(financial-data)` immediately so chart + Pulse pick up the
- *     finalized numbers within seconds.
+ * Sync-Pro contract:
+ *   1. Single date: `getIsraelDateDaysAgo(1)`.
+ *   2. `forceExternal: true` → finalized number from the External Report API.
+ *   3. `skipHourlySnapshots: true` → preserves the genuine intraday timeline
+ *      so Pulse keeps doing "live vs live" without asterisks.
+ *   4. Reads the pre-sync row, runs the sync, reads the post-sync row, and
+ *      emits `sync_pro.golden_sync.finalized_row_locked` with the delta.
+ *   5. `revalidateTag("financial-data")` + `revalidatePath("/")` immediately.
  */
 
 export const dynamic = "force-dynamic";
@@ -21,6 +25,13 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const FINANCIAL_TAG = "financial-data";
+
+type RowSnapshot = {
+  revenue: number;
+  cost: number;
+  profit: number;
+  impressions: number;
+} | null;
 
 function getReceivedSecret(request: NextRequest): string {
   const q = request.nextUrl.searchParams.get("secret");
@@ -39,6 +50,31 @@ function checkAuth(request: NextRequest): { ok: boolean; detail?: string } {
   return { ok: false, detail: `Secret mismatch (${received.length} vs ${expected.length} chars)` };
 }
 
+async function readDailyHomeTotalsRow(date: string): Promise<RowSnapshot> {
+  const { data, error } = await supabaseAdmin
+    .from("daily_home_totals")
+    .select("revenue, cost, profit, impressions")
+    .eq("date", date)
+    .maybeSingle();
+  if (error) {
+    syncProLog({
+      event: "sync_pro.golden_sync.read_failed",
+      branch_type: "totals",
+      status: "error",
+      message: error.message,
+      detail: { date },
+    });
+    return null;
+  }
+  if (!data) return null;
+  return {
+    revenue: Number(data.revenue ?? 0),
+    cost: Number(data.cost ?? 0),
+    profit: Number(data.profit ?? 0),
+    impressions: Number(data.impressions ?? 0),
+  };
+}
+
 export async function GET(request: NextRequest) {
   const auth = checkAuth(request);
   if (!auth.ok) {
@@ -52,11 +88,24 @@ export async function GET(request: NextRequest) {
     event: "sync_pro.golden_sync.start",
     branch_type: "totals",
     status: "started",
-    detail: { date: yesterday, mode: "always_upsert", force: true },
+    detail: {
+      date: yesterday,
+      mode: "external_only",
+      forceExternal: true,
+      skipHourlySnapshots: true,
+      force: true,
+    },
   });
 
+  const before = await readDailyHomeTotalsRow(yesterday);
+
   try {
-    const result = await syncXDASHDataForDates([yesterday], { force: true });
+    const result = await syncXDASHDataForDates([yesterday], {
+      force: true,
+      forceExternal: true,
+      skipHourlySnapshots: true,
+      skipPartnerPerformance: true,
+    });
 
     try {
       revalidateTag(FINANCIAL_TAG, { expire: 0 });
@@ -65,13 +114,39 @@ export async function GET(request: NextRequest) {
       /* non-fatal */
     }
 
+    const after = await readDailyHomeTotalsRow(yesterday);
+    const previousRevenue = before?.revenue ?? 0;
+    const finalizedRevenue = after?.revenue ?? 0;
+    const revenueDelta = finalizedRevenue - previousRevenue;
+    const previousProfit = before?.profit ?? 0;
+    const finalizedProfit = after?.profit ?? 0;
+    const profitDelta = finalizedProfit - previousProfit;
+
+    syncProLog({
+      event: "sync_pro.golden_sync.finalized_row_locked",
+      branch_type: "totals",
+      status: "ok",
+      detail: {
+        date: yesterday,
+        previous: { revenue: previousRevenue, profit: previousProfit, raw: before },
+        finalized: { revenue: finalizedRevenue, profit: finalizedProfit, raw: after },
+        revenueDelta,
+        profitDelta,
+      },
+    });
+
     const durationMs = Date.now() - t0;
     syncProLog({
       event: "sync_pro.golden_sync.complete",
       branch_type: "totals",
       status: "ok",
       duration_ms: durationMs,
-      detail: { date: yesterday, datesSynced: result.datesSynced, rowsUpserted: result.rowsUpserted },
+      detail: {
+        date: yesterday,
+        datesSynced: result.datesSynced,
+        rowsUpserted: result.rowsUpserted,
+        hourlySnapshotsPreserved: true,
+      },
     });
     void recordSyncRun({
       source: "cron_golden_sync",
@@ -79,10 +154,24 @@ export async function GET(request: NextRequest) {
       datesSynced: result.datesSynced,
       rowsUpserted: result.rowsUpserted,
       ok: true,
-      detail: { date: yesterday },
+      detail: {
+        date: yesterday,
+        previousRevenue,
+        finalizedRevenue,
+        revenueDelta,
+      },
     });
 
-    return NextResponse.json({ ok: true, date: yesterday, ...result });
+    return NextResponse.json({
+      ok: true,
+      date: yesterday,
+      previous: before,
+      finalized: after,
+      revenueDelta,
+      profitDelta,
+      hourly_snapshots_preserved: true,
+      ...result,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const durationMs = Date.now() - t0;
@@ -92,7 +181,7 @@ export async function GET(request: NextRequest) {
       status: "error",
       duration_ms: durationMs,
       message: msg,
-      detail: { date: yesterday },
+      detail: { date: yesterday, previous: before },
     });
     void recordSyncRun({
       source: "cron_golden_sync",

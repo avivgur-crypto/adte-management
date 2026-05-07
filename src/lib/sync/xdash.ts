@@ -340,6 +340,21 @@ async function getHomeDatesWithProfit(dates: string[]): Promise<Set<string>> {
   return set;
 }
 
+export type SyncHomeTotalsOptions = {
+  /**
+   * Bypass the External-API-vs-cookie hybrid and always fetch via the External
+   * Report API (authoritative finalized numbers). Required for mid-day
+   * reconciliation of dates that include "today".
+   */
+  forceExternal?: boolean;
+  /**
+   * When true, do NOT touch `hourly_snapshots` even if `today` is in the date
+   * list. Used by reconciliation + Golden Sync so we preserve the genuine
+   * intraday timeline that powers Pulse's "live vs live" comparison.
+   */
+  skipHourlySnapshots?: boolean;
+};
+
 /**
  * For each date, fetch the Home API totals and batch-upsert into daily_home_totals.
  * Skips dates that already have a non-zero profit unless `force` is true.
@@ -352,6 +367,7 @@ export async function syncHomeTotalsForDates(
   dates: string[],
   syncedAt: string,
   force = false,
+  options?: SyncHomeTotalsOptions,
 ): Promise<number> {
   if (dates.length === 0) return 0;
 
@@ -399,8 +415,12 @@ export async function syncHomeTotalsForDates(
   for (let i = 0; i < toFetch.length; i++) {
     const date = toFetch[i]!;
     try {
-      console.log(`[xdash-sync] Fetching Home totals for ${date}…`);
-      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
+      console.log(
+        `[xdash-sync] Fetching Home totals for ${date}…${options?.forceExternal ? " (forceExternal)" : ""}`,
+      );
+      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date, {
+        forceExternal: options?.forceExternal,
+      });
       if (revenue === 0 && cost === 0 && impressions === 0) {
         console.warn(`[xdash-sync] Home returned zeros for ${date} — skipping`);
         continue;
@@ -466,6 +486,22 @@ export async function syncHomeTotalsForDates(
   // asterisk — fire-and-forget here used to mean cron runs sometimes finished
   // before the snapshot landed and the dashboard showed an estimate. Awaiting
   // costs ~1 round-trip (<200ms) and is cheap relative to the XDASH fetches.
+  //
+  // Reconciliation / Golden Sync pass `skipHourlySnapshots: true` so the
+  // intraday Pulse timeline is preserved exactly as it happened in real time —
+  // overwriting it with the finalised day-end number would erase the pre-noon
+  // "live vs live" comparison.
+  if (options?.skipHourlySnapshots) {
+    syncProLog({
+      event: "sync_pro.xdash_sync.hourly_snapshot.skipped",
+      branch_type: "xdash_sync",
+      status: "ok",
+      message: "skipHourlySnapshots=true (reconciliation / golden_sync) — preserving intraday timeline",
+      detail: { today, dates },
+    });
+    return written;
+  }
+
   const todayEntry = pending.find((r) => r.date === today);
   if (todayEntry) {
     const hour = getIsraelHour();
@@ -663,29 +699,51 @@ export async function syncXDASHDataLastNDays(
 /**
  * Sync XDASH for an explicit list of dates (e.g. a single date for chunked client-side sync).
  * Same logic as syncXDASHDataLastNDays but with a given date array.
+ *
+ * Sync-Pro reconciliation extras (all default false → behaviour unchanged):
+ *   - `forceExternal`: route every Home-totals fetch through the External
+ *     Report API regardless of today/yesterday hybrid logic.
+ *   - `skipHourlySnapshots`: leave `hourly_snapshots` untouched so the intraday
+ *     Pulse timeline is preserved.
+ *   - `skipPartnerPerformance`: skip the demand/supply batch fetch + upsert
+ *     entirely. Useful for reconciliation jobs that only need finalized
+ *     `daily_home_totals` and don't want to repaint partner-level data.
  */
 export async function syncXDASHDataForDates(
   dates: string[],
-  options?: { force?: boolean },
+  options?: {
+    force?: boolean;
+    forceExternal?: boolean;
+    skipHourlySnapshots?: boolean;
+    skipPartnerPerformance?: boolean;
+  },
 ): Promise<SyncXDASHResult> {
   if (dates.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
   const syncedAt = new Date().toISOString();
   console.log(`[xdash-sync] Sync ${dates.length} date(s): ${dates.join(", ")}`);
-  const dayResults = await fetchDatesInBatches(dates);
-  const records: Record<string, unknown>[] = [];
-  for (const { date, demand, supply } of dayResults) {
-    if (demand.length === 0 && supply.length === 0) {
-      console.warn(`[xdash-sync] No data returned for ${date}`);
-    } else {
-      console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
+
+  let rowsUpserted = 0;
+  if (!options?.skipPartnerPerformance) {
+    const dayResults = await fetchDatesInBatches(dates);
+    const records: Record<string, unknown>[] = [];
+    for (const { date, demand, supply } of dayResults) {
+      if (demand.length === 0 && supply.length === 0) {
+        console.warn(`[xdash-sync] No data returned for ${date}`);
+      } else {
+        console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
+      }
+      for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
+      for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
     }
-    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
+    rowsUpserted = await batchUpsert(records);
   }
-  const rowsUpserted = await batchUpsert(records);
-  await syncHomeTotalsForDates(dates, syncedAt, options?.force);
+
+  await syncHomeTotalsForDates(dates, syncedAt, options?.force, {
+    forceExternal: options?.forceExternal,
+    skipHourlySnapshots: options?.skipHourlySnapshots,
+  });
   return { datesSynced: dates.length, rowsUpserted };
 }
 
