@@ -11,12 +11,18 @@ import { fetchHomeForDate } from "@/lib/xdash-client";
  * what XDASH's UI currently reports — without touching either side.
  *
  * Query params:
- *   - `days` (default 3): how many recent days to inspect, ending today (Israel TZ).
+ *   - `from` + `to` (YYYY-MM-DD, both required): audit only that inclusive range.
+ *     When used, the span is capped at **3 calendar days** (returns 400 if wider)
+ *     to stay under Vercel timeouts.
+ *   - `days` (default 3): used when `from`/`to` are not both set — last N days
+ *     ending today (Israel TZ).
  *   - `secret`: matches `CRON_SECRET` (or `Authorization: Bearer …`).
  *
  * Safety:
  *   - Sequential per-date fetch (no parallelism).
  *   - 500ms delay between dates so we don't hammer the XDASH backup server.
+ *   - XDASH reads use `skipPartnerPerformance: true` semantics on `fetchHomeForDate`
+ *     (home overview only; no partner API fan-out).
  *   - Zero `upsert` / `insert` / `update` calls anywhere in this file.
  */
 
@@ -27,7 +33,10 @@ export const maxDuration = 300;
 const TIMEZONE_ISRAEL = "Asia/Jerusalem";
 const DEFAULT_DAYS = 3;
 const MAX_DAYS = 60;
+/** When `from` + `to` are used, inclusive range may not exceed this many days. */
+const MAX_RANGE_DAYS_FROM_TO = 3;
 const INTER_DATE_DELAY_MS = 500;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function getReceivedSecret(request: NextRequest): string {
   const q = request.nextUrl.searchParams.get("secret");
@@ -52,6 +61,62 @@ function parseDays(raw: string | null): number {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_DAYS;
   return Math.min(n, MAX_DAYS);
+}
+
+/** Inclusive UTC calendar range from `from` through `to` (YYYY-MM-DD). */
+function dateRangeInclusive(from: string, to: string): string[] {
+  const out: string[] = [];
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  const start = new Date(Date.UTC(fy!, fm! - 1, fd!));
+  const end = new Date(Date.UTC(ty!, tm! - 1, td!));
+  if (end < start) return out;
+  for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+type ResolveDatesResult =
+  | { ok: true; dates: string[]; mode: "range"; from: string; to: string }
+  | { ok: true; dates: string[]; mode: "days"; days: number }
+  | { ok: false; status: number; error: string; detail?: string };
+
+function resolveAuditDates(request: NextRequest): ResolveDatesResult {
+  const from = request.nextUrl.searchParams.get("from")?.trim();
+  const to = request.nextUrl.searchParams.get("to")?.trim();
+
+  if (from && to) {
+    if (!ISO_DATE.test(from) || !ISO_DATE.test(to)) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Invalid from/to",
+        detail: "from and to must be YYYY-MM-DD",
+      };
+    }
+    const dates = dateRangeInclusive(from, to);
+    if (dates.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Invalid range",
+        detail: "from must be on or before to",
+      };
+    }
+    if (dates.length > MAX_RANGE_DAYS_FROM_TO) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Range too large",
+        detail: `from/to may span at most ${MAX_RANGE_DAYS_FROM_TO} day(s) inclusive (got ${dates.length})`,
+      };
+    }
+    return { ok: true, dates, mode: "range", from, to };
+  }
+
+  const days = parseDays(request.nextUrl.searchParams.get("days"));
+  return { ok: true, dates: lastNDatesIsrael(days), mode: "days", days };
 }
 
 /** Today (YYYY-MM-DD) in Israel timezone — matches XDASH's calendar. */
@@ -145,8 +210,14 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const days = parseDays(request.nextUrl.searchParams.get("days"));
-  const dates = lastNDatesIsrael(days);
+  const resolved = resolveAuditDates(request);
+  if (!resolved.ok) {
+    return NextResponse.json(
+      { error: resolved.error, detail: resolved.detail },
+      { status: resolved.status },
+    );
+  }
+  const { dates } = resolved;
   const t0 = Date.now();
 
   const results: ComparisonRow[] = [];
@@ -157,7 +228,10 @@ export async function GET(request: NextRequest) {
     try {
       const [app, xdash] = await Promise.all([
         readAppRow(date),
-        fetchHomeForDate(date, { mode: "internal" }),
+        fetchHomeForDate(date, {
+          mode: "internal",
+          skipPartnerPerformance: true,
+        }),
       ]);
 
       if (!app) {
@@ -222,11 +296,17 @@ export async function GET(request: NextRequest) {
 
   const mismatches = results.filter((r) => !r.match).length;
 
+  const meta =
+    resolved.mode === "range"
+      ? { date_mode: "range" as const, from: resolved.from, to: resolved.to }
+      : { date_mode: "days" as const, days: resolved.days };
+
   return NextResponse.json({
     ok: true,
     read_only: true,
     mode: "internal",
-    days,
+    skipPartnerPerformance: true,
+    ...meta,
     dates,
     checked: results.length,
     mismatches,
