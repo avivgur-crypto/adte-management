@@ -20,6 +20,10 @@
     {
       "path": "/api/auto-sync?target=billing",
       "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/self-heal",
+      "schedule": "0 * * * *"
     }
   ]
 }
