@@ -5,7 +5,7 @@ import { syncProLog } from "@/lib/sync-pro-log";
 
 /**
  * Automated daily reconciliation: same comparison as `/api/admin/audit-compare`
- * for the last 3 Israel-calendar days, then optional repair via
+ * for the last 2 Israel-calendar days, then optional repair via
  * `syncXDASHDataForDates` (equivalent to backfill-home with `force: true` for
  * that date) when the app is materially under XDASH.
  *
@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const AUDIT_DAYS = 3;
+const AUDIT_DAYS = 2;
 /** App is under XDASH by more than this ratio → pull missing totals (Case A). */
 const REPAIR_THRESHOLD = 1.02;
 /** XDASH looks like a partial fetch vs DB → alert only, no overwrite (Case B). */
