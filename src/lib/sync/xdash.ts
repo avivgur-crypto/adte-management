@@ -53,6 +53,26 @@ const FETCH_BATCH_SIZE = 1;
 /** Delay between fetch batches (reduced from 5s; throttle in xdash-client protects the server). */
 const INTER_BATCH_DELAY_MS = 2000;
 
+/**
+ * Smart regression guard — prevent a partial XDASH response from silently
+ * stomping on a previously-correct historical row (the May 8 failure mode).
+ *
+ * Rule (applied per-date inside `syncHomeTotalsForDates`):
+ *   - If `force === true` → bypass entirely (backfill / golden_sync explicitly opt in).
+ *   - If existing.revenue == 0 → allow (new date or never-synced).
+ *   - If new.revenue ≥ existing.revenue × THRESHOLD → allow (covers growth + small clawbacks).
+ *   - If new.revenue <  existing.revenue × THRESHOLD AND date === today → allow (intraday quirk),
+ *     but emit a soft `today_dip` log so we can see it.
+ *   - Otherwise → BLOCK the upsert for that date and emit a high-priority error log.
+ *
+ * Threshold tunable by env (`XDASH_REGRESSION_THRESHOLD`, e.g. `0.85`).
+ */
+const REVENUE_REGRESSION_THRESHOLD = (() => {
+  const raw = process.env.XDASH_REGRESSION_THRESHOLD;
+  const n = raw ? Number.parseFloat(raw) : NaN;
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : 0.85;
+})();
+
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -318,6 +338,55 @@ async function persistHomeTotalsToLocalBackup(
   }
 }
 
+type ExistingHomeRow = {
+  revenue: number;
+  cost: number;
+  profit: number;
+  impressions: number;
+};
+
+/**
+ * Read existing `daily_home_totals` rows for the given dates. Returns a map
+ * keyed by `YYYY-MM-DD`. Used by the regression guard to compare what's
+ * already in the DB against what XDASH just returned.
+ *
+ * Fail-open: if the read itself errors (RLS, network), we log + return an
+ * empty map. The guard then has nothing to compare against and allows the
+ * write — better to risk an overwrite than to block all syncs on a transient
+ * Supabase blip.
+ */
+async function readExistingHomeTotals(
+  dates: string[],
+): Promise<Map<string, ExistingHomeRow>> {
+  const out = new Map<string, ExistingHomeRow>();
+  if (dates.length === 0) return out;
+  const { data, error } = await supabaseAdmin
+    .from(HOME_TABLE)
+    .select("date, revenue, cost, profit, impressions")
+    .in("date", dates);
+  if (error) {
+    syncProLog({
+      event: "sync_pro.xdash_sync.regression_guard.read_failed",
+      branch_type: "xdash_sync",
+      status: "error",
+      message: `Regression guard could not read existing rows (failing open): ${error.message}`,
+      detail: { dates },
+    });
+    return out;
+  }
+  for (const row of data ?? []) {
+    if (!row?.date) continue;
+    const date = String(row.date).slice(0, 10);
+    out.set(date, {
+      revenue: Number(row.revenue ?? 0),
+      cost: Number(row.cost ?? 0),
+      profit: Number(row.profit ?? 0),
+      impressions: Number(row.impressions ?? 0),
+    });
+  }
+  return out;
+}
+
 /**
  * Return the set of dates that already have a row in daily_home_totals with profit != 0.
  * These dates can be safely skipped during non-force syncs.
@@ -420,23 +489,50 @@ export async function syncHomeTotalsForDates(
 
   for (let i = 0; i < toFetch.length; i++) {
     const date = toFetch[i]!;
+    console.log(
+      `[xdash-sync] Fetching Home totals for ${date}… (mode=${resolvedMode})`,
+    );
+    let homeRow: { revenue: number; cost: number; profit: number; impressions: number };
     try {
-      console.log(
-        `[xdash-sync] Fetching Home totals for ${date}… (mode=${resolvedMode})`,
-      );
-      const { revenue, cost, profit, impressions } = await fetchHomeForDate(date, {
-        mode: resolvedMode,
-      });
-      if (revenue === 0 && cost === 0 && impressions === 0) {
-        console.warn(`[xdash-sync] Home returned zeros for ${date} — skipping`);
-        continue;
-      }
-      console.log(`[xdash-sync] Home → DB: ${date} revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, profit=$${profit.toFixed(2)} (daily_home_totals.profit)`);
-      pending.push({ date, revenue, cost, profit, impressions, created_at: syncedAt });
-      await persistHomeTotalsToLocalBackup({ date, revenue, cost, profit, impressions });
+      homeRow = await fetchHomeForDate(date, { mode: resolvedMode });
     } catch (e) {
-      console.warn(`[xdash-sync] Home fetch failed for ${date} (non-fatal):`, e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      // Previously: console.warn + continue (silent skip — the May 8 failure mode).
+      // Now: emit high-priority log and re-throw so the cron health counter sees it.
+      syncProLog({
+        event: "sync_pro.xdash_sync.home_totals.fetch_failed",
+        branch_type: "xdash_sync",
+        status: "error",
+        message: `Home totals fetch failed for ${date}: ${msg}`,
+        detail: { date, mode: resolvedMode },
+      });
+      throw e instanceof Error ? e : new Error(msg);
     }
+
+    const { revenue, cost, profit, impressions } = homeRow;
+    if (revenue === 0 && cost === 0 && impressions === 0) {
+      // Previously: console.warn + continue. Now: throw so a partial/empty
+      // backup-server response can't be silently swallowed and reported as a
+      // successful sync.
+      syncProLog({
+        event: "sync_pro.xdash_sync.home_totals.empty_response",
+        branch_type: "xdash_sync",
+        status: "error",
+        message: `XDASH returned all-zero row for ${date} — refusing to silently skip (was a silent skip before May-8 fix)`,
+        detail: { date, mode: resolvedMode },
+      });
+      throw new Error(
+        `XDASH home totals returned all-zeros for ${date} (revenue=0, cost=0, impressions=0). ` +
+          `Likely a partial/empty response from the backup server — investigate before retrying.`,
+      );
+    }
+
+    console.log(
+      `[xdash-sync] Home → DB: ${date} revenue=$${revenue.toFixed(2)}, cost=$${cost.toFixed(2)}, profit=$${profit.toFixed(2)} (daily_home_totals.profit)`,
+    );
+    pending.push({ date, revenue, cost, profit, impressions, created_at: syncedAt });
+    await persistHomeTotalsToLocalBackup({ date, revenue, cost, profit, impressions });
+
     if (i < toFetch.length - 1) {
       await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
     }
@@ -444,12 +540,134 @@ export async function syncHomeTotalsForDates(
 
   if (pending.length === 0) return 0;
 
+  // ---------------------------------------------------------------------------
+  // Smart regression guard (the May-8 fix).
+  //
+  // Compare every fetched row against what's already in `daily_home_totals` and
+  // skip the upsert for any historical date where revenue dropped below the
+  // configured threshold (default 85%). `force === true` bypasses entirely so
+  // backfill-home / golden-sync can still legitimately overwrite with a lower
+  // number when an operator has confirmed the new value is correct.
+  // ---------------------------------------------------------------------------
+  type PendingRow = (typeof pending)[number];
+  const allowedRows: PendingRow[] = [];
+  type BlockedRow = {
+    date: string;
+    new_revenue: number;
+    existing_revenue: number;
+    ratio_pct: number;
+  };
+  const blockedRows: BlockedRow[] = [];
+
+  if (force) {
+    // Backfill / golden_sync explicitly opted in. Audit-log so we can grep
+    // for unexpected force-overwrites in production.
+    syncProLog({
+      event: "sync_pro.xdash_sync.regression_guard.bypassed",
+      branch_type: "xdash_sync",
+      status: "ok",
+      message: "force=true → regression guard skipped",
+      detail: {
+        dates: pending.map((p) => p.date),
+        threshold_pct: REVENUE_REGRESSION_THRESHOLD * 100,
+      },
+    });
+    allowedRows.push(...pending);
+  } else {
+    const existingMap = await readExistingHomeTotals(pending.map((p) => p.date));
+    for (const row of pending) {
+      const existing = existingMap.get(row.date);
+      const existingRev = existing?.revenue ?? 0;
+
+      if (existingRev <= 0) {
+        allowedRows.push(row);
+        continue;
+      }
+
+      const ratio = row.revenue / existingRev;
+      if (ratio >= REVENUE_REGRESSION_THRESHOLD) {
+        allowedRows.push(row);
+        continue;
+      }
+
+      if (row.date === today) {
+        // Today legitimately can't shrink (cumulative), but if it ever does we
+        // allow + log soft so the chart doesn't freeze on an old intraday read.
+        syncProLog({
+          event: "sync_pro.xdash_sync.regression_guard.today_dip",
+          branch_type: "xdash_sync",
+          status: "ok",
+          message:
+            `Today (${row.date}) revenue dipped vs prior intraday read: ` +
+            `$${row.revenue.toFixed(2)} vs $${existingRev.toFixed(2)} ` +
+            `(${(ratio * 100).toFixed(1)}%)`,
+          detail: {
+            date: row.date,
+            new_revenue: row.revenue,
+            existing_revenue: existingRev,
+            ratio_pct: ratio * 100,
+          },
+        });
+        allowedRows.push(row);
+        continue;
+      }
+
+      // Block: historical date with a ≥15% revenue drop and no force flag.
+      blockedRows.push({
+        date: row.date,
+        new_revenue: row.revenue,
+        existing_revenue: existingRev,
+        ratio_pct: ratio * 100,
+      });
+      syncProLog({
+        event: "sync_pro.xdash_sync.regression_blocked",
+        branch_type: "xdash_sync",
+        status: "error",
+        message:
+          `BLOCKED ${row.date}: new revenue $${row.revenue.toFixed(2)} is only ` +
+          `${(ratio * 100).toFixed(1)}% of existing $${existingRev.toFixed(2)} ` +
+          `(threshold ${(REVENUE_REGRESSION_THRESHOLD * 100).toFixed(0)}%). ` +
+          `Likely a partial XDASH response — investigate before forcing.`,
+        detail: {
+          date: row.date,
+          new_revenue: row.revenue,
+          existing_revenue: existingRev,
+          ratio_pct: ratio * 100,
+          threshold_pct: REVENUE_REGRESSION_THRESHOLD * 100,
+          hint:
+            `Verify via /api/admin/audit-compare?from=${row.date}&to=${row.date} ` +
+            `then, if the new value is genuinely correct, retry with force=true.`,
+        },
+      });
+    }
+
+    if (blockedRows.length > 0) {
+      syncProLog({
+        event: "sync_pro.xdash_sync.regression_guard.summary",
+        branch_type: "xdash_sync",
+        status: "error",
+        message: `Regression guard blocked ${blockedRows.length}/${pending.length} date(s)`,
+        detail: {
+          blocked: blockedRows,
+          allowed_count: allowedRows.length,
+          threshold_pct: REVENUE_REGRESSION_THRESHOLD * 100,
+        },
+      });
+    }
+  }
+
+  if (allowedRows.length === 0) {
+    // Everything we fetched was blocked. Log already emitted above; return 0
+    // so the caller knows nothing was written.
+    return 0;
+  }
+
   console.log(`[xdash-sync] Supabase target: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`);
 
   const BATCH = 50;
   let written = 0;
-  for (let i = 0; i < pending.length; i += BATCH) {
-    const chunk = pending.slice(i, i + BATCH);
+  for (let i = 0; i < allowedRows.length; i += BATCH) {
+    const chunk = allowedRows.slice(i, i + BATCH);
     const { data: returned, error } = await supabaseAdmin
       .from("daily_home_totals")
       .upsert(chunk, { onConflict: "date" })
@@ -472,7 +690,12 @@ export async function syncHomeTotalsForDates(
     event: "sync_pro.xdash_sync.daily_home_totals.upserted",
     branch_type: "xdash_sync",
     status: "ok",
-    detail: { written, fetched_dates: pending.length },
+    detail: {
+      written,
+      fetched_dates: pending.length,
+      allowed_dates: allowedRows.length,
+      blocked_dates: blockedRows.length,
+    },
   });
 
   // Final read-back for 2026-01-01 to confirm what the DB actually holds
@@ -508,7 +731,7 @@ export async function syncHomeTotalsForDates(
     return written;
   }
 
-  const todayEntry = pending.find((r) => r.date === today);
+  const todayEntry = allowedRows.find((r) => r.date === today);
   if (todayEntry) {
     const hour = getIsraelHour();
     const { error: snapErr } = await supabaseAdmin

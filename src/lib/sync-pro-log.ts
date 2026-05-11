@@ -13,7 +13,8 @@ export type SyncProBranchType =
   | "auto_sync"
   | "refresh_today_home"
   | "xdash_sync"
-  | "partner_pairs_sync";
+  | "partner_pairs_sync"
+  | "self_heal";
 
 export type SyncProLogInput = {
   event: string;

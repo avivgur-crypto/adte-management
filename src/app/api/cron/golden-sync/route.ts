@@ -15,9 +15,15 @@ import { syncProLog } from "@/lib/sync-pro-log";
  *   2. `mode: "internal"` → cookie path = exact match with the XDASH UI.
  *   3. `skipHourlySnapshots: true` → preserves the genuine intraday timeline
  *      so Pulse keeps doing "live vs live" without asterisks.
- *   4. Reads the pre-sync row, runs the sync, reads the post-sync row, and
+ *   4. `force: false` → opt INTO the regression guard in `syncHomeTotalsForDates`.
+ *      A partial XDASH response that would shrink yesterday by >15% is blocked
+ *      and surfaces as `sync_pro.xdash_sync.regression_blocked` (the May-8 fix).
+ *      Yesterday is still always re-fetched (the read-side filter exempts it),
+ *      so the only thing `force: false` changes is the *write* gate.
+ *      Operator escape hatch: `/api/admin/backfill-home?dates=YYYY-MM-DD&force=true`.
+ *   5. Reads the pre-sync row, runs the sync, reads the post-sync row, and
  *      emits `sync_pro.golden_sync.finalized_row_locked` with the delta.
- *   5. `revalidateTag("financial-data")` + `revalidatePath("/")` immediately.
+ *   6. `revalidateTag("financial-data")` + `revalidatePath("/")` immediately.
  */
 
 export const dynamic = "force-dynamic";
@@ -93,7 +99,11 @@ export async function GET(request: NextRequest) {
       mode: "internal",
       data_source: "internal_cookie",
       skipHourlySnapshots: true,
-      force: true,
+      // Golden sync deliberately runs without `force` so the regression guard
+      // in `syncHomeTotalsForDates` can block a partial XDASH response from
+      // overwriting the (correct) intraday-final row. If you need to legitimately
+      // overwrite with a much lower number, use `/api/admin/backfill-home?dates=…&force=true`.
+      force: false,
     },
   });
 
@@ -101,7 +111,12 @@ export async function GET(request: NextRequest) {
 
   try {
     const result = await syncXDASHDataForDates([yesterday], {
-      force: true,
+      // `force: false` lets the regression guard protect the row. Yesterday is
+      // always re-fetched regardless (the read-side filter explicitly includes
+      // today + yesterday), so this only changes the *write*-side behaviour:
+      // a >15% revenue drop vs the existing row will be blocked + logged as
+      // `sync_pro.xdash_sync.regression_blocked` instead of silently overwriting.
+      force: false,
       mode: "internal",
       skipHourlySnapshots: true,
       skipPartnerPerformance: true,
