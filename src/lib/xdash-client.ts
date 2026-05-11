@@ -1099,11 +1099,13 @@ async function fetchHomeFromExternalReportApi(
  */
 export type HomeFetchMode = "internal" | "external" | "auto";
 
-export type FetchHomeForDateOpts = FetchHomeOverviewOpts & {
+export interface FetchHomeForDateOpts extends FetchHomeOverviewOpts {
   mode?: HomeFetchMode;
   /** @deprecated use `mode: "external"`. Kept for back-compat with existing callers. */
   forceExternal?: boolean;
-};
+  /** Audit / sync: home totals only; internal path is already `/home/overview` (no partner APIs). */
+  skipPartnerPerformance?: boolean;
+}
 
 const AUTH_FAIL_PATTERNS = [
   /\b401\b/,
