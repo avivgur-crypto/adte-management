@@ -511,15 +511,26 @@ export async function syncHomeTotalsForDates(
 
     const { revenue, cost, profit, impressions } = homeRow;
     if (revenue === 0 && cost === 0 && impressions === 0) {
-      // Previously: console.warn + continue. Now: throw so a partial/empty
-      // backup-server response can't be silently swallowed and reported as a
-      // successful sync.
+      const israelHour = getIsraelHour();
+      // Before 08:00 IL, "today" often legitimately reads 0 on XDASH — do not
+      // page ops or fail the cron. After 08:00 (or any non-today date), zeros
+      // are treated as a broken/partial response.
+      if (date === today && israelHour < 8) {
+        console.info(
+          "[xdash-sync] Normal early morning zeros for today, skipping silently.",
+          { date, israelHour },
+        );
+        if (i < toFetch.length - 1) {
+          await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
+        }
+        continue;
+      }
       syncProLog({
         event: "sync_pro.xdash_sync.home_totals.empty_response",
         branch_type: "xdash_sync",
         status: "error",
         message: `XDASH returned all-zero row for ${date} — refusing to silently skip (was a silent skip before May-8 fix)`,
-        detail: { date, mode: resolvedMode },
+        detail: { date, mode: resolvedMode, israelHour },
       });
       throw new Error(
         `XDASH home totals returned all-zeros for ${date} (revenue=0, cost=0, impressions=0). ` +
