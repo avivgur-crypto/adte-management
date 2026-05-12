@@ -99,6 +99,27 @@ async function loadUserProfiles(): Promise<UserProfile[]> {
   }));
 }
 
+/**
+ * Load IDs of every profile with `role = 'admin'`.
+ *
+ * Used by **operational / technical** alerts (e.g. `notifyCriticalSyncTripleFailure`)
+ * to make sure non-admin viewers never receive infrastructure alerts. Business
+ * alerts (morning summary, daily/monthly profit goal, low margin) intentionally
+ * do NOT use this — they target every subscribed user with the matching
+ * notification setting enabled.
+ */
+async function loadAdminUserIds(): Promise<Set<string>> {
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("role", "admin");
+  if (error) {
+    console.error("[notifications] loadAdminUserIds", error.message);
+    return new Set();
+  }
+  return new Set((data ?? []).map((r) => String(r.id)).filter(Boolean));
+}
+
 /** Send push to specific subscription rows. */
 async function sendPushToRows(
   rows: { id: string; subscription_json: unknown }[],
@@ -201,9 +222,16 @@ async function sendPushTargetedWithDedupe(
 }
 
 /**
- * High-priority operational alert: XDASH **totals** cron branch failed 3 times in a row.
- * Sends Web Push to every user with at least one subscription (ignores per-type toggles).
- * Deduped once per Israel calendar day per user via `sent_notifications`.
+ * High-priority **operational** alert: XDASH totals cron branch failed 3 times in a row.
+ *
+ * **Recipient policy (admin-only since 2026-05-12):**
+ *   1. Load `profiles.id` where `role = 'admin'`.
+ *   2. Load `push_subscriptions` filtered to those admin user IDs.
+ *   3. Send + dedupe per user (one push per admin per Israel calendar day).
+ *
+ * Viewers (Uri, Ran, Tal, …) are excluded by design — they get business
+ * summaries (morning summary, daily/monthly goal, low margin) but never
+ * infrastructure alerts. To grant someone access, set `profiles.role = 'admin'`.
  */
 export async function notifyCriticalSyncTripleFailure(
   errorHint: string,
@@ -222,17 +250,40 @@ export async function notifyCriticalSyncTripleFailure(
     "Dashboard home totals may be stale — check Edge Config / cookie / API keys. " +
     (trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed || "(no error detail)");
 
-  const { data: rows, error } = await supabaseAdmin.from("push_subscriptions").select("user_id");
+  const adminIds = await loadAdminUserIds();
+  if (adminIds.size === 0) {
+    const log = `[criticalSync] skipped: no profiles.role='admin' configured`;
+    console.warn(log);
+    return { ok: 0, failed: 0, log };
+  }
+
+  // Filter at the DB layer: only subscriptions that belong to an admin user.
+  // (PostgREST's `.in()` is the simplest equivalent of an inner join here —
+  // we already have the admin id list, so a single bounded `IN` is faster
+  // than a join + post-filter.)
+  const { data: rows, error } = await supabaseAdmin
+    .from("push_subscriptions")
+    .select("user_id")
+    .in("user_id", Array.from(adminIds));
   if (error) {
-    return { ok: 0, failed: 0, log: `[criticalSync] load subscriptions: ${error.message}` };
+    return { ok: 0, failed: 0, log: `[criticalSync] load admin subscriptions: ${error.message}` };
   }
 
   const userIds = [...new Set((rows ?? []).map((r) => String(r.user_id)).filter(Boolean))];
+  if (userIds.length === 0) {
+    const log = `[criticalSync] skipped: ${adminIds.size} admin(s) have no push_subscriptions`;
+    console.warn(log);
+    return { ok: 0, failed: 0, log };
+  }
+
   let ok = 0;
   let failed = 0;
   const errors: string[] = [];
 
   for (const userId of userIds) {
+    // Defense in depth: never page someone who isn't currently flagged admin,
+    // even if a stale subscription row slipped through the IN filter.
+    if (!adminIds.has(userId)) continue;
     try {
       if (await wasAlreadySent("critical_sync_alert", sentDate, userId)) continue;
     } catch (e) {
@@ -265,7 +316,7 @@ export async function notifyCriticalSyncTripleFailure(
     }
   }
 
-  const log = `[criticalSync] sentDate=${sentDate} deliveries_ok=${ok} failed=${failed}${errors.length ? `; ${errors.slice(0, 3).join("; ")}` : ""}`;
+  const log = `[criticalSync] sentDate=${sentDate} admins=${adminIds.size} targeted=${userIds.length} deliveries_ok=${ok} failed=${failed}${errors.length ? `; ${errors.slice(0, 3).join("; ")}` : ""}`;
   console.warn(log);
   return { ok, failed, log };
 }
