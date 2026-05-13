@@ -1,5 +1,9 @@
 "use server";
 
+// Temporary global kill-switch for all Web Push notifications (Admin + Viewer).
+// Flip back to `false` once infrastructure maintenance is complete.
+const DISABLE_ALL_NOTIFICATIONS = true; // Set to false to re-enable.
+
 /**
  * Business alert notifications (Web Push).
  *
@@ -62,7 +66,13 @@ function ensureWebPushConfigured(): void {
   setVapidDetails(vapidContact(mail), pub, priv);
 }
 
-type PushResult = { ok: number; failed: number; errors: string[] };
+type PushResult = {
+  ok: number;
+  failed: number;
+  errors: string[];
+  skipped?: boolean;
+  message?: string;
+};
 
 type NotificationSettingsRow = {
   morning_summary_enabled?: boolean;
@@ -185,6 +195,15 @@ async function sendPushTargetedWithDedupe(
   dedupe: { type: SentNotificationType; sentDate: string },
   options: { skipDedupe?: boolean } = {},
 ): Promise<PushResult> {
+  if (DISABLE_ALL_NOTIFICATIONS) {
+    return {
+      ok: 0,
+      failed: 0,
+      errors: [],
+      skipped: true,
+      message: "Notifications are temporarily muted",
+    };
+  }
   ensureWebPushConfigured();
   const payload = JSON.stringify({ title, body });
   const skipDedupe = options.skipDedupe === true;
@@ -235,7 +254,16 @@ async function sendPushTargetedWithDedupe(
  */
 export async function notifyCriticalSyncTripleFailure(
   errorHint: string,
-): Promise<{ ok: number; failed: number; log: string }> {
+): Promise<{ ok: number; failed: number; log: string; skipped?: boolean; message?: string }> {
+  if (DISABLE_ALL_NOTIFICATIONS) {
+    return {
+      ok: 0,
+      failed: 0,
+      log: "[criticalSync] muted: Notifications are temporarily muted",
+      skipped: true,
+      message: "Notifications are temporarily muted",
+    };
+  }
   try {
     ensureWebPushConfigured();
   } catch (e) {
@@ -683,7 +711,15 @@ function formatSignedPercentInt(pct: number): string {
 
 export async function morningSummary(
   options: { test?: boolean } = {},
-): Promise<{ sent: boolean; log: string }> {
+): Promise<{ sent: boolean; log: string; skipped?: boolean; message?: string }> {
+  if (DISABLE_ALL_NOTIFICATIONS) {
+    return {
+      sent: false,
+      log: "[morningSummary] muted: Notifications are temporarily muted",
+      skipped: true,
+      message: "Notifications are temporarily muted",
+    };
+  }
   const isTest = options.test === true;
   const t0 = Date.now();
 
@@ -869,7 +905,18 @@ export async function checkPerformance(): Promise<{
   sent: boolean;
   reasons: string[];
   log: string;
+  skipped?: boolean;
+  message?: string;
 }> {
+  if (DISABLE_ALL_NOTIFICATIONS) {
+    return {
+      sent: false,
+      reasons: [],
+      log: "[checkPerformance] muted: Notifications are temporarily muted",
+      skipped: true,
+      message: "Notifications are temporarily muted",
+    };
+  }
   const today = getIsraelDate();
   const hourIL = getIsraelHour();
   const todayRow = await fetchDailyRow(today);
