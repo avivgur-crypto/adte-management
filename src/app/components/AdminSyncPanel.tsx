@@ -9,7 +9,7 @@ import { invalidatePrefetch } from "@/lib/tab-prefetch";
 
 const API_BASE = "/api/auto-sync";
 const SECRET = "Adte2026";
-const SYNC_TIMEOUT_MS = 15_000;
+const SYNC_TIMEOUT_MS = 240_000;
 const FEEDBACK_DURATION_MS = 4_000;
 const XDASH_DAYS = 7;
 const TOTAL_STEPS = XDASH_DAYS * 2 + 1;
