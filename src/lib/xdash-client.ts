@@ -658,7 +658,7 @@ async function throttle(opts?: { skipGap?: boolean }): Promise<void> {
 }
 
 /** Per-request timeout so a slow XDASH day doesn't hang the whole sync. */
-const FETCH_TIMEOUT_MS = 60_000;
+const FETCH_TIMEOUT_MS = 120_000;
 
 /** Unique per-request timestamp so intermediaries never serve a stale XDASH response. */
 function bustCache(url: string): string {
