@@ -646,7 +646,7 @@ export async function syncHomeTotalsForDates(
           ratio_pct: ratio * 100,
           threshold_pct: REVENUE_REGRESSION_THRESHOLD * 100,
           hint:
-            `Verify via /api/admin/audit-compare?from=${row.date}&to=${row.date} ` +
+            `Verify via /api/admin/audit-compare?startDate=${row.date}&endDate=${row.date} ` +
             `then, if the new value is genuinely correct, retry with force=true.`,
         },
       });

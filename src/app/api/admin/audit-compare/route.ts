@@ -14,11 +14,13 @@ import {
  * what XDASH's UI currently reports — without touching either side.
  *
  * Query params:
- *   - `from` + `to` (YYYY-MM-DD, both required): audit only that inclusive range.
- *     When used, the span is capped at **3 calendar days** (returns 400 if wider)
- *     to stay under Vercel timeouts.
- *   - `days` (default 3): used when `from`/`to` are not both set — last N days
- *     ending today (Israel TZ).
+ *   - `startDate` + `endDate` (YYYY-MM-DD, both required): audit only that
+ *     inclusive range. `from` + `to` are accepted as legacy aliases. When used,
+ *     the span is capped at **3 calendar days** (returns 400 if wider) to stay
+ *     under Vercel timeouts — backfill the last two weeks in small 2–3 day
+ *     batches instead of one large `days=N` request.
+ *   - `days` (default 3): used when `startDate`/`endDate` (or `from`/`to`) are
+ *     not both set — last N days ending today (Israel TZ).
  *   - `secret`: matches `CRON_SECRET` (or `Authorization: Bearer …`).
  *
  * Safety:
@@ -78,30 +80,52 @@ function dateRangeInclusive(from: string, to: string): string[] {
 }
 
 type ResolveDatesResult =
-  | { ok: true; dates: string[]; mode: "range"; from: string; to: string }
+  | {
+      ok: true;
+      dates: string[];
+      mode: "range";
+      startDate: string;
+      endDate: string;
+    }
   | { ok: true; dates: string[]; mode: "days"; days: number }
   | { ok: false; status: number; error: string; detail?: string };
 
-function resolveAuditDates(request: NextRequest): ResolveDatesResult {
-  const from = request.nextUrl.searchParams.get("from")?.trim();
-  const to = request.nextUrl.searchParams.get("to")?.trim();
+/**
+ * Read the inclusive range bounds from the request. Accepts `startDate`/`endDate`
+ * (preferred) and falls back to the legacy `from`/`to` aliases so existing
+ * tooling and hint URLs keep working.
+ */
+function readRangeParams(request: NextRequest): {
+  startDate: string | undefined;
+  endDate: string | undefined;
+} {
+  const sp = request.nextUrl.searchParams;
+  const startDate =
+    sp.get("startDate")?.trim() || sp.get("from")?.trim() || undefined;
+  const endDate =
+    sp.get("endDate")?.trim() || sp.get("to")?.trim() || undefined;
+  return { startDate, endDate };
+}
 
-  if (from && to) {
-    if (!ISO_DATE.test(from) || !ISO_DATE.test(to)) {
+function resolveAuditDates(request: NextRequest): ResolveDatesResult {
+  const { startDate, endDate } = readRangeParams(request);
+
+  if (startDate && endDate) {
+    if (!ISO_DATE.test(startDate) || !ISO_DATE.test(endDate)) {
       return {
         ok: false,
         status: 400,
-        error: "Invalid from/to",
-        detail: "from and to must be YYYY-MM-DD",
+        error: "Invalid startDate/endDate",
+        detail: "startDate and endDate must be YYYY-MM-DD",
       };
     }
-    const dates = dateRangeInclusive(from, to);
+    const dates = dateRangeInclusive(startDate, endDate);
     if (dates.length === 0) {
       return {
         ok: false,
         status: 400,
         error: "Invalid range",
-        detail: "from must be on or before to",
+        detail: "startDate must be on or before endDate",
       };
     }
     if (dates.length > MAX_RANGE_DAYS_FROM_TO) {
@@ -109,10 +133,10 @@ function resolveAuditDates(request: NextRequest): ResolveDatesResult {
         ok: false,
         status: 400,
         error: "Range too large",
-        detail: `from/to may span at most ${MAX_RANGE_DAYS_FROM_TO} day(s) inclusive (got ${dates.length})`,
+        detail: `startDate/endDate may span at most ${MAX_RANGE_DAYS_FROM_TO} day(s) inclusive (got ${dates.length})`,
       };
     }
-    return { ok: true, dates, mode: "range", from, to };
+    return { ok: true, dates, mode: "range", startDate, endDate };
   }
 
   const days = parseDays(request.nextUrl.searchParams.get("days"));
@@ -146,7 +170,14 @@ export async function GET(request: NextRequest) {
 
   const meta =
     resolved.mode === "range"
-      ? { date_mode: "range" as const, from: resolved.from, to: resolved.to }
+      ? {
+          date_mode: "range" as const,
+          startDate: resolved.startDate,
+          endDate: resolved.endDate,
+          // Legacy aliases — keep responses backward compatible.
+          from: resolved.startDate,
+          to: resolved.endDate,
+        }
       : { date_mode: "days" as const, days: resolved.days };
 
   return NextResponse.json({
