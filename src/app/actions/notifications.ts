@@ -2,7 +2,7 @@
 
 // Temporary global kill-switch for all Web Push notifications (Admin + Viewer).
 // Flip back to `false` once infrastructure maintenance is complete.
-const DISABLE_ALL_NOTIFICATIONS = true; // Set to false to re-enable.
+const DISABLE_ALL_NOTIFICATIONS = false; // Set to false to re-enable.
 
 /**
  * Business alert notifications (Web Push).
