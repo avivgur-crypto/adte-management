@@ -70,12 +70,21 @@ export async function GET(request: NextRequest) {
   const xdashDisabled = (process.env.XDASH_DISABLED ?? "false").toLowerCase() === "true";
 
   const t0 = Date.now();
+  /**
+   * Phase 2 wall-clock deadline. The whole function is capped at `maxDuration`
+   * (300s); a single XDASH request against the weak backup backend can run ~100s,
+   * so we stop *starting* new dates at t0+180s, leaving ~120s of headroom for the
+   * last in-flight request plus the trailing cache-bust/health work. Each XDASH
+   * branch flushes whatever it fetched and returns cleanly instead of being killed
+   * by Vercel (the 504 loop). The month catch-up drains across successive runs.
+   */
+  const PHASE2_DEADLINE_MS = t0 + 180_000;
   syncProLog({
     event: "sync_pro.cron.start",
     branch_type: "full_cron",
     status: "started",
     message: "cron/sync: phase1 monday+billing+pnl; phase2 xdash totals || partner-pairs",
-    detail: { max_duration_s: 300, xdash_disabled: xdashDisabled },
+    detail: { max_duration_s: 300, phase2_deadline_ms: 180_000, xdash_disabled: xdashDisabled },
   });
 
   const phase1T0 = Date.now();
@@ -123,7 +132,7 @@ export async function GET(request: NextRequest) {
         });
         return { datesSynced: 0, rowsUpserted: 0 };
       }
-      const value = await syncXDASHData();
+      const value = await syncXDASHData({ deadlineMs: PHASE2_DEADLINE_MS });
       syncProLog({
         event: "sync_pro.cron.branch.totals",
         branch_type: "totals",
@@ -163,7 +172,7 @@ export async function GET(request: NextRequest) {
         });
         return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
       }
-      const value = await syncPartnerPairsData();
+      const value = await syncPartnerPairsData({ deadlineMs: PHASE2_DEADLINE_MS });
       syncProLog({
         event: "sync_pro.cron.branch.partners",
         branch_type: "partners",

@@ -726,11 +726,19 @@ const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
 const HOME_OVERVIEW_RETRY_ATTEMPTS = 3;
 const HOME_OVERVIEW_RETRY_DELAY_MS = 2000;
 
-/** Per-attempt ceiling for `fetchHomeForDate` on interactive paths (manual refresh). Align with dashboard `maxDuration` 300s. */
+/**
+ * Per-attempt budget for `fetchHomeForDate` on interactive paths (dashboard
+ * `refreshTodayHome`). Bounded to fit the page segment `maxDuration` (300s):
+ * worst case per date ≈ statusAttempts × networkRetries × timeout
+ * = 2 × 1 × 120s + delays ≈ 244s (today + yesterday run in parallel, so the
+ * action duration is max of the two, not the sum). The 120s per-attempt ceiling
+ * still comfortably covers the backup backend's slow-but-valid ~100s responses;
+ * we just no longer stack enough retries to blow past 300s and 504 the dashboard.
+ */
 const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 120_000;
-const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 3;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 2;
 const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 2000;
-const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 3;
+const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 1;
 const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRY_DELAY_MS = 2000;
 
 export type FetchHomeOverviewOpts = {

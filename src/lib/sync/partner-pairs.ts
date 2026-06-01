@@ -159,7 +159,9 @@ export async function syncPartnerPairsForDate(date: string): Promise<SyncPartner
  *  - Any other day in the current month that has no rows yet is also fetched.
  *  - On 404 from Report API: log and skip that date, but continue with others.
  */
-export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
+export async function syncPartnerPairsData(
+  options?: { deadlineMs?: number },
+): Promise<SyncPartnerPairsResult> {
   const now = new Date();
   const today = formatLocalDate(now);
   const yesterday = formatLocalDate(getYesterday(now));
@@ -179,6 +181,10 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   const toFetch = allDatesThisMonth.filter(
     (d) => d === today || d === yesterday || !alreadySynced.has(d),
   );
+  // Live window first (today, yesterday), then older catch-up dates ascending —
+  // so a tight cron time budget never starves the dashboard-critical dates.
+  const rank = (d: string) => (d === today ? 0 : d === yesterday ? 1 : 2);
+  toFetch.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 
   if (toFetch.length === 0) {
     return { datesRequested: allDatesThisMonth.length, datesSynced: 0, rowsUpserted: 0 };
@@ -187,6 +193,12 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   let rowsUpserted = 0;
   let datesSynced = 0;
   for (let i = 0; i < toFetch.length; i++) {
+    if (options?.deadlineMs != null && Date.now() >= options.deadlineMs) {
+      console.log(
+        `[partner-pairs-sync] Time budget reached after ${datesSynced}/${toFetch.length} date(s); stopping (remainder drains next run).`,
+      );
+      break;
+    }
     const date = toFetch[i]!;
     try {
       const pairs = await fetchPairsForDate(date);
