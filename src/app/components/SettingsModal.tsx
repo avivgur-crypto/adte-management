@@ -36,7 +36,7 @@ const TOGGLES: Toggle[] = [
   {
     key: "low_margin_enabled",
     label: "Low Margin Alert",
-    description: "Alert me if margin stays below 33% for 1.5 hours (after 12:00).",
+    description: "Alert me if margin stays below 20% for 1.5 hours (after 12:00).",
   },
 ];
 

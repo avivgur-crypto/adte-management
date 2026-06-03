@@ -15,7 +15,7 @@ const DISABLE_ALL_NOTIFICATIONS = false; // Set to false to re-enable.
  * - Daily goal crossing: `daily_goal_sync_snapshot` last_seen_profit vs current row; no daily notify 00:00–07:59 IL.
  *   First observation after quiet hours: if there is no snapshot yet for today and GP is already ≥ daily target,
  *   we still notify once (deduped via `sent_notifications`) so sparse syncs / cron-only paths do not miss the alert.
- * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 33% margin (Israel 12:00+).
+ * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 20% margin (Israel 12:00+).
  * - Per-user targeting: each push type sent only to users whose `profiles.notification_settings` has the flag enabled.
  *   Legacy subscriptions (user_id IS NULL) receive all notifications.
  */
@@ -603,6 +603,9 @@ async function resetLowMarginCount(israelDate: string): Promise<void> {
   }
 }
 
+/** Margin % at or above this resets the low-margin streak; below it increments toward alert. */
+const LOW_MARGIN_THRESHOLD_PCT = 20;
+
 /**
  * Low margin streak: margin = (profit/revenue)*100. Only evaluates when israelHour >= 12.
  * Persists streak in `daily_goal_sync_snapshot.consecutive_low_margin_count`.
@@ -624,7 +627,7 @@ export async function checkLowMarginAlert(
 
   const marginPct = (profit / revenue) * 100;
 
-  if (marginPct >= 33) {
+  if (marginPct >= LOW_MARGIN_THRESHOLD_PCT) {
     await resetLowMarginCount(israelDate);
     return { sent: false, log: `[lowMargin] ok margin=${marginPct.toFixed(1)}%` };
   }
@@ -668,7 +671,7 @@ export async function checkLowMarginAlert(
 
   const r = await sendPushTargetedWithDedupe(
     "Low Margin Warning ⚠️",
-    "Low Margin Warning ⚠️: Margin has been below 33% for the last 1.5 hours.",
+    `Low Margin Warning ⚠️: Margin has been below ${LOW_MARGIN_THRESHOLD_PCT}% for the last 1.5 hours.`,
     "low_margin_enabled",
     { type: "low_margin_alert", sentDate: israelDate },
   );
