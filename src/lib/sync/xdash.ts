@@ -833,7 +833,10 @@ export async function purgeOldHourlySnapshots(): Promise<number> {
  * Incremental sync with catch-up so every day from the 1st is synced, daily and in order.
  *
  *  - Fetches all dates from 1st of current month through today that are missing in the DB.
- *  - Always re-fetches today (data grows throughout the day).
+ *  - Always re-fetches today AND yesterday (the rolling 2-day window). Today still grows
+ *    intraday, and XDASH keeps reattributing the previous calendar day for several hours
+ *    after midnight (late-night billing / demand reconciliation), so the half-hourly cron
+ *    must keep correcting yesterday's row until it stabilises.
  *  - Ensures March 1, March 2, etc. are never skipped (e.g. if cron missed a run).
  *
  * Historical backfills: use syncXDASHDataForMonth() via the CLI script.
@@ -842,14 +845,24 @@ export async function syncXDASHData(): Promise<SyncXDASHResult> {
   const now = new Date();
   const syncedAt = now.toISOString();
   const today = getTodayIsrael();
+  const yesterday = getYesterdayIsrael();
   const allDatesThisMonth = datesFromMonthStartThroughToday(now);
   if (allDatesThisMonth.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
+  // Build the fetch set:
+  //   1. Catch-up: any current-month date missing from `daily_partner_performance`.
+  //   2. Rolling window: today + yesterday — always re-fetched, even if a row already
+  //      exists. Yesterday may sit in the previous calendar month (e.g. on the 1st),
+  //      hence the explicit `add` instead of relying on `allDatesThisMonth`.
   const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
-  const toFetch = allDatesThisMonth.filter((d) => !alreadySynced.has(d) || d === today);
-  toFetch.sort();
+  const toFetchSet = new Set<string>(
+    allDatesThisMonth.filter((d) => !alreadySynced.has(d)),
+  );
+  toFetchSet.add(today);
+  toFetchSet.add(yesterday);
+  const toFetch = Array.from(toFetchSet).sort();
 
   if (toFetch.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };

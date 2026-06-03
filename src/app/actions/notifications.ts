@@ -679,13 +679,19 @@ export async function checkLowMarginAlert(
 }
 
 // ---------------------------------------------------------------------------
-// A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
+// A. Morning summary (05:00 cron — use Israel calendar for "yesterday")
 //
-// Read-only contract: DB-only reads from `daily_home_totals` + `monthly_goals`.
-// Periodic auto-syncs (every ~5 minutes) populate `daily_home_totals` so the
-// 24h totals for "yesterday" are already finalized by the time this runs at
-// 08:00 IL. We do NOT call XDash here — that would blow past cron-job.org's
-// 30s and Vercel Hobby's 10s limits and cause a timeout (no notification).
+// Contract:
+//   1. **Force Fetch Before Notify** — first thing we do is a blocking, forced
+//      `syncXDASHDataForDates([yesterday], …)` so the row in `daily_home_totals`
+//      reflects XDASH's overnight reconciliation (late demand / billing fixes
+//      that often land between 23:30 IL and 04:00 IL the next morning).
+//   2. After the force-fetch returns (or fails — non-fatal), we read
+//      `daily_home_totals` + `monthly_goals` to build the push body.
+//   3. The hybrid live-fallback in `fetchDailyRowWithLiveFallback` and the
+//      zero-value shield further down are kept as defence-in-depth: if the
+//      force-fetch errored or XDASH itself returned 0, we still try one more
+//      live read before giving up and aborting the push.
 // ---------------------------------------------------------------------------
 
 /** Push title fragment: "Mon 27/04" for an ISO date (YYYY-MM-DD), TZ-stable via UTC. */
@@ -725,6 +731,59 @@ export async function morningSummary(
 
   const yesterday = getIsraelDateDaysAgo(1);
   const dayBefore = getIsraelDateDaysAgo(2);
+
+  // -- Force Fetch Before Notify -------------------------------------------
+  // Before we read anything from `daily_home_totals`, run a blocking, *forced*
+  // XDASH sync of yesterday. The morning summary fires at 05:00 IL — by then
+  // XDASH has finished its overnight reconciliation (late demand corrections,
+  // billing adjustments) and the row in our DB may still reflect the stale
+  // last-intraday value from ~23:30 IL the previous day. We always overwrite,
+  // bypassing the regression guard, so the push is built from XDASH's final
+  // numbers instead of the pre-midnight estimate.
+  //
+  // Failure is non-fatal: if XDASH is down we still try to build the summary
+  // from whatever is in the DB and the existing zero-value shield (below)
+  // will abort if the row is genuinely empty.
+  //
+  // Lazy import avoids a circular dependency (sync/xdash → financials →
+  // notifications would otherwise loop at module init).
+  const forceFetchT0 = Date.now();
+  syncProLog({
+    event: "sync_pro.morning_summary.force_fetch_yesterday.start",
+    branch_type: "refresh_today_home",
+    status: "started",
+    detail: { yesterday, isTest },
+  });
+  try {
+    const { syncXDASHDataForDates } = await import("@/lib/sync/xdash");
+    const result = await syncXDASHDataForDates([yesterday], {
+      force: true,
+      mode: "internal",
+      skipHourlySnapshots: true,
+      skipPartnerPerformance: true,
+    });
+    syncProLog({
+      event: "sync_pro.morning_summary.force_fetch_yesterday.done",
+      branch_type: "refresh_today_home",
+      status: "ok",
+      duration_ms: Date.now() - forceFetchT0,
+      detail: {
+        yesterday,
+        datesSynced: result.datesSynced,
+        rowsUpserted: result.rowsUpserted,
+      },
+    });
+  } catch (e) {
+    syncProLog({
+      event: "sync_pro.morning_summary.force_fetch_yesterday.failed",
+      branch_type: "refresh_today_home",
+      status: "error",
+      duration_ms: Date.now() - forceFetchT0,
+      message: e instanceof Error ? e.message : String(e),
+      detail: { yesterday },
+    });
+  }
+  // ------------------------------------------------------------------------
 
   syncProLog({
     event: "sync_pro.morning_summary.start",
