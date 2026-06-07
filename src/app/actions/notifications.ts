@@ -1011,19 +1011,20 @@ export async function checkPerformance(): Promise<{
   let failed = 0;
   const errors: string[] = [];
 
-  // --- Daily: crossing detection + quiet window (no send / no snapshot update 00:00–07:59 IL)
+  // --- Daily: live crossing detection + quiet window (no send / no snapshot update 00:00–07:59 IL)
   if (dim > 0 && dailyAvgTarget > 0) {
     if (dailyGoalQuietHours) {
       logExtras.push("daily_goal_quiet_hours");
     } else {
       const prevSnap = await getDailyGoalSnapshot(today);
+      // Fire ONLY on a genuine live intraday crossing: a prior snapshot strictly below
+      // target while current GP is at/above it. A missing snapshot (first sync after
+      // quiet hours end at 08:00 IL) is intentionally NOT treated as a crossing — that
+      // prevents spammy "already reached" alerts when the day opens above target.
       const crossed =
         prevSnap != null &&
         prevSnap + 1e-6 < dailyAvgTarget &&
         todayGp + 1e-6 >= dailyAvgTarget;
-      /** First sync of the day already at/above target (no prior snapshot to define a “cross”). */
-      const firstHit =
-        prevSnap == null && todayGp + 1e-6 >= dailyAvgTarget;
 
       const notifyDailyGoalReached = async () => {
         reasons.push("daily_goal_reached");
@@ -1039,12 +1040,30 @@ export async function checkPerformance(): Promise<{
         if (r.ok === 0) {
           logExtras.push("daily_goal_no_delivery");
         }
+        return r;
       };
 
-      if (crossed || firstHit) {
-        await notifyDailyGoalReached();
+      if (crossed) {
+        const pushResult = await notifyDailyGoalReached();
+        // Snapshot Lock Trap fix: advance the snapshot above target ONLY when the push
+        // actually went out (ok > 0) OR there was nothing to retry — every eligible user
+        // was already deduped / had no subscription (a clean zero: ok=0, failed=0, no
+        // errors). A complete delivery FAILURE leaves the snapshot untouched so the same
+        // crossing is re-detected and retried on the next half-hourly sync run.
+        const allDedupedOrNoTargets =
+          pushResult.ok === 0 &&
+          pushResult.failed === 0 &&
+          pushResult.errors.length === 0;
+        if (pushResult.ok > 0 || allDedupedOrNoTargets) {
+          await upsertDailyGoalSnapshot(today, todayGp);
+        } else {
+          logExtras.push("daily_goal_snapshot_unlocked_for_retry");
+        }
+      } else {
+        // No crossing this run — keep the snapshot tracking the latest GP so the next
+        // run can detect a real crossing.
+        await upsertDailyGoalSnapshot(today, todayGp);
       }
-      await upsertDailyGoalSnapshot(today, todayGp);
     }
   }
 
