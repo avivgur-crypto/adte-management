@@ -6,7 +6,6 @@
 
 import {
   fetchReportPairsForDateRange,
-  fetchReportPairsDayByDay,
   isReportApi404,
 } from "@/lib/xdash-client";
 import { supabaseAdmin } from "@/lib/supabase";
@@ -50,15 +49,18 @@ export async function getDatesAlreadySynced(dates: string[]): Promise<Set<string
 }
 
 /**
- * Fetch pair data from XDASH for one date. Tries range first, then day-by-day for that single day.
+ * Fetch pair data from XDASH for one date.
+ *
+ * No day-by-day fallback here: for a single date `fetchReportPairsDayByDay(date, date)`
+ * degenerates into the exact same `fetchReportPairsForDateRange(date, date)` request
+ * (same endpoint, payload and retries), so it could never return different data —
+ * it only doubled the load on the weak backend whenever a date legitimately had
+ * no attributed pairs yet (~96 wasted /report aggregations per day).
  */
 async function fetchPairsForDate(date: string): Promise<
   Array<{ demand_tag: string; supply_tag: string; revenue: number; cost: number; profit: number }>
 > {
-  let rows = await fetchReportPairsForDateRange(date, date);
-  if (rows.length === 0) {
-    rows = await fetchReportPairsDayByDay(date, date);
-  }
+  const rows = await fetchReportPairsForDateRange(date, date);
   return rows.map((p) => ({
     demand_tag: p.demandPartner,
     supply_tag: p.supplyPartner,
@@ -159,7 +161,9 @@ export async function syncPartnerPairsForDate(date: string): Promise<SyncPartner
  *  - Any other day in the current month that has no rows yet is also fetched.
  *  - On 404 from Report API: log and skip that date, but continue with others.
  */
-export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
+export async function syncPartnerPairsData(
+  options?: { deadlineMs?: number },
+): Promise<SyncPartnerPairsResult> {
   const now = new Date();
   const today = formatLocalDate(now);
   const yesterday = formatLocalDate(getYesterday(now));
@@ -179,6 +183,10 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   const toFetch = allDatesThisMonth.filter(
     (d) => d === today || d === yesterday || !alreadySynced.has(d),
   );
+  // Live window first (today, yesterday), then older catch-up dates ascending —
+  // so a tight cron time budget never starves the dashboard-critical dates.
+  const rank = (d: string) => (d === today ? 0 : d === yesterday ? 1 : 2);
+  toFetch.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 
   if (toFetch.length === 0) {
     return { datesRequested: allDatesThisMonth.length, datesSynced: 0, rowsUpserted: 0 };
@@ -187,6 +195,12 @@ export async function syncPartnerPairsData(): Promise<SyncPartnerPairsResult> {
   let rowsUpserted = 0;
   let datesSynced = 0;
   for (let i = 0; i < toFetch.length; i++) {
+    if (options?.deadlineMs != null && Date.now() >= options.deadlineMs) {
+      console.log(
+        `[partner-pairs-sync] Time budget reached after ${datesSynced}/${toFetch.length} date(s); stopping (remainder drains next run).`,
+      );
+      break;
+    }
     const date = toFetch[i]!;
     try {
       const pairs = await fetchPairsForDate(date);

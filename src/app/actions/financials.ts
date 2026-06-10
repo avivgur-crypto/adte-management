@@ -961,8 +961,18 @@ export type RefreshTodayHomeResult = {
 };
 
 /**
+ * Anti-stampede window: cron writes every 30 min and every open dashboard tab
+ * polls every 5 min (AutoSync) with no cross-lambda coordination. If today's
+ * row was written more recently than this, skip the two XDASH cookie calls —
+ * the data is as fresh as the UI needs, and the weak backup backend is spared
+ * N-tabs × 2 calls bursts.
+ */
+const REFRESH_FRESHNESS_WINDOW_MS = 4 * 60 * 1000;
+
+/**
  * Synchronously refresh today + yesterday in `daily_home_totals`. Awaits XDASH
  * fetches (up to 120s per attempt, parallel today/yesterday) and DB writes.
+ * Skips entirely when today's row is fresher than `REFRESH_FRESHNESS_WINDOW_MS`.
  *
  * Never throws — failures are logged and reflected as `{ updated: false }`.
  */
@@ -971,6 +981,29 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
   const yesterday = getIsraelDateDaysAgo(1);
   const dates = [today, yesterday] as const;
   const startedAt = Date.now();
+
+  // Freshness short-circuit (fail-open: any read error falls through to a
+  // normal refresh so a Supabase blip never blocks the dashboard).
+  try {
+    const { data } = await supabaseAdmin
+      .from("daily_home_totals")
+      .select("created_at")
+      .eq("date", today)
+      .maybeSingle();
+    const writtenAt = data?.created_at ? Date.parse(String(data.created_at)) : NaN;
+    const ageMs = Date.now() - writtenAt;
+    if (Number.isFinite(writtenAt) && ageMs >= 0 && ageMs < REFRESH_FRESHNESS_WINDOW_MS) {
+      syncProLog({
+        event: "sync_pro.refresh_today_home.skipped_fresh",
+        branch_type: "refresh_today_home",
+        status: "ok",
+        detail: { date: today, age_ms: ageMs, window_ms: REFRESH_FRESHNESS_WINDOW_MS },
+      });
+      return { scheduled: false, updated: false };
+    }
+  } catch {
+    /* fail-open */
+  }
 
   syncProLog({
     event: "sync_pro.refresh_today_home.start",

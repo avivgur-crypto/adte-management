@@ -4,10 +4,12 @@ import { type NextRequest, NextResponse } from "next/server";
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // API routes with their own auth — bypass completely
+  // API routes with their own auth — bypass completely.
+  // Every /api/cron/* route validates CRON_SECRET itself; listing them
+  // individually here is how self-heal and golden-sync ended up 401-blocked
+  // (vercel-cron has no Supabase session cookie).
   if (
-    pathname.startsWith("/api/cron/sync") ||
-    pathname.startsWith("/api/cron/morning-summary") ||
+    pathname.startsWith("/api/cron/") ||
     pathname.startsWith("/api/auto-sync") ||
     pathname.startsWith("/api/last-sync") ||
     pathname.startsWith("/api/funnel-report")
