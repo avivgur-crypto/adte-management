@@ -273,17 +273,10 @@ async function batchUpsert(records: Record<string, unknown>[]): Promise<number> 
  * Each batch fetches FETCH_BATCH_SIZE dates, then waits INTER_BATCH_DELAY_MS.
  */
 async function fetchDatesInBatches(
-  dates: string[],
-  deadlineMs?: number,
+  dates: string[]
 ): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }[]> {
   const results: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[] = [];
   for (let i = 0; i < dates.length; i += FETCH_BATCH_SIZE) {
-    if (deadlineMs != null && Date.now() >= deadlineMs) {
-      console.log(
-        `[xdash-sync] Time budget reached; stopping with ${results.length}/${dates.length} date(s) fetched.`,
-      );
-      break;
-    }
     const batch = dates.slice(i, i + FETCH_BATCH_SIZE);
     console.log(`[xdash-sync] Fetching batch ${Math.floor(i / FETCH_BATCH_SIZE) + 1} (${batch.join(", ")}) …`);
     const batchResults = await Promise.all(batch.map((date) => fetchDay(date)));
@@ -293,17 +286,6 @@ async function fetchDatesInBatches(
     }
   }
   return results;
-}
-
-/**
- * Reorder a date list in place so the live window (today, then yesterday) is
- * processed first, with the remaining catch-up dates ascending. Under a tight
- * cron time budget this guarantees the dashboard-critical dates are synced
- * before older backfill dates, which drain across subsequent runs.
- */
-function prioritizeLiveWindow(dates: string[], today: string, yesterday: string): void {
-  const rank = (d: string) => (d === today ? 0 : d === yesterday ? 1 : 2);
-  dates.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
 const HOME_TABLE = "daily_home_totals";
@@ -327,10 +309,6 @@ type HomeTotalsBackupRow = {
 async function persistHomeTotalsToLocalBackup(
   row: Omit<HomeTotalsBackupRow, "savedAt">,
 ): Promise<void> {
-  // Vercel's FS is read-only (/var/task) — the write below can never succeed
-  // there and only produces an EROFS warning per upsert. The local JSON backup
-  // is for local runs (sync-fix / CLI scripts) only.
-  if (process.env.VERCEL) return;
   try {
     const filePath = path.join(process.cwd(), HOME_TOTALS_LOCAL_BACKUP_FILE);
     let existing: HomeTotalsBackupRow[] = [];
@@ -447,13 +425,6 @@ export type SyncHomeTotalsOptions = {
    * intraday timeline that powers Pulse's "live vs live" comparison.
    */
   skipHourlySnapshots?: boolean;
-  /**
-   * Absolute wall-clock deadline (epoch ms). When set, the per-date fetch loop
-   * stops before starting a new date once `Date.now()` reaches it, flushing
-   * whatever was already fetched. Used by the cron to stay under Vercel's 300s
-   * function ceiling; unset elsewhere so behaviour is unchanged.
-   */
-  deadlineMs?: number;
 };
 
 /**
@@ -517,12 +488,6 @@ export async function syncHomeTotalsForDates(
     options?.mode ?? (options?.forceExternal ? "external" : "internal");
 
   for (let i = 0; i < toFetch.length; i++) {
-    if (options?.deadlineMs != null && Date.now() >= options.deadlineMs) {
-      console.log(
-        `[xdash-sync] Home totals time budget reached after ${i}/${toFetch.length} date(s); flushing partial.`,
-      );
-      break;
-    }
     const date = toFetch[i]!;
     console.log(
       `[xdash-sync] Fetching Home totals for ${date}… (mode=${resolvedMode})`,
@@ -868,14 +833,15 @@ export async function purgeOldHourlySnapshots(): Promise<number> {
  * Incremental sync with catch-up so every day from the 1st is synced, daily and in order.
  *
  *  - Fetches all dates from 1st of current month through today that are missing in the DB.
- *  - Always re-fetches today (data grows throughout the day).
+ *  - Always re-fetches today AND yesterday (the rolling 2-day window). Today still grows
+ *    intraday, and XDASH keeps reattributing the previous calendar day for several hours
+ *    after midnight (late-night billing / demand reconciliation), so the half-hourly cron
+ *    must keep correcting yesterday's row until it stabilises.
  *  - Ensures March 1, March 2, etc. are never skipped (e.g. if cron missed a run).
  *
  * Historical backfills: use syncXDASHDataForMonth() via the CLI script.
  */
-export async function syncXDASHData(
-  options?: { deadlineMs?: number },
-): Promise<SyncXDASHResult> {
+export async function syncXDASHData(): Promise<SyncXDASHResult> {
   const now = new Date();
   const syncedAt = now.toISOString();
   const today = getTodayIsrael();
@@ -885,21 +851,25 @@ export async function syncXDASHData(
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
+  // Build the fetch set:
+  //   1. Catch-up: any current-month date missing from `daily_partner_performance`.
+  //   2. Rolling window: today + yesterday — always re-fetched, even if a row already
+  //      exists. Yesterday may sit in the previous calendar month (e.g. on the 1st),
+  //      hence the explicit `add` instead of relying on `allDatesThisMonth`.
   const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
-  const toFetch = allDatesThisMonth.filter((d) => !alreadySynced.has(d) || d === today);
-  // Live window first (today, yesterday), then older catch-up dates ascending —
-  // so a tight cron budget never starves the dashboard-critical dates.
-  prioritizeLiveWindow(toFetch, today, yesterday);
+  const toFetchSet = new Set<string>(
+    allDatesThisMonth.filter((d) => !alreadySynced.has(d)),
+  );
+  toFetchSet.add(today);
+  toFetchSet.add(yesterday);
+  const toFetch = Array.from(toFetchSet).sort();
 
   if (toFetch.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
   console.log(`[xdash-sync] Sync (catch-up + today): ${toFetch.join(", ")}`);
-  const dayResults = await fetchDatesInBatches(toFetch, options?.deadlineMs);
-  // Only the dates we actually fetched before the budget ran out — the rest
-  // drain on the next cron run (catch-up is idempotent / skips synced dates).
-  const fetchedDates = dayResults.map((d) => d.date);
+  const dayResults = await fetchDatesInBatches(toFetch);
   const records: Record<string, unknown>[] = [];
   for (const { date, demand, supply } of dayResults) {
     if (demand.length === 0 && supply.length === 0) {
@@ -912,15 +882,13 @@ export async function syncXDASHData(
   }
   const rowsUpserted = await batchUpsert(records);
 
-  await syncHomeTotalsForDates(fetchedDates, syncedAt, false, {
-    deadlineMs: options?.deadlineMs,
-  });
+  await syncHomeTotalsForDates(toFetch, syncedAt);
 
   // Daily housekeeping: drop hourly_snapshots older than the retention window.
   // syncXDASHData runs once per day from /api/cron/sync, so this fires once a day.
   await purgeOldHourlySnapshots();
 
-  return { datesSynced: fetchedDates.length, rowsUpserted };
+  return { datesSynced: toFetch.length, rowsUpserted };
 }
 
 const DEFAULT_TIME_BUDGET_MS = 45_000;

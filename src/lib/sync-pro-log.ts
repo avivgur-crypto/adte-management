@@ -14,7 +14,8 @@ export type SyncProBranchType =
   | "refresh_today_home"
   | "xdash_sync"
   | "partner_pairs_sync"
-  | "self_heal";
+  | "self_heal"
+  | "verify_health";
 
 export type SyncProLogInput = {
   event: string;

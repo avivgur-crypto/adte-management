@@ -15,7 +15,7 @@ const DISABLE_ALL_NOTIFICATIONS = false; // Set to false to re-enable.
  * - Daily goal crossing: `daily_goal_sync_snapshot` last_seen_profit vs current row; no daily notify 00:00–07:59 IL.
  *   First observation after quiet hours: if there is no snapshot yet for today and GP is already ≥ daily target,
  *   we still notify once (deduped via `sent_notifications`) so sparse syncs / cron-only paths do not miss the alert.
- * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 33% margin (Israel 12:00+).
+ * - Low margin: `consecutive_low_margin_count` on same snapshot row; 3 syncs below 20% margin (Israel 12:00+).
  * - Per-user targeting: each push type sent only to users whose `profiles.notification_settings` has the flag enabled.
  *   Legacy subscriptions (user_id IS NULL) receive all notifications.
  */
@@ -603,6 +603,9 @@ async function resetLowMarginCount(israelDate: string): Promise<void> {
   }
 }
 
+/** Margin % at or above this resets the low-margin streak; below it increments toward alert. */
+const LOW_MARGIN_THRESHOLD_PCT = 20;
+
 /**
  * Low margin streak: margin = (profit/revenue)*100. Only evaluates when israelHour >= 12.
  * Persists streak in `daily_goal_sync_snapshot.consecutive_low_margin_count`.
@@ -624,7 +627,7 @@ export async function checkLowMarginAlert(
 
   const marginPct = (profit / revenue) * 100;
 
-  if (marginPct >= 33) {
+  if (marginPct >= LOW_MARGIN_THRESHOLD_PCT) {
     await resetLowMarginCount(israelDate);
     return { sent: false, log: `[lowMargin] ok margin=${marginPct.toFixed(1)}%` };
   }
@@ -668,7 +671,7 @@ export async function checkLowMarginAlert(
 
   const r = await sendPushTargetedWithDedupe(
     "Low Margin Warning ⚠️",
-    "Low Margin Warning ⚠️: Margin has been below 33% for the last 1.5 hours.",
+    `Low Margin Warning ⚠️: Margin has been below ${LOW_MARGIN_THRESHOLD_PCT}% for the last 1.5 hours.`,
     "low_margin_enabled",
     { type: "low_margin_alert", sentDate: israelDate },
   );
@@ -679,13 +682,19 @@ export async function checkLowMarginAlert(
 }
 
 // ---------------------------------------------------------------------------
-// A. Morning summary (08:00 cron — use Israel calendar for “yesterday”)
+// A. Morning summary (05:00 cron — use Israel calendar for "yesterday")
 //
-// Read-only contract: DB-only reads from `daily_home_totals` + `monthly_goals`.
-// Periodic auto-syncs (every ~5 minutes) populate `daily_home_totals` so the
-// 24h totals for "yesterday" are already finalized by the time this runs at
-// 08:00 IL. We do NOT call XDash here — that would blow past cron-job.org's
-// 30s and Vercel Hobby's 10s limits and cause a timeout (no notification).
+// Contract:
+//   1. **Force Fetch Before Notify** — first thing we do is a blocking, forced
+//      `syncXDASHDataForDates([yesterday], …)` so the row in `daily_home_totals`
+//      reflects XDASH's overnight reconciliation (late demand / billing fixes
+//      that often land between 23:30 IL and 04:00 IL the next morning).
+//   2. After the force-fetch returns (or fails — non-fatal), we read
+//      `daily_home_totals` + `monthly_goals` to build the push body.
+//   3. The hybrid live-fallback in `fetchDailyRowWithLiveFallback` and the
+//      zero-value shield further down are kept as defence-in-depth: if the
+//      force-fetch errored or XDASH itself returned 0, we still try one more
+//      live read before giving up and aborting the push.
 // ---------------------------------------------------------------------------
 
 /** Push title fragment: "Mon 27/04" for an ISO date (YYYY-MM-DD), TZ-stable via UTC. */
@@ -725,6 +734,59 @@ export async function morningSummary(
 
   const yesterday = getIsraelDateDaysAgo(1);
   const dayBefore = getIsraelDateDaysAgo(2);
+
+  // -- Force Fetch Before Notify -------------------------------------------
+  // Before we read anything from `daily_home_totals`, run a blocking, *forced*
+  // XDASH sync of yesterday. The morning summary fires at 05:00 IL — by then
+  // XDASH has finished its overnight reconciliation (late demand corrections,
+  // billing adjustments) and the row in our DB may still reflect the stale
+  // last-intraday value from ~23:30 IL the previous day. We always overwrite,
+  // bypassing the regression guard, so the push is built from XDASH's final
+  // numbers instead of the pre-midnight estimate.
+  //
+  // Failure is non-fatal: if XDASH is down we still try to build the summary
+  // from whatever is in the DB and the existing zero-value shield (below)
+  // will abort if the row is genuinely empty.
+  //
+  // Lazy import avoids a circular dependency (sync/xdash → financials →
+  // notifications would otherwise loop at module init).
+  const forceFetchT0 = Date.now();
+  syncProLog({
+    event: "sync_pro.morning_summary.force_fetch_yesterday.start",
+    branch_type: "refresh_today_home",
+    status: "started",
+    detail: { yesterday, isTest },
+  });
+  try {
+    const { syncXDASHDataForDates } = await import("@/lib/sync/xdash");
+    const result = await syncXDASHDataForDates([yesterday], {
+      force: true,
+      mode: "internal",
+      skipHourlySnapshots: true,
+      skipPartnerPerformance: true,
+    });
+    syncProLog({
+      event: "sync_pro.morning_summary.force_fetch_yesterday.done",
+      branch_type: "refresh_today_home",
+      status: "ok",
+      duration_ms: Date.now() - forceFetchT0,
+      detail: {
+        yesterday,
+        datesSynced: result.datesSynced,
+        rowsUpserted: result.rowsUpserted,
+      },
+    });
+  } catch (e) {
+    syncProLog({
+      event: "sync_pro.morning_summary.force_fetch_yesterday.failed",
+      branch_type: "refresh_today_home",
+      status: "error",
+      duration_ms: Date.now() - forceFetchT0,
+      message: e instanceof Error ? e.message : String(e),
+      detail: { yesterday },
+    });
+  }
+  // ------------------------------------------------------------------------
 
   syncProLog({
     event: "sync_pro.morning_summary.start",
@@ -949,19 +1011,20 @@ export async function checkPerformance(): Promise<{
   let failed = 0;
   const errors: string[] = [];
 
-  // --- Daily: crossing detection + quiet window (no send / no snapshot update 00:00–07:59 IL)
+  // --- Daily: live crossing detection + quiet window (no send / no snapshot update 00:00–07:59 IL)
   if (dim > 0 && dailyAvgTarget > 0) {
     if (dailyGoalQuietHours) {
       logExtras.push("daily_goal_quiet_hours");
     } else {
       const prevSnap = await getDailyGoalSnapshot(today);
+      // Fire ONLY on a genuine live intraday crossing: a prior snapshot strictly below
+      // target while current GP is at/above it. A missing snapshot (first sync after
+      // quiet hours end at 08:00 IL) is intentionally NOT treated as a crossing — that
+      // prevents spammy "already reached" alerts when the day opens above target.
       const crossed =
         prevSnap != null &&
         prevSnap + 1e-6 < dailyAvgTarget &&
         todayGp + 1e-6 >= dailyAvgTarget;
-      /** First sync of the day already at/above target (no prior snapshot to define a “cross”). */
-      const firstHit =
-        prevSnap == null && todayGp + 1e-6 >= dailyAvgTarget;
 
       const notifyDailyGoalReached = async () => {
         reasons.push("daily_goal_reached");
@@ -977,12 +1040,30 @@ export async function checkPerformance(): Promise<{
         if (r.ok === 0) {
           logExtras.push("daily_goal_no_delivery");
         }
+        return r;
       };
 
-      if (crossed || firstHit) {
-        await notifyDailyGoalReached();
+      if (crossed) {
+        const pushResult = await notifyDailyGoalReached();
+        // Snapshot Lock Trap fix: advance the snapshot above target ONLY when the push
+        // actually went out (ok > 0) OR there was nothing to retry — every eligible user
+        // was already deduped / had no subscription (a clean zero: ok=0, failed=0, no
+        // errors). A complete delivery FAILURE leaves the snapshot untouched so the same
+        // crossing is re-detected and retried on the next half-hourly sync run.
+        const allDedupedOrNoTargets =
+          pushResult.ok === 0 &&
+          pushResult.failed === 0 &&
+          pushResult.errors.length === 0;
+        if (pushResult.ok > 0 || allDedupedOrNoTargets) {
+          await upsertDailyGoalSnapshot(today, todayGp);
+        } else {
+          logExtras.push("daily_goal_snapshot_unlocked_for_retry");
+        }
+      } else {
+        // No crossing this run — keep the snapshot tracking the latest GP so the next
+        // run can detect a real crossing.
+        await upsertDailyGoalSnapshot(today, todayGp);
       }
-      await upsertDailyGoalSnapshot(today, todayGp);
     }
   }
 
