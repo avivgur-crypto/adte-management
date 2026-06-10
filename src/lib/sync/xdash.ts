@@ -327,6 +327,10 @@ type HomeTotalsBackupRow = {
 async function persistHomeTotalsToLocalBackup(
   row: Omit<HomeTotalsBackupRow, "savedAt">,
 ): Promise<void> {
+  // Vercel's FS is read-only (/var/task) — the write below can never succeed
+  // there and only produces an EROFS warning per upsert. The local JSON backup
+  // is for local runs (sync-fix / CLI scripts) only.
+  if (process.env.VERCEL) return;
   try {
     const filePath = path.join(process.cwd(), HOME_TOTALS_LOCAL_BACKUP_FILE);
     let existing: HomeTotalsBackupRow[] = [];

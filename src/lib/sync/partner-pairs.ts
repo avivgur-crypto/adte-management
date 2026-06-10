@@ -6,7 +6,6 @@
 
 import {
   fetchReportPairsForDateRange,
-  fetchReportPairsDayByDay,
   isReportApi404,
 } from "@/lib/xdash-client";
 import { supabaseAdmin } from "@/lib/supabase";
@@ -50,15 +49,18 @@ export async function getDatesAlreadySynced(dates: string[]): Promise<Set<string
 }
 
 /**
- * Fetch pair data from XDASH for one date. Tries range first, then day-by-day for that single day.
+ * Fetch pair data from XDASH for one date.
+ *
+ * No day-by-day fallback here: for a single date `fetchReportPairsDayByDay(date, date)`
+ * degenerates into the exact same `fetchReportPairsForDateRange(date, date)` request
+ * (same endpoint, payload and retries), so it could never return different data —
+ * it only doubled the load on the weak backend whenever a date legitimately had
+ * no attributed pairs yet (~96 wasted /report aggregations per day).
  */
 async function fetchPairsForDate(date: string): Promise<
   Array<{ demand_tag: string; supply_tag: string; revenue: number; cost: number; profit: number }>
 > {
-  let rows = await fetchReportPairsForDateRange(date, date);
-  if (rows.length === 0) {
-    rows = await fetchReportPairsDayByDay(date, date);
-  }
+  const rows = await fetchReportPairsForDateRange(date, date);
   return rows.map((p) => ({
     demand_tag: p.demandPartner,
     supply_tag: p.supplyPartner,
