@@ -13,6 +13,13 @@ const SYNC_TIMEOUT_MS = 240_000;
 const FEEDBACK_DURATION_MS = 4_000;
 const XDASH_DAYS = 7;
 const TOTAL_STEPS = XDASH_DAYS * 2 + 1;
+/**
+ * Pause between manual per-date requests. Irrelevant while the backend is slow
+ * (its own latency dominates); caps the burst rate when responses come back
+ * fast (errors / empty days) — the case that produced 7 heavy /report hits in
+ * 11 seconds and a 500 on 2026-06-10.
+ */
+const MANUAL_SYNC_GAP_MS = 2_500;
 
 type FeedbackState = { type: "success" | "error"; message: string } | null;
 
@@ -97,6 +104,9 @@ export default function AdminSyncPanel() {
         console.error(`[XDASH] Totals failed for ${dates[i]}: ${msg}`);
         failures++;
       }
+      if (i < dates.length - 1) {
+        await new Promise((r) => setTimeout(r, MANUAL_SYNC_GAP_MS));
+      }
     }
 
     for (let i = 0; i < dates.length; i++) {
@@ -119,8 +129,12 @@ export default function AdminSyncPanel() {
         console.error(`[XDASH] Pairs failed for ${dates[i]}: ${msg}`);
         failures++;
       }
+      if (i < dates.length - 1) {
+        await new Promise((r) => setTimeout(r, MANUAL_SYNC_GAP_MS));
+      }
     }
 
+    await new Promise((r) => setTimeout(r, MANUAL_SYNC_GAP_MS));
     setXdashLabel("Billing…");
     {
       const controller = new AbortController();
@@ -210,6 +224,8 @@ export default function AdminSyncPanel() {
   }, [syncStatus]);
 
   const xdashBusy = xdashLabel !== null;
+  /** The two manual syncs share the weak XDASH backend / Vercel budget — never run both at once. */
+  const anyBusy = xdashBusy || mondaySyncing;
 
   return (
     <div className="flex flex-col gap-2">
@@ -221,7 +237,7 @@ export default function AdminSyncPanel() {
       <button
         type="button"
         onClick={handleXdashSync}
-        disabled={xdashBusy}
+        disabled={anyBusy}
         className="flex w-full items-center gap-2.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-200 shadow-sm transition-colors hover:bg-white/10 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
       >
         <BarChart3 className={`h-4 w-4 shrink-0 text-zinc-400 ${xdashBusy ? "animate-pulse" : ""}`} />
@@ -241,7 +257,7 @@ export default function AdminSyncPanel() {
       <button
         type="button"
         onClick={handleMondaySync}
-        disabled={mondaySyncing}
+        disabled={anyBusy}
         className="flex w-full items-center gap-2.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-medium text-zinc-200 shadow-sm transition-colors hover:bg-white/10 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
       >
         <CalendarSync className={`h-4 w-4 shrink-0 text-zinc-400 ${mondaySyncing ? "animate-pulse" : ""}`} />
