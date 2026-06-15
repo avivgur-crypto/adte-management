@@ -255,8 +255,12 @@ const REPORT_PATH_404_FALLBACKS = ["/reports", "/reports/run", "/api/report", "/
 /** Report payload shape required by XDASH API: dimensions camelCase, aggregationPeriod, metrics include profit. */
 const REPORT_DIMENSIONS = ["supplyTag", "demandTag"] as const;
 const REPORT_AGGREGATION_PERIOD = "sum";
-/** Enum values for POST /report `metrics` — use camelCase `netProfit` (lowercase `netprofit` returns 400). */
-const REPORT_METRICS = ["revenue", "cost", "impressions", "profit", "netProfit"] as const;
+// Request only the proven-working metrics (a captured /report response with exactly this
+// set returned 2391 pair rows). `netProfit` is intentionally NOT requested: including it
+// makes the backup /report answer 200 with an empty `data[]` (→ partner-pairs = 0). Profit
+// is resolved from the RESPONSE in `resolveReportProfit` (netProfit / netRevenue−netCost when
+// present, else revenue − cost), so no request-side metric or env flag is needed for it.
+const REPORT_METRICS = ["revenue", "cost", "impressions", "profit"] as const;
 
 function buildReportPayload(date: string): string {
   return JSON.stringify({
@@ -418,7 +422,10 @@ export interface ReportPairRow {
   profit?: number;
 }
 
-const REPORT_RETRY_ON_STATUS = [502, 503, 504];
+// Include 500: the backup /report occasionally throws a transient Internal Server Error
+// that succeeds on a quick retry (observed in prod logs). Without it a single 500 fails the
+// whole date instead of being absorbed by the retry.
+const REPORT_RETRY_ON_STATUS = [500, 502, 503, 504];
 const REPORT_RETRY_ATTEMPTS = 2;
 const REPORT_RETRY_DELAY_MS = 8000;
 
@@ -516,6 +523,24 @@ export async function fetchReportPairsForDateRange(
           if (revenue <= 0 && cost <= 0) continue;
           const profit = resolveReportProfit(row, revenue, cost);
           pairs.push({ demandPartner, supplyPartner, revenue, cost, profit });
+        }
+
+        // Diagnostic: tell "backend returned no rows" apart from "parser dropped them".
+        // rawRows > 0 with pairs = 0 ⇒ shape/filter issue; rawRows = 0 ⇒ backend sent nothing.
+        if (pairs.length === 0) {
+          syncProLog({
+            event: "sync_pro.report_pairs.empty",
+            branch_type: "partner_pairs_sync",
+            status: "ok",
+            message: `Report pairs empty for ${startDate}..${endDate} via ${path} (rawRows=${rows.length}).`,
+            detail: {
+              startDate,
+              endDate,
+              path,
+              rawRows: rows.length,
+              sampleRow: rows[0] ? JSON.stringify(rows[0]).slice(0, 500) : null,
+            },
+          });
         }
         return pairs;
       }
