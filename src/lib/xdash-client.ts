@@ -248,18 +248,22 @@ export interface PartnerRow {
 // ============================================================================
 
 const XDASH_USE_REPORTS = (process.env.XDASH_USE_REPORTS ?? "false").toLowerCase() === "true";
-const XDASH_REPORT_PATH = process.env.XDASH_REPORT_PATH ?? "/report";
+// Canonical NestJS route on the XDASH backend: POST /reports/query → { data, totals, meta }.
+// Do NOT point this at /home/topTags — that returns a `selectedDates[]` shape that
+// getReportRows can't parse, silently yielding 0 pairs (200 OK, empty result).
+const XDASH_REPORT_PATH = process.env.XDASH_REPORT_PATH ?? "/reports/query";
 
-const REPORT_PATH_404_FALLBACKS = ["/reports", "/reports/run", "/api/report", "/api/reports"];
+// 404 fallback: if XDASH_REPORT_PATH is misconfigured, still try the canonical route.
+const REPORT_PATH_404_FALLBACKS = ["/reports/query"];
 
 /** Report payload shape required by XDASH API: dimensions camelCase, aggregationPeriod, metrics include profit. */
 const REPORT_DIMENSIONS = ["supplyTag", "demandTag"] as const;
 const REPORT_AGGREGATION_PERIOD = "sum";
-// Request only the proven-working metrics (a captured /report response with exactly this
-// set returned 2391 pair rows). `netProfit` is intentionally NOT requested: including it
-// makes the backup /report answer 200 with an empty `data[]` (→ partner-pairs = 0). Profit
-// is resolved from the RESPONSE in `resolveReportProfit` (netProfit / netRevenue−netCost when
-// present, else revenue − cost), so no request-side metric or env flag is needed for it.
+// Mirrors the reference frontend's DEFAULT_METRICS. The backend always groups by
+// demand/supply and sums raw metrics regardless of the requested `metrics`, so this
+// set never changes the row count (verified against /reports/query). `profit` comes
+// back server-side (revenue - cost); net metrics are omitted as unnecessary. Profit
+// is also re-derived from the response in resolveReportProfit as a safety net.
 const REPORT_METRICS = ["revenue", "cost", "impressions", "profit"] as const;
 
 function buildReportPayload(date: string): string {
