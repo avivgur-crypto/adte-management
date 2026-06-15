@@ -17,6 +17,15 @@ const BATCH_UPSERT_SIZE = 500;
 /** Delay between XDASH requests when syncing multiple dates (reduce load on unstable API). */
 const INTER_DATE_DELAY_MS = 3000;
 
+/**
+ * Per-invocation budget headroom for the cron pairs sweep. Never START a new
+ * date unless at least this much of the function deadline remains, so a date
+ * already in flight (one /reports/query, up to the 210s report timeout) can
+ * finish before Vercel's 300s ceiling instead of being killed mid-request. The
+ * month catch-up drains one (or, on a warm backend, several) date(s) per run.
+ */
+const CRON_PAIRS_MIN_REMAINING_MS = 230_000;
+
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -154,38 +163,41 @@ export async function syncPartnerPairsForDate(date: string): Promise<SyncPartner
  * Sync partner pairs for the current month.
  *
  * Sync-Pro strategy:
- *  - Today and Yesterday are ALWAYS re-fetched. XDASH keeps reattributing
- *    yesterday's pair data for several hours after midnight, and today
- *    obviously grows intraday. Skipping these because "a row exists" is
- *    exactly the bug that left the dashboard frozen.
- *  - Any other day in the current month that has no rows yet is also fetched.
+ *  - Yesterday is ALWAYS re-fetched: XDASH keeps reattributing its pair data for
+ *    several hours after midnight.
+ *  - Today is NOT fetched: pairs come from /reports/query, which only returns
+ *    finalized (isAllDayData=true) rows, so today is always intraday -> 0. Today's
+ *    pairs land tomorrow, once it rolls over to "yesterday".
+ *  - Any other day in the current month with no rows yet is fetched, oldest-missing
+ *    first; under a tight cron budget the remainder drains across successive runs.
  *  - On 404 from Report API: log and skip that date, but continue with others.
  */
 export async function syncPartnerPairsData(
   options?: { deadlineMs?: number },
 ): Promise<SyncPartnerPairsResult> {
   const now = new Date();
-  const today = formatLocalDate(now);
   const yesterday = formatLocalDate(getYesterday(now));
   const y = now.getFullYear();
   const m = now.getMonth() + 1;
 
-  let allDatesThisMonth = datesForMonth(y, m);
-  const isCurrentMonth = y === now.getFullYear() && m === now.getMonth() + 1;
-  if (isCurrentMonth && (allDatesThisMonth.length === 0 || allDatesThisMonth[allDatesThisMonth.length - 1] !== today)) {
-    allDatesThisMonth = [...allDatesThisMonth, today];
-  }
+  // `datesForMonth` already returns the 1st through *yesterday* for the current
+  // month. We deliberately do NOT add today: partner-pairs come from /reports/query,
+  // which only returns finalized (isAllDayData=true) rows, so today is always
+  // intraday -> 0 rows. Fetching it just burns a slow ~120-210s call before the
+  // dates that actually have data; today's pairs land tomorrow, once it becomes
+  // "yesterday".
+  const allDatesThisMonth = datesForMonth(y, m);
   if (allDatesThisMonth.length === 0) {
     return { datesRequested: 0, datesSynced: 0, rowsUpserted: 0 };
   }
 
   const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
-  const toFetch = allDatesThisMonth.filter(
-    (d) => d === today || d === yesterday || !alreadySynced.has(d),
-  );
-  // Live window first (today, yesterday), then older catch-up dates ascending —
-  // so a tight cron time budget never starves the dashboard-critical dates.
-  const rank = (d: string) => (d === today ? 0 : d === yesterday ? 1 : 2);
+  // Always re-fetch yesterday (XDASH keeps reattributing it for hours after
+  // midnight); otherwise fetch any day still missing rows.
+  const toFetch = allDatesThisMonth.filter((d) => d === yesterday || !alreadySynced.has(d));
+  // Yesterday first (freshest finalized, dashboard-relevant), then oldest-missing
+  // ascending so a tight budget always makes forward progress on data-bearing dates.
+  const rank = (d: string) => (d === yesterday ? 0 : 1);
   toFetch.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 
   if (toFetch.length === 0) {
@@ -195,9 +207,9 @@ export async function syncPartnerPairsData(
   let rowsUpserted = 0;
   let datesSynced = 0;
   for (let i = 0; i < toFetch.length; i++) {
-    if (options?.deadlineMs != null && Date.now() >= options.deadlineMs) {
+    if (options?.deadlineMs != null && options.deadlineMs - Date.now() < CRON_PAIRS_MIN_REMAINING_MS) {
       console.log(
-        `[partner-pairs-sync] Time budget reached after ${datesSynced}/${toFetch.length} date(s); stopping (remainder drains next run).`,
+        `[partner-pairs-sync] Budget headroom < ${CRON_PAIRS_MIN_REMAINING_MS / 1000}s after ${datesSynced}/${toFetch.length} date(s); stopping (remainder drains next run).`,
       );
       break;
     }

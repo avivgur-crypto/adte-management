@@ -6,6 +6,10 @@
       "schedule": "*/30 * * * *"
     },
     {
+      "path": "/api/cron/pairs",
+      "schedule": "20,50 * * * *"
+    },
+    {
       "path": "/api/auto-sync?force=true&source=cron",
       "schedule": "20 0 * * *"
     },
