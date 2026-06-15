@@ -432,6 +432,12 @@ export interface ReportPairRow {
 const REPORT_RETRY_ON_STATUS = [500, 502, 503, 504];
 const REPORT_RETRY_ATTEMPTS = 2;
 const REPORT_RETRY_DELAY_MS = 8000;
+// Per-attempt timeout for the report/pairs fetch. The backup backend answers a
+// COLD /reports/query in ~120-166s (warm ~2s via its 5-min cache); the old 120s
+// ceiling aborted cold queries before they returned, so pairs never landed. 210s
+// clears the cold latency and still fits the 300s function ceiling because report
+// fetches run ONE date per invocation (paired with retries: 1, so no stacking).
+const REPORT_FETCH_TIMEOUT_MS = 210_000;
 
 /**
  * Fetch one day of partner data via the Reports API (lighter than partners/demand + partners/supply).
@@ -449,11 +455,15 @@ export async function fetchReportForDate(
 
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
-    const response = await fetchWithRetry(url, {
-      method: "POST",
-      headers: await buildHeaders(),
-      body,
-    });
+    const response = await fetchWithRetry(
+      url,
+      {
+        method: "POST",
+        headers: await buildHeaders(),
+        body,
+      },
+      { timeoutMs: REPORT_FETCH_TIMEOUT_MS, retries: 1 },
+    );
 
     if (response.ok) {
       const raw = (await response.json()) as unknown;
@@ -507,11 +517,15 @@ export async function fetchReportPairsForDateRange(
     const url = `${XDASH_API_BASE}${path}`;
 
     for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
-      const response = await fetchWithRetry(url, {
-        method: "POST",
-        headers: await buildHeaders(),
-        body,
-      });
+      const response = await fetchWithRetry(
+        url,
+        {
+          method: "POST",
+          headers: await buildHeaders(),
+          body,
+        },
+        { timeoutMs: REPORT_FETCH_TIMEOUT_MS, retries: 1 },
+      );
 
       if (response.ok) {
         const raw = (await response.json()) as unknown;
@@ -759,13 +773,13 @@ const HOME_OVERVIEW_RETRY_DELAY_MS = 2000;
  * Per-attempt budget for `fetchHomeForDate` on interactive paths (dashboard
  * `refreshTodayHome`). Bounded to fit the page segment `maxDuration` (300s):
  * worst case per date ≈ statusAttempts × networkRetries × timeout
- * = 2 × 1 × 120s + delays ≈ 244s (today + yesterday run in parallel, so the
- * action duration is max of the two, not the sum). The 120s per-attempt ceiling
- * still comfortably covers the backup backend's slow-but-valid ~100s responses;
- * we just no longer stack enough retries to blow past 300s and 504 the dashboard.
+ * = 1 × 1 × 210s + delays ≈ 210s (today + yesterday run in parallel, so the
+ * action duration is max of the two, not the sum). The backup backend now answers
+ * a COLD /home/overview in ~120-166s, so the old 120s ceiling aborted valid
+ * responses; 210s clears that latency while staying under the 300s function limit.
  */
-const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 120_000;
-const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 2;
+const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 210_000;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 1;
 const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 2000;
 const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 1;
 const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRY_DELAY_MS = 2000;
