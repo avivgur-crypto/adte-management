@@ -6,12 +6,16 @@
       "schedule": "*/30 * * * *"
     },
     {
+      "path": "/api/cron/pairs",
+      "schedule": "20,50 * * * *"
+    },
+    {
       "path": "/api/auto-sync?force=true&source=cron",
-      "schedule": "0 0 * * *"
+      "schedule": "20 0 * * *"
     },
     {
       "path": "/api/cron/golden-sync",
-      "schedule": "0 4 * * *"
+      "schedule": "10 4 * * *"
     },
     {
       "path": "/api/cron/morning-summary",
@@ -23,11 +27,11 @@
     },
     {
       "path": "/api/cron/self-heal",
-      "schedule": "0 * * * *"
+      "schedule": "15 * * * *"
     },
     {
       "path": "/api/cron/verify-health",
-      "schedule": "30 4 * * *"
+      "schedule": "40 4 * * *"
     }
   ]
 }

@@ -248,15 +248,23 @@ export interface PartnerRow {
 // ============================================================================
 
 const XDASH_USE_REPORTS = (process.env.XDASH_USE_REPORTS ?? "false").toLowerCase() === "true";
-const XDASH_REPORT_PATH = process.env.XDASH_REPORT_PATH ?? "/report";
+// Canonical NestJS route on the XDASH backend: POST /reports/query → { data, totals, meta }.
+// Do NOT point this at /home/topTags — that returns a `selectedDates[]` shape that
+// getReportRows can't parse, silently yielding 0 pairs (200 OK, empty result).
+const XDASH_REPORT_PATH = process.env.XDASH_REPORT_PATH ?? "/reports/query";
 
-const REPORT_PATH_404_FALLBACKS = ["/reports", "/reports/run", "/api/report", "/api/reports"];
+// 404 fallback: if XDASH_REPORT_PATH is misconfigured, still try the canonical route.
+const REPORT_PATH_404_FALLBACKS = ["/reports/query"];
 
 /** Report payload shape required by XDASH API: dimensions camelCase, aggregationPeriod, metrics include profit. */
 const REPORT_DIMENSIONS = ["supplyTag", "demandTag"] as const;
 const REPORT_AGGREGATION_PERIOD = "sum";
-/** Enum values for POST /report `metrics` — use camelCase `netProfit` (lowercase `netprofit` returns 400). */
-const REPORT_METRICS = ["revenue", "cost", "impressions", "profit", "netProfit"] as const;
+// Mirrors the reference frontend's DEFAULT_METRICS. The backend always groups by
+// demand/supply and sums raw metrics regardless of the requested `metrics`, so this
+// set never changes the row count (verified against /reports/query). `profit` comes
+// back server-side (revenue - cost); net metrics are omitted as unnecessary. Profit
+// is also re-derived from the response in resolveReportProfit as a safety net.
+const REPORT_METRICS = ["revenue", "cost", "impressions", "profit"] as const;
 
 function buildReportPayload(date: string): string {
   return JSON.stringify({
@@ -418,9 +426,18 @@ export interface ReportPairRow {
   profit?: number;
 }
 
-const REPORT_RETRY_ON_STATUS = [502, 503, 504];
+// Include 500: the backup /report occasionally throws a transient Internal Server Error
+// that succeeds on a quick retry (observed in prod logs). Without it a single 500 fails the
+// whole date instead of being absorbed by the retry.
+const REPORT_RETRY_ON_STATUS = [500, 502, 503, 504];
 const REPORT_RETRY_ATTEMPTS = 2;
 const REPORT_RETRY_DELAY_MS = 8000;
+// Per-attempt timeout for the report/pairs fetch. The backup backend answers a
+// COLD /reports/query in ~120-166s (warm ~2s via its 5-min cache); the old 120s
+// ceiling aborted cold queries before they returned, so pairs never landed. 210s
+// clears the cold latency and still fits the 300s function ceiling because report
+// fetches run ONE date per invocation (paired with retries: 1, so no stacking).
+const REPORT_FETCH_TIMEOUT_MS = 210_000;
 
 /**
  * Fetch one day of partner data via the Reports API (lighter than partners/demand + partners/supply).
@@ -438,11 +455,15 @@ export async function fetchReportForDate(
 
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
-    const response = await fetchWithRetry(url, {
-      method: "POST",
-      headers: await buildHeaders(),
-      body,
-    });
+    const response = await fetchWithRetry(
+      url,
+      {
+        method: "POST",
+        headers: await buildHeaders(),
+        body,
+      },
+      { timeoutMs: REPORT_FETCH_TIMEOUT_MS, retries: 1 },
+    );
 
     if (response.ok) {
       const raw = (await response.json()) as unknown;
@@ -496,11 +517,15 @@ export async function fetchReportPairsForDateRange(
     const url = `${XDASH_API_BASE}${path}`;
 
     for (let attempt = 1; attempt <= REPORT_RETRY_ATTEMPTS; attempt++) {
-      const response = await fetchWithRetry(url, {
-        method: "POST",
-        headers: await buildHeaders(),
-        body,
-      });
+      const response = await fetchWithRetry(
+        url,
+        {
+          method: "POST",
+          headers: await buildHeaders(),
+          body,
+        },
+        { timeoutMs: REPORT_FETCH_TIMEOUT_MS, retries: 1 },
+      );
 
       if (response.ok) {
         const raw = (await response.json()) as unknown;
@@ -516,6 +541,24 @@ export async function fetchReportPairsForDateRange(
           if (revenue <= 0 && cost <= 0) continue;
           const profit = resolveReportProfit(row, revenue, cost);
           pairs.push({ demandPartner, supplyPartner, revenue, cost, profit });
+        }
+
+        // Diagnostic: tell "backend returned no rows" apart from "parser dropped them".
+        // rawRows > 0 with pairs = 0 ⇒ shape/filter issue; rawRows = 0 ⇒ backend sent nothing.
+        if (pairs.length === 0) {
+          syncProLog({
+            event: "sync_pro.report_pairs.empty",
+            branch_type: "partner_pairs_sync",
+            status: "ok",
+            message: `Report pairs empty for ${startDate}..${endDate} via ${path} (rawRows=${rows.length}).`,
+            detail: {
+              startDate,
+              endDate,
+              path,
+              rawRows: rows.length,
+              sampleRow: rows[0] ? JSON.stringify(rows[0]).slice(0, 500) : null,
+            },
+          });
         }
         return pairs;
       }
@@ -726,11 +769,19 @@ const HOME_OVERVIEW_RETRY_ON_STATUS = [502, 503, 504];
 const HOME_OVERVIEW_RETRY_ATTEMPTS = 3;
 const HOME_OVERVIEW_RETRY_DELAY_MS = 2000;
 
-/** Per-attempt ceiling for `fetchHomeForDate` on interactive paths (manual refresh). Align with dashboard `maxDuration` 300s. */
-const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 120_000;
-const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 3;
+/**
+ * Per-attempt budget for `fetchHomeForDate` on interactive paths (dashboard
+ * `refreshTodayHome`). Bounded to fit the page segment `maxDuration` (300s):
+ * worst case per date ≈ statusAttempts × networkRetries × timeout
+ * = 1 × 1 × 210s + delays ≈ 210s (today + yesterday run in parallel, so the
+ * action duration is max of the two, not the sum). The backup backend now answers
+ * a COLD /home/overview in ~120-166s, so the old 120s ceiling aborted valid
+ * responses; 210s clears that latency while staying under the 300s function limit.
+ */
+const HOME_OVERVIEW_INTERACTIVE_TIMEOUT_MS = 210_000;
+const HOME_OVERVIEW_INTERACTIVE_STATUS_ATTEMPTS = 1;
 const HOME_OVERVIEW_INTERACTIVE_STATUS_RETRY_DELAY_MS = 2000;
-const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 3;
+const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRIES = 1;
 const HOME_OVERVIEW_INTERACTIVE_NETWORK_RETRY_DELAY_MS = 2000;
 
 export type FetchHomeOverviewOpts = {
