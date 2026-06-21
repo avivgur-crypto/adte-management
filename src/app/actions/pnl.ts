@@ -1,12 +1,22 @@
 "use server";
 
 import { cache } from "react";
+import { unstable_cache } from "next/cache";
 import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase";
 import { monthKeysSchema } from "@/lib/validation";
 import { safeErrorMessage } from "@/lib/validation";
 
 const PNL_DEBUG = process.env.PNL_DEBUG === "1";
+
+/**
+ * Cross-request cache for raw `pnl_data` reads. PNL data is historical monthly
+ * data that changes only on sync, so a generous TTL is safe. The `financial-data`
+ * tag means cron syncs / dashboards that call `revalidateTag(FINANCIAL_TAG)`
+ * automatically invalidate this cache too — no stale leftovers.
+ */
+const PNL_CACHE_TTL_SECONDS = 86_400;
+const PNL_CACHE_TAGS = ["financial-data", "pnl-data"];
 
 function debug<T>(label: string, run: () => T): T {
   if (!PNL_DEBUG) return run();
@@ -190,19 +200,38 @@ function buildSummary(rows: Map<string, { category: string; label: string; amoun
   };
 }
 
+/** Raw, un-aggregated `pnl_data` read for one entity + month set. */
+async function fetchPnlRows(entity: PnlEntity, months: string[]): Promise<PnlDbRow[]> {
+  const res = await supabaseAdmin
+    .from("pnl_data")
+    .select("month,category,label,amount,updated_at")
+    .eq("entity", entity)
+    .in("month", months);
+  if (res.error) throw new Error(res.error.message);
+  return (res.data ?? []) as PnlDbRow[];
+}
+
+/**
+ * Cached wrapper around {@link fetchPnlRows}. Cache key includes the entity and a
+ * sorted, joined month string so equivalent selections share an entry. Tagged so
+ * `revalidateTag('financial-data')` (or `'pnl-data'`) clears it on the next request.
+ */
+function fetchPnlRowsCached(entity: PnlEntity, months: string[]): Promise<PnlDbRow[]> {
+  const monthsKey = [...months].sort().join("|");
+  return unstable_cache(
+    () => fetchPnlRows(entity, months),
+    ["pnl-data", entity, monthsKey],
+    { revalidate: PNL_CACHE_TTL_SECONDS, tags: PNL_CACHE_TAGS },
+  )();
+}
+
 const getPnlSnapshotCached = cache(async (monthsKey: string, entity: PnlEntity): Promise<PnlSnapshot> => {
   const months = monthsKey.split("|").filter(Boolean);
   const currentMonths = new Set(months);
 
-  const data = await debugAsync(`db.fetch entity=${entity} months=${months.length}`, async () => {
-    const res = await supabaseAdmin
-      .from("pnl_data")
-      .select("month,category,label,amount,updated_at")
-      .eq("entity", entity)
-      .in("month", months);
-    if (res.error) throw new Error(res.error.message);
-    return (res.data ?? []) as PnlDbRow[];
-  });
+  const data = await debugAsync(`db.fetch entity=${entity} months=${months.length}`, async () =>
+    fetchPnlRowsCached(entity, months),
+  );
 
   return debug(`derive entity=${entity} rows=${data.length}`, () => {
     const currentMap = aggregateRows(data, currentMonths);
