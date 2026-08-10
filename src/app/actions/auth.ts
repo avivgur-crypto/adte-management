@@ -98,8 +98,6 @@ const getProfileRoleCached = (userId: string) =>
  * repeat calls skip the second round-trip entirely.
  */
 export async function getSessionUser(): Promise<SessionUser> {
-  // TEMP [perf] instrumentation — remove after measurement pass.
-  const perfT0 = performance.now();
   const supabase = await createClient();
   const {
     data: { user },
@@ -107,7 +105,6 @@ export async function getSessionUser(): Promise<SessionUser> {
   if (!user) return null;
 
   const role = await getProfileRoleCached(user.id);
-  console.log(`[perf] getSessionUser: ${(performance.now() - perfT0).toFixed(1)}ms`);
   return {
     id: user.id,
     email: user.email ?? "",
