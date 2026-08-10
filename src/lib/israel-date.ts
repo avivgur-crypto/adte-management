@@ -92,9 +92,49 @@ export function firstUtcInstantOfIsraelCalendarDate(ymd: string): number {
 }
 
 /**
+ * Reused formatter for Israel wall-clock reads.  Intl.DateTimeFormat
+ * construction is one of the most expensive operations in JS (~50µs); the
+ * previous implementation of `utcMillisForIsraelWallClock` constructed
+ * ~24,500 of them per call (minute sweep + 1s refine loop) which cost
+ * 1–2 SECONDS of blocking CPU per call and dominated getComparisonData.
+ */
+const israelWallPartsFmt = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TZ_IL,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+/** Israel wall-clock at a UTC instant, re-encoded as a UTC epoch for arithmetic. */
+function israelWallClockAsUtcMs(ms: number): number {
+  const parts = israelWallPartsFmt.formatToParts(new Date(ms));
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "0";
+  return Date.UTC(
+    parseInt(get("year"), 10),
+    parseInt(get("month"), 10) - 1,
+    parseInt(get("day"), 10),
+    parseInt(get("hour"), 10),
+    parseInt(get("minute"), 10),
+    parseInt(get("second"), 10),
+  );
+}
+
+/**
  * UTC epoch milliseconds for the instant when Asia/Jerusalem reads `isoDate` at
- * `hour:minute:second` wall clock. Coarse minute sweep + 1s refinement handles
- * 23/24/25h civil days.
+ * `hour:minute:second` wall clock.
+ *
+ * Fixed-point iteration: start from a UTC guess, read the Israel wall clock at
+ * that guess, shift by the difference, repeat.  Real timezone offsets are
+ * minute-aligned so this converges exactly in ≤2 steps for any wall time that
+ * exists.  For the one hour per year erased by the DST spring-forward jump the
+ * loop oscillates between the two instants ±60min from the requested wall
+ * time and returns one of them — equivalent for callers matching within a
+ * time window (the Pulse snapshot matcher, this function's only consumer).
  */
 export function utcMillisForIsraelWallClock(
   isoDate: string,
@@ -102,50 +142,20 @@ export function utcMillisForIsraelWallClock(
   minute: number,
   second: number,
 ): number {
-  const wantSec = hour * 3600 + minute * 60 + second;
-  const dayStart = firstUtcInstantOfIsraelCalendarDate(isoDate);
-  const nextDay = addCalendarDaysToIsoDate(isoDate, 1);
-  const dayEnd = firstUtcInstantOfIsraelCalendarDate(nextDay);
+  const [Y, M, D] = isoDate.split("-").map(Number);
+  if (!Number.isFinite(Y) || !Number.isFinite(M) || !Number.isFinite(D)) {
+    throw new Error(`Invalid YYYY-MM-DD: ${isoDate}`);
+  }
+  const targetWallAsUtc = Date.UTC(Y!, M! - 1, D!, hour, minute, second);
 
-  function secondsSinceMidnightAt(ms: number, ymd: string): number | null {
-    if (getIsraelCalendarDateAtUtc(ms) !== ymd) return null;
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: TZ_IL,
-      hour: "numeric",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(new Date(ms));
-    const get = (type: Intl.DateTimeFormatPartTypes) =>
-      parts.find((p) => p.type === type)?.value ?? "";
-    const h = parseInt(get("hour"), 10) || 0;
-    const mi = parseInt(get("minute"), 10) || 0;
-    const s = parseInt(get("second"), 10) || 0;
-    return h * 3600 + mi * 60 + s;
+  // Israel is UTC+2 (standard) / UTC+3 (DST) — start from the standard offset.
+  let guess = targetWallAsUtc - 2 * 3_600_000;
+  for (let i = 0; i < 4; i++) {
+    const diff = targetWallAsUtc - israelWallClockAsUtcMs(guess);
+    if (diff === 0) return guess;
+    guess += diff;
   }
-
-  let bestMs = dayStart;
-  let bestDiff = Infinity;
-  for (let t = dayStart; t < dayEnd; t += 60_000) {
-    const sec = secondsSinceMidnightAt(t, isoDate);
-    if (sec == null) continue;
-    const d = Math.abs(sec - wantSec);
-    if (d < bestDiff) {
-      bestDiff = d;
-      bestMs = t;
-    }
-  }
-  const refineRadius = 90 * 60 * 1000;
-  for (let t = bestMs - refineRadius; t <= bestMs + refineRadius; t += 1000) {
-    const sec = secondsSinceMidnightAt(t, isoDate);
-    if (sec == null) continue;
-    const d = Math.abs(sec - wantSec);
-    if (d < bestDiff) {
-      bestDiff = d;
-      bestMs = t;
-    }
-  }
-  return bestMs;
+  return guess;
 }
 
 /**
