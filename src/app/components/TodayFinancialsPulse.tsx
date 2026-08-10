@@ -6,7 +6,12 @@ import {
   AnimatedCurrency,
   AnimatedNumberText,
 } from "@/app/components/AnimatedCurrency";
-import type { ComparisonData, DailyProfitGoalPace, TodayHomeRow } from "@/app/actions/financials";
+import type {
+  ComparisonData,
+  DailyProfitGoalPace,
+  TodayHomeRow,
+  TodayPulseState,
+} from "@/app/actions/financials";
 
 const PERIODS = [
   { key: 1 as const, label: "1d" },
@@ -161,6 +166,58 @@ const ESTIMATE_LEGEND =
 
 const MARGIN_DELTA_TOOLTIP =
   "Margin change vs the comparison date's margin at the same Israel hour (not full-day). Shown as percentage points; value in parentheses is the past day's margin at this time of day.";
+
+const PENDING_FOOTNOTE =
+  "First XDASH sync of the day hasn't completed yet — data will appear automatically.";
+
+/** LIVE / SYNCING / AWAITING badge — same shell dimensions in all states so the header never jumps. */
+function PulseStateBadge({ state }: { state: TodayPulseState }) {
+  if (state === "live") {
+    return (
+      <div
+        className="inline-flex h-8 min-w-[5.25rem] shrink-0 items-center justify-center gap-2 rounded-full border border-emerald-500/35 bg-emerald-500/12 px-3"
+        aria-live="polite"
+      >
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-300" />
+        </span>
+        <span className="text-[11px] font-bold uppercase tracking-widest text-emerald-300">
+          Live
+        </span>
+      </div>
+    );
+  }
+  if (state === "stale_snapshot") {
+    return (
+      <div
+        className="inline-flex h-8 min-w-[5.25rem] shrink-0 items-center justify-center gap-2 rounded-full border border-amber-500/35 bg-amber-500/12 px-3"
+        aria-live="polite"
+        title="Showing the latest hourly snapshot for today — a fresh sync hasn't landed yet."
+      >
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-300" />
+        </span>
+        <span className="text-[11px] font-bold uppercase tracking-widest text-amber-300">
+          Syncing
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="inline-flex h-8 min-w-[5.25rem] shrink-0 items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.06] px-3"
+      aria-live="polite"
+      title={PENDING_FOOTNOTE}
+    >
+      <span className="relative inline-flex h-2 w-2 shrink-0 animate-pulse rounded-full bg-white/40" />
+      <span className="whitespace-nowrap text-[11px] font-bold uppercase tracking-widest text-white/50">
+        Awaiting first sync
+      </span>
+    </div>
+  );
+}
 
 /** Inline asterisk that explains itself on hover. */
 function EstimateAsterisk() {
@@ -401,6 +458,12 @@ export default function TodayFinancialsPulse({
 }) {
   const [period, setPeriod] = useState<PeriodKey>(1);
 
+  // A null `comparison` (fetch failure) has no trustworthy today value either —
+  // render it as pending rather than fabricating $0.00.
+  const todayState: TodayPulseState = comparison?.todayState ?? "pending";
+  const isPending = todayState === "pending";
+  const asOfHour = comparison?.todayAsOfHour;
+
   const todayRow = comparison?.today ?? null;
   const revenue = todayRow?.revenue ?? 0;
   const cost = todayRow?.cost ?? 0;
@@ -428,13 +491,28 @@ export default function TodayFinancialsPulse({
     [revenue, profit, pastRow],
   );
 
+  // PENDING: no real today value exists — comparison chips against a nonexistent
+  // value are meaningless, so collapse them to neutral "—" pills (height-stable).
+  const dRevShown: DeltaResult = isPending ? { kind: "none" } : dRev;
+  const dCostShown: DeltaResult = isPending ? { kind: "none" } : dCost;
+  const dProfitShown: DeltaResult = isPending ? { kind: "none" } : dProfit;
+  const dMarginShown: MarginDeltaResult = isPending ? { kind: "na" } : dMargin;
+
   const dailyTarget = dailyProfitGoalPace?.dailyAverageTarget ?? 0;
   const profitGoalRing =
-    dailyTarget > 0 ? (
+    !isPending && dailyTarget > 0 ? (
       <DailyProfitGoalRing profit={profit} dailyTarget={dailyTarget} />
     ) : null;
 
-  const hasEstimate = pastRow?.isEstimate ?? pastRow?.source === "linear_estimate";
+  const hasEstimate =
+    !isPending && (pastRow?.isEstimate ?? pastRow?.source === "linear_estimate");
+
+  /** Neutral placeholder with the exact main-figure typography so the card height never jumps. */
+  const pendingDash = (
+    <span className={`${PULSE_VALUE_BASE} block font-bold text-white/35`} aria-label="No data yet">
+      —
+    </span>
+  );
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.1] bg-[var(--adte-funnel-bg)] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] sm:p-6">
@@ -469,18 +547,12 @@ export default function TodayFinancialsPulse({
               </button>
             ))}
           </div>
-          <div
-            className="inline-flex h-8 min-w-[5.25rem] shrink-0 items-center justify-center gap-2 rounded-full border border-emerald-500/35 bg-emerald-500/12 px-3"
-            aria-live="polite"
-          >
-            <span className="relative flex h-2 w-2 shrink-0">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-300" />
+          {todayState === "stale_snapshot" && asOfHour != null && (
+            <span className="text-[11px] font-medium tabular-nums text-white/40">
+              as of {asOfHour}:00
             </span>
-            <span className="text-[11px] font-bold uppercase tracking-widest text-emerald-300">
-              Live
-            </span>
-          </div>
+          )}
+          <PulseStateBadge state={todayState} />
         </div>
       </div>
 
@@ -488,58 +560,83 @@ export default function TodayFinancialsPulse({
         <MetricBlock
           label="Today's revenue"
           primary={
-            <AnimatedCurrency
-              value={revenue}
-              className={`${PULSE_VALUE_BASE} font-bold text-white`}
-              minimumFractionDigits={2}
-              maximumFractionDigits={2}
-            />
+            isPending ? (
+              pendingDash
+            ) : (
+              <AnimatedCurrency
+                value={revenue}
+                className={`${PULSE_VALUE_BASE} font-bold text-white`}
+                minimumFractionDigits={2}
+                maximumFractionDigits={2}
+              />
+            )
           }
-          delta={dRev}
+          delta={dRevShown}
         />
         <MetricBlock
           label="Total cost"
           primary={
-            <AnimatedCurrency
-              value={cost}
-              className={`${PULSE_VALUE_BASE} font-bold text-white`}
-              minimumFractionDigits={2}
-              maximumFractionDigits={2}
-            />
+            isPending ? (
+              pendingDash
+            ) : (
+              <AnimatedCurrency
+                value={cost}
+                className={`${PULSE_VALUE_BASE} font-bold text-white`}
+                minimumFractionDigits={2}
+                maximumFractionDigits={2}
+              />
+            )
           }
-          delta={dCost}
+          delta={dCostShown}
         />
         <MetricBlock
           label="Gross profit"
           labelPrefix={profitGoalRing}
           primary={
-            <AnimatedCurrency
-              value={profit}
-              className={`${PULSE_VALUE_BASE} ${
-                profit >= 0
-                  ? "font-semibold text-white [text-shadow:0_0_24px_rgba(74,222,128,0.25)]"
-                  : "font-semibold text-red-400"
-              }`}
-              minimumFractionDigits={2}
-              maximumFractionDigits={2}
-            />
+            isPending ? (
+              pendingDash
+            ) : (
+              <AnimatedCurrency
+                value={profit}
+                className={`${PULSE_VALUE_BASE} ${
+                  profit >= 0
+                    ? "font-semibold text-white [text-shadow:0_0_24px_rgba(74,222,128,0.25)]"
+                    : "font-semibold text-red-400"
+                }`}
+                minimumFractionDigits={2}
+                maximumFractionDigits={2}
+              />
+            )
           }
-          delta={dProfit}
+          delta={dProfitShown}
         />
         <MetricBlock
           label="Profit margin"
           primary={
-            <AnimatedNumberText
-              value={revenue === 0 ? 0 : (profit / revenue) * 100}
-              format={fmtMarginPctMain}
-              className={`${PULSE_VALUE_BASE} font-bold ${
-                profit >= 0 ? "text-emerald-300/95" : "text-red-400"
-              }`}
-            />
+            isPending ? (
+              pendingDash
+            ) : (
+              <AnimatedNumberText
+                value={revenue === 0 ? 0 : (profit / revenue) * 100}
+                format={fmtMarginPctMain}
+                className={`${PULSE_VALUE_BASE} font-bold ${
+                  profit >= 0 ? "text-emerald-300/95" : "text-red-400"
+                }`}
+              />
+            )
           }
-          marginDelta={dMargin}
+          marginDelta={dMarginShown}
         />
       </div>
+
+      {isPending && (
+        <p
+          className="relative mt-3 text-[11px] font-medium text-white/40"
+          aria-label={PENDING_FOOTNOTE}
+        >
+          {PENDING_FOOTNOTE}
+        </p>
+      )}
 
       {hasEstimate && (
         <p

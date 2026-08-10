@@ -790,10 +790,60 @@ export async function getTodayHomeTotals(): Promise<TodayHomeRow | null> {
   return getHomeRowForDate(getIsraelDate());
 }
 
+/**
+ * Pulse presentation state for "today":
+ *  - "live"           → today's daily_home_totals row exists and is non-vacuous.
+ *  - "stale_snapshot" → row missing/vacuous but an hourly snapshot exists for today;
+ *                       `row` carries the latest snapshot values, `asOfHour` its hour.
+ *  - "pending"        → no row and no snapshot (typical 00:00 → first successful sync).
+ *                       The UI must NOT render this as $0.00.
+ */
+export type TodayPulseState = "live" | "stale_snapshot" | "pending";
+export type TodayPulseData = {
+  state: TodayPulseState;
+  row: TodayHomeRow | null;          // live row, or snapshot-derived row, or null
+  asOfHour?: number;                 // set when state === "stale_snapshot"
+};
+
+export async function getTodayPulse(): Promise<TodayPulseData> {
+  const today = getIsraelDate();
+  const row = await getHomeRowForDate(today);
+  const rowUsable = row != null && !(row.revenue === 0 && row.cost === 0 && row.impressions === 0);
+  if (rowUsable) return { state: "live", row };
+
+  // Fallback: latest hourly snapshot for today (guards never write bad snapshots,
+  // so any snapshot present is trustworthy last-known-good intraday data).
+  const { data } = await supabaseAdmin
+    .from("hourly_snapshots")
+    .select("date, hour, revenue, cost, profit, impressions")
+    .eq("date", today)
+    .order("hour", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (data) {
+    return {
+      state: "stale_snapshot",
+      asOfHour: Number(data.hour),
+      row: {
+        date: today,
+        revenue: Number(data.revenue ?? 0),
+        cost: Number(data.cost ?? 0),
+        profit: Number(data.profit ?? 0),
+        impressions: Number(data.impressions ?? 0),
+      },
+    };
+  }
+  return { state: "pending", row: null };
+}
+
 /** Pulse comparison: today + past rows keyed by day offset (e.g. 1 = yesterday, 7, 28). */
 export type ComparisonData = {
   today: TodayHomeRow | null;
   past: Record<number, TodayHomeRow | null>;
+  /** How `today` was resolved — drives the LIVE / SYNCING / AWAITING badge in the pulse. */
+  todayState: TodayPulseState;
+  /** Hour (0–23 IL) of the snapshot backing `today` when todayState === "stale_snapshot". */
+  todayAsOfHour?: number;
 };
 
 /**
@@ -829,8 +879,10 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
   const dayElapsedFraction = getIsraelDayElapsedFraction();
   const clock = getIsraelDateTimeParts();
 
-  const [todayRow, hourlyByDate, dailyByDate] = await Promise.all([
-    getHomeRowForDate(todayKey),
+  const [todayPulse, hourlyByDate, dailyByDate] = await Promise.all([
+    // State-aware today read: live row → snapshot fallback → pending. Never
+    // surfaces "row missing" as a zero row (the 00:00 → first-sync blind spot).
+    getTodayPulse(),
     getClosestPastSnapshotsByCreatedAt(pastKeys, clock),
     // Always load `daily_home_totals` for past comparison dates — same table + columns
     // semantics as Daily Progress (`_fetchAllDailyByMonth`), so we can override bogus
@@ -891,10 +943,15 @@ export async function getComparisonData(offsets: number[] = [1, 7, 28]): Promise
   }
 
   console.log(
-    `[getComparisonData] today=${todayKey} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} snapshot ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m (120m span) dayFrac=${(dayElapsedFraction * 100).toFixed(2)}% revalidate=${revalidateAfterVacuousOverride} | ${auditEntries.join(" | ")}`,
+    `[getComparisonData] today=${todayKey} todayState=${todayPulse.state} IDT clock=${clock.hour}:${String(clock.minute).padStart(2, "0")}:${String(clock.second).padStart(2, "0")} snapshot ±${LIVE_VS_LIVE_SYNC_WINDOW_MS / 60_000}m (120m span) dayFrac=${(dayElapsedFraction * 100).toFixed(2)}% revalidate=${revalidateAfterVacuousOverride} | ${auditEntries.join(" | ")}`,
   );
 
-  return { today: todayRow, past };
+  return {
+    today: todayPulse.row,
+    past,
+    todayState: todayPulse.state,
+    todayAsOfHour: todayPulse.asOfHour,
+  };
 }
 
 /**
