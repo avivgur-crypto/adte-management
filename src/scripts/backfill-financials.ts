@@ -76,6 +76,10 @@ async function main() {
     const date = dates[i]!;
     try {
       const { revenue, cost, profit, impressions } = await fetchHomeForDate(date);
+      if (revenue === 0 && cost === 0 && impressions === 0) {
+        console.warn(`[Backfill] ${date}: all-zero payload — skipped (preserving existing row).`);
+        continue;
+      }
       const { error } = await supabase.from("daily_home_totals").upsert(
         { date, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
