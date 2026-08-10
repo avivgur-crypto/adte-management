@@ -1028,7 +1028,45 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
     );
 
     let upsertedRows = 0;
+    let skippedVacuous = 0;
     for (const { date, revenue, cost, profit, impressions } of homeByDate) {
+      // --- Last-Known-Good guard --------------------------------------------
+      // XDASH under load can return a syntactically-OK but empty payload
+      // (all-zero metrics). Never let that overwrite an existing healthy row.
+      const incomingVacuous = revenue === 0 && cost === 0 && impressions === 0;
+      if (incomingVacuous) {
+        const existing = await getHomeRowForDate(date);
+        const existingHasData =
+          existing != null &&
+          !(existing.revenue === 0 && existing.cost === 0 && existing.impressions === 0);
+        if (existingHasData) {
+          skippedVacuous += 1;
+          syncProLog({
+            event: "sync_pro.refresh_today_home.skip_vacuous",
+            branch_type: "refresh_today_home",
+            status: "ok",
+            message: "Empty XDASH payload — preserved last-known-good row.",
+            detail: {
+              date,
+              existing: {
+                revenue: existing.revenue,
+                cost: existing.cost,
+                profit: existing.profit,
+                impressions: existing.impressions,
+              },
+            },
+          });
+          console.warn(
+            `[refreshTodayHome] ${date}: empty payload (0/0/0) — kept existing row ` +
+              `(rev=$${existing.revenue.toFixed(2)}); skipped upsert.`,
+          );
+          continue; // preserve DB; do NOT count as upserted; no hourly snapshot
+        }
+        // No existing row (or existing already empty) → an all-zero write is
+        // accurate for a brand-new/empty day; fall through and upsert it.
+      }
+      // ----------------------------------------------------------------------
+
       const { error } = await supabaseAdmin.from("daily_home_totals").upsert(
         { date, revenue, cost, profit, impressions, created_at: syncedAt },
         { onConflict: "date" },
@@ -1076,6 +1114,10 @@ export async function refreshTodayHome(): Promise<RefreshTodayHomeResult> {
         );
       }
     }
+
+    console.log(
+      `[refreshTodayHome] done: upserted=${upsertedRows} skippedVacuous=${skippedVacuous}`,
+    );
 
     await recordSyncRun({
       source: "refresh_today_home",

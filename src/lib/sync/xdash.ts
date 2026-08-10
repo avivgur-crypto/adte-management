@@ -61,8 +61,9 @@ const INTER_BATCH_DELAY_MS = 2000;
  *   - If `force === true` → bypass entirely (backfill / golden_sync explicitly opt in).
  *   - If existing.revenue == 0 → allow (new date or never-synced).
  *   - If new.revenue ≥ existing.revenue × THRESHOLD → allow (covers growth + small clawbacks).
- *   - If new.revenue <  existing.revenue × THRESHOLD AND date === today → allow (intraday quirk),
- *     but emit a soft `today_dip` log so we can see it.
+ *   - If new.revenue <  existing.revenue × THRESHOLD AND date === today → BLOCK: a cumulative
+ *     total can't shrink >15% intraday, so treat it as a partial response and preserve the
+ *     last-known-good row (`today_regression_blocked`).
  *   - Otherwise → BLOCK the upsert for that date and emit a high-priority error log.
  *
  * Threshold tunable by env (`XDASH_REGRESSION_THRESHOLD`, e.g. `0.85`).
@@ -637,25 +638,37 @@ export async function syncHomeTotalsForDates(
       }
 
       if (row.date === today) {
-        // Today legitimately can't shrink (cumulative), but if it ever does we
-        // allow + log soft so the chart doesn't freeze on an old intraday read.
+        // Reaching here means ratio < THRESHOLD: a >15% drop on a CUMULATIVE
+        // metric. That can't legitimately happen intraday — it's the partial /
+        // degraded XDASH response failure mode (a present totals object with a
+        // too-low revenue because only some shards answered). Block it like a
+        // historical regression, but with a today-specific event so it's
+        // greppable and distinguishable from a historical partial.
+        blockedRows.push({
+          date: row.date,
+          new_revenue: row.revenue,
+          existing_revenue: existingRev,
+          ratio_pct: ratio * 100,
+        });
         syncProLog({
-          event: "sync_pro.xdash_sync.regression_guard.today_dip",
+          event: "sync_pro.xdash_sync.today_regression_blocked",
           branch_type: "xdash_sync",
-          status: "ok",
+          status: "error",
           message:
-            `Today (${row.date}) revenue dipped vs prior intraday read: ` +
-            `$${row.revenue.toFixed(2)} vs $${existingRev.toFixed(2)} ` +
-            `(${(ratio * 100).toFixed(1)}%)`,
+            `BLOCKED today (${row.date}): cumulative revenue dropped to ` +
+            `$${row.revenue.toFixed(2)} from $${existingRev.toFixed(2)} ` +
+            `(${(ratio * 100).toFixed(1)}%, threshold ${(REVENUE_REGRESSION_THRESHOLD * 100).toFixed(0)}%). ` +
+            `A cumulative daily total cannot legitimately shrink this much — treating as a ` +
+            `partial XDASH response and preserving the last-known-good row.`,
           detail: {
             date: row.date,
             new_revenue: row.revenue,
             existing_revenue: existingRev,
             ratio_pct: ratio * 100,
+            threshold_pct: REVENUE_REGRESSION_THRESHOLD * 100,
           },
         });
-        allowedRows.push(row);
-        continue;
+        continue; // do NOT push to allowedRows
       }
 
       // Block: historical date with a ≥15% revenue drop and no force flag.

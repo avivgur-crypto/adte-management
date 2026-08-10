@@ -928,8 +928,14 @@ export function mapHomeOverviewToHomeTotals(
 ): { revenue: number; cost: number; profit: number; impressions: number } {
   const totals = resolveHomeOverviewSelectedTotals(raw);
   if (!totals) {
-    console.warn(`[xdash-client] Home ${date}: missing overviewTotals.selectedDates.totals — returning zeros`);
-    return { revenue: 0, cost: 0, profit: 0, impressions: 0 };
+    // A missing `totals` object is a MALFORMED/degraded response (timeout race,
+    // truncated body, shape change) — NOT a real zero-revenue day (which arrives
+    // as a PRESENT `totals` object with 0 fields). Returning zeros here silently
+    // corrupts daily_home_totals. Throw so every caller's catch preserves the
+    // last-known-good row instead of overwriting it with zeros.
+    throw new Error(
+      `[xdash-client] Home ${date}: malformed response — missing overviewTotals.selectedDates.totals. Refusing to fabricate zeros.`,
+    );
   }
 
   const grossRevenue = Number(totals.revenue ?? 0);
