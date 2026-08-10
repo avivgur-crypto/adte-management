@@ -1,6 +1,6 @@
 "use client";
 
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "@/app/components/chart-kit";
 import { useMemo, useState } from "react";
 import type {
   PartnerConcentrationResult,

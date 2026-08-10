@@ -2,8 +2,12 @@
 
 import dynamic from "next/dynamic";
 
+// Both point at charts-bundle (the single recharts chunk) — see that module's doc.
 export const RevenueGoalChart = dynamic(
-  () => import("@/app/components/RevenueGoalChart"),
+  () =>
+    import("@/app/components/charts-bundle").then((m) => ({
+      default: m.RevenueGoalChart,
+    })),
   {
     ssr: false,
     loading: () => (
@@ -13,7 +17,10 @@ export const RevenueGoalChart = dynamic(
 );
 
 export const DailyMovementChart = dynamic(
-  () => import("@/app/components/DailyMovementChart"),
+  () =>
+    import("@/app/components/charts-bundle").then((m) => ({
+      default: m.DailyMovementChart,
+    })),
   {
     ssr: false,
     loading: () => (

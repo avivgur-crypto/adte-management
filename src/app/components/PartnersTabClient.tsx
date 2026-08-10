@@ -1,15 +1,28 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   prefetchPartners,
   CONCENTRATION_MONTHS,
   type PartnersTabData,
 } from "@/lib/tab-prefetch";
 import DashboardErrorBoundary from "./DashboardErrorBoundary";
-import PartnerDistributionCharts from "./PartnerDistributionCharts";
 import PartnersFiltered from "./PartnersFiltered";
 import { SkeletonCard, SkeletonDonutGrid } from "./SkeletonCard";
+
+// Loaded from charts-bundle (the single recharts chunk) instead of statically,
+// so this tab's chunk doesn't carry its own copy of recharts.
+const PartnerDistributionCharts = dynamic(
+  () =>
+    import("@/app/components/charts-bundle").then((m) => ({
+      default: m.PartnerDistributionCharts,
+    })),
+  {
+    ssr: false,
+    loading: () => <SkeletonDonutGrid />,
+  },
+);
 
 export default function PartnersTabClient() {
   const [data, setData] = useState<PartnersTabData | null>(null);

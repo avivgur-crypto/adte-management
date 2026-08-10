@@ -9,7 +9,7 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-} from "recharts";
+} from "@/app/components/chart-kit";
 import { useFilter } from "@/app/context/FilterContext";
 import type { DailyMovementDay } from "@/app/actions/financials";
 

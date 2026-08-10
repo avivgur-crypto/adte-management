@@ -10,7 +10,7 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-} from "recharts";
+} from "@/app/components/chart-kit";
 import { useFilter } from "@/app/context/FilterContext";
 
 export type RevenueChartFilter = "total" | "media" | "saas" | "profit";
