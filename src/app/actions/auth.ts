@@ -1,5 +1,6 @@
 "use server";
 
+import { unstable_cache } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase-server";
@@ -69,23 +70,44 @@ export async function logout(): Promise<never> {
 }
 
 /**
+ * Profile role lookup, cached across requests per user id.  Roles change
+ * rarely; 5 minutes of staleness is acceptable and saves a Supabase
+ * round-trip on every getSessionUser call.  Invalidate with
+ * `revalidateTag("profile-<id>")` after a role change if ever needed.
+ */
+const getProfileRoleCached = (userId: string) =>
+  unstable_cache(
+    async (): Promise<string> => {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("role")
+        .eq("id", userId)
+        .single();
+      return (profile?.role as string) ?? "viewer";
+    },
+    ["profile-role", userId],
+    { revalidate: 300, tags: [`profile-${userId}`] },
+  )();
+
+/**
  * Fetch the current user's profile (id, email, role) from the Supabase session.
  * Uses the admin client to read the profiles table (bypasses RLS).
+ *
+ * Note: the profiles select depends on `user.id`, so it cannot start before
+ * `auth.getUser()` resolves — instead it is cached per user id (above) so
+ * repeat calls skip the second round-trip entirely.
  */
 export async function getSessionUser(): Promise<SessionUser> {
+  // TEMP [perf] instrumentation — remove after measurement pass.
+  const perfT0 = performance.now();
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data: profile } = await supabaseAdmin
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  const role = (profile?.role as string) ?? "viewer";
+  const role = await getProfileRoleCached(user.id);
+  console.log(`[perf] getSessionUser: ${(performance.now() - perfT0).toFixed(1)}ms`);
   return {
     id: user.id,
     email: user.email ?? "",

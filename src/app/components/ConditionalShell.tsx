@@ -9,9 +9,15 @@ import DashboardShell from "./DashboardShell";
 
 export default function ConditionalShell({
   children,
-  initialUser = null,
+  initialUser,
 }: {
   children: React.ReactNode;
+  /**
+   * Optional server-resolved user. When omitted (the normal case since the
+   * layout stopped awaiting auth), AuthProvider fetches the user client-side
+   * after first paint — do NOT default this to null, that would tell the
+   * provider "server says logged out" and skip the fetch.
+   */
   initialUser?: SessionUser;
 }) {
   const pathname = usePathname();

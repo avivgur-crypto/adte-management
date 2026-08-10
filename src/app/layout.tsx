@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/react";
-import { getSessionUser } from "@/app/actions/auth";
 import ConditionalShell from "@/app/components/ConditionalShell";
 import ServiceWorkerRegister from "@/app/components/ServiceWorkerRegister";
 import "./globals.css";
@@ -39,13 +38,18 @@ export const metadata: Metadata = {
   },
 };
 
-export default async function RootLayout({
+/**
+ * The layout deliberately awaits NOTHING: route protection lives in
+ * `src/proxy.ts` (local cookie check, no network), and the user identity for
+ * the shell is fetched client-side by AuthProvider after first paint.
+ * Awaiting `getSessionUser()` here used to block the first HTML byte on two
+ * serial Supabase round-trips for every request (force-dynamic pages).
+ */
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const initialUser = await getSessionUser();
-
   return (
     <html
       lang="en"
@@ -60,7 +64,7 @@ export default async function RootLayout({
           minHeight: "100%",
         }}
       >
-        <ConditionalShell initialUser={initialUser}>{children}</ConditionalShell>
+        <ConditionalShell>{children}</ConditionalShell>
         <ServiceWorkerRegister />
         <Analytics />
       </body>
