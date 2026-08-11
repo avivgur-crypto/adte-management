@@ -2,55 +2,25 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 /**
- * XDASH sync: demand & supply partner data → daily_partner_performance.
- * Fetches BOTH demand (revenue) and supply (cost) partners so revenue and cost are captured.
+ * XDASH sync: Home API totals → daily_home_totals (+ hourly_snapshots).
  *
- * After partner-level sync, ONE Home API call per synced month stores the
- * accurate monthly totals (partner_name = '__XDASH_MONTHLY_TOTAL__').
- * The Partners API misses ~5% of revenue/cost that isn't attributed to a
- * specific partner, so the Home total is used for dashboard display.
+ * Partner-level demand/supply writes to `daily_partner_performance` were removed —
+ * the Partners UI is gone and those fetches overloaded the backup server. The table
+ * is retained in Supabase for historical queries; this module no longer writes it.
  *
- * Uses small-batch sequential fetching to avoid overloading the backup server.
+ * Uses sequential per-date Home fetches to avoid overloading the backup server.
  */
 
 import {
-  fetchDemandPartners,
-  fetchSupplyPartners,
-  fetchReportForDate,
-  fetchAdServerOverview,
   fetchHomeForDate,
-  mapDemandPartners,
-  mapSupplyPartners,
-  useReportsForSync,
-  type PartnerRow,
 } from "@/lib/xdash-client";
-import type { PostgrestError } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelHour } from "@/lib/israel-date";
 import { syncProLog } from "@/lib/sync-pro-log";
 
-const TABLE = "daily_partner_performance";
-
-/**
- * If Supabase rejected an upsert (RLS, missing constraint keys, FK, etc.),
- * log full details and throw so the sync stops instead of reporting success.
- */
-function assertNoUpsertError(context: string, error: PostgrestError | null): asserts error is null {
-  if (!error) return;
-  console.error(`[xdash-sync] ${context}`, {
-    message: error.message,
-    code: error.code,
-    details: error.details,
-    hint: error.hint,
-  });
-  throw new Error(`${context}: ${error.message}`);
-}
-const BATCH_UPSERT_SIZE = 2000;
 const TIMEZONE_ISRAEL = "Asia/Jerusalem";
 
-/** Process one date at a time — the backup server is weak. */
-const FETCH_BATCH_SIZE = 1;
-/** Delay between fetch batches (reduced from 5s; throttle in xdash-client protects the server). */
+/** Delay between Home API date fetches — backup server is weak. */
 const INTER_BATCH_DELAY_MS = 2000;
 
 /**
@@ -143,12 +113,12 @@ function dateRange(startDate: string, endDate: string): string[] {
 }
 
 /**
- * Return the set of dates that already have at least one row in daily_partner_performance.
+ * Return the set of dates that already have a row in daily_home_totals.
  */
 async function getDatesAlreadySynced(dates: string[]): Promise<Set<string>> {
   if (dates.length === 0) return new Set();
   const { data, error } = await supabaseAdmin
-    .from(TABLE)
+    .from("daily_home_totals")
     .select("date")
     .in("date", dates);
   if (error) throw new Error(`XDASH date check failed: ${error.message}`);
@@ -175,125 +145,6 @@ function datesForMonth(year: number, month: number): string[] {
     cur.setDate(cur.getDate() + 1);
   }
   return out;
-}
-
-function rowToRecord(
-  date: string,
-  partnerType: "demand" | "supply",
-  r: PartnerRow,
-  syncedAt: string,
-): Record<string, unknown> {
-  return {
-    date,
-    partner_name: r.name,
-    partner_type: partnerType,
-    revenue: r.revenue,
-    cost: r.cost,
-    impressions: r.impressions,
-    created_at: syncedAt,
-  };
-}
-
-/**
- * Fetch demand + supply for one date.
- * For today: always use /partners/demand|supply/overview (real-time intraday data).
- * For past dates: uses Reports API when XDASH_USE_REPORTS=true (lighter, one call).
- */
-async function fetchDay(
-  date: string
-): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }> {
-  const isToday = date === getTodayIsrael();
-
-  if (useReportsForSync() && !isToday) {
-    const { demand, supply } = await fetchReportForDate(date);
-    return { date, demand, supply };
-  }
-
-  if (isToday) {
-    console.log(`[xdash-sync] Using Partners endpoints for today (${date}) — live intraday data`);
-  }
-  const demandRaw = await fetchDemandPartners(date);
-  const supplyRaw = await fetchSupplyPartners(date);
-  return {
-    date,
-    demand: mapDemandPartners(demandRaw),
-    supply: mapSupplyPartners(supplyRaw),
-  };
-}
-
-/** Deduplicate by (date, partner_name, partner_type), summing revenue/cost/impressions. */
-function aggregateRecords(records: Record<string, unknown>[]): Record<string, unknown>[] {
-  const map = new Map<string, { date: string; partner_name: string; partner_type: string; revenue: number; cost: number; impressions: number; created_at: string }>();
-  for (const r of records) {
-    const key = `${String(r.date)}\u0001${String(r.partner_name)}\u0001${String(r.partner_type)}`;
-    const rev = Number(r.revenue ?? 0);
-    const cost = Number(r.cost ?? 0);
-    const imp = Number(r.impressions ?? 0);
-    const ca = String(r.created_at ?? new Date().toISOString());
-    const existing = map.get(key);
-    if (existing) {
-      existing.revenue += rev;
-      existing.cost += cost;
-      existing.impressions += imp;
-    } else {
-      map.set(key, {
-        date: String(r.date),
-        partner_name: String(r.partner_name),
-        partner_type: String(r.partner_type),
-        revenue: rev,
-        cost,
-        impressions: imp,
-        created_at: ca,
-      });
-    }
-  }
-  return Array.from(map.values());
-}
-
-/** Perform batch upsert in chunks to stay under payload limits. Deduplicates first to avoid ON CONFLICT row twice. */
-async function batchUpsert(records: Record<string, unknown>[]): Promise<number> {
-  if (records.length === 0) return 0;
-  const unique = aggregateRecords(records);
-  let total = 0;
-  for (let i = 0; i < unique.length; i += BATCH_UPSERT_SIZE) {
-    const chunk = unique.slice(i, i + BATCH_UPSERT_SIZE);
-    const { error } = await supabaseAdmin
-      .from(TABLE)
-      .upsert(chunk, { onConflict: "date,partner_name,partner_type" });
-    assertNoUpsertError(
-      `Upsert to ${TABLE} failed (${chunk.length} rows, batch ${Math.floor(i / BATCH_UPSERT_SIZE) + 1})`,
-      error,
-    );
-    total += chunk.length;
-  }
-  return total;
-}
-
-/**
- * Process dates in small batches to avoid overwhelming the backup server.
- * Each batch fetches FETCH_BATCH_SIZE dates, then waits INTER_BATCH_DELAY_MS.
- */
-async function fetchDatesInBatches(
-  dates: string[],
-  deadlineMs?: number,
-): Promise<{ date: string; demand: PartnerRow[]; supply: PartnerRow[] }[]> {
-  const results: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[] = [];
-  for (let i = 0; i < dates.length; i += FETCH_BATCH_SIZE) {
-    if (deadlineMs != null && Date.now() >= deadlineMs) {
-      console.log(
-        `[xdash-sync] Time budget reached; stopping with ${results.length}/${dates.length} date(s) fetched.`,
-      );
-      break;
-    }
-    const batch = dates.slice(i, i + FETCH_BATCH_SIZE);
-    console.log(`[xdash-sync] Fetching batch ${Math.floor(i / FETCH_BATCH_SIZE) + 1} (${batch.join(", ")}) …`);
-    const batchResults = await Promise.all(batch.map((date) => fetchDay(date)));
-    results.push(...batchResults);
-    if (i + FETCH_BATCH_SIZE < dates.length) {
-      await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
-    }
-  }
-  return results;
 }
 
 /**
@@ -878,14 +729,11 @@ export async function purgeOldHourlySnapshots(): Promise<number> {
 }
 
 /**
- * Incremental sync with catch-up so every day from the 1st is synced, daily and in order.
+ * Incremental home-totals sync with catch-up so every day from the 1st is synced.
  *
- *  - Fetches all dates from 1st of current month through today that are missing in the DB.
- *  - Always re-fetches today AND yesterday (the rolling 2-day window). Today still grows
- *    intraday, and XDASH keeps reattributing the previous calendar day for several hours
- *    after midnight (late-night billing / demand reconciliation), so the half-hourly cron
- *    must keep correcting yesterday's row until it stabilises.
- *  - Ensures March 1, March 2, etc. are never skipped (e.g. if cron missed a run).
+ *  - Catch-up: current-month dates missing from `daily_home_totals`.
+ *  - Always re-fetches today AND yesterday (rolling 2-day window).
+ *  - Partner demand/supply fetches are no longer performed.
  *
  * Historical backfills: use syncXDASHDataForMonth() via the CLI script.
  */
@@ -901,11 +749,6 @@ export async function syncXDASHData(
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  // Build the fetch set:
-  //   1. Catch-up: any current-month date missing from `daily_partner_performance`.
-  //   2. Rolling window: today + yesterday — always re-fetched, even if a row already
-  //      exists. Yesterday may sit in the previous calendar month (e.g. on the 1st),
-  //      hence the explicit `add` instead of relying on `allDatesThisMonth`.
   const alreadySynced = await getDatesAlreadySynced(allDatesThisMonth);
   const toFetchSet = new Set<string>(
     allDatesThisMonth.filter((d) => !alreadySynced.has(d)),
@@ -913,48 +756,27 @@ export async function syncXDASHData(
   toFetchSet.add(today);
   toFetchSet.add(yesterday);
   const toFetch = Array.from(toFetchSet);
-  // Live window first (today, yesterday), then older catch-up dates ascending —
-  // so a tight cron budget never starves the dashboard-critical dates.
   prioritizeLiveWindow(toFetch, today, yesterday);
 
   if (toFetch.length === 0) {
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  console.log(`[xdash-sync] Sync (catch-up + today): ${toFetch.join(", ")}`);
-  const dayResults = await fetchDatesInBatches(toFetch, options?.deadlineMs);
-  // Only the dates we actually fetched before the budget ran out — the rest
-  // drain on the next cron run (catch-up is idempotent / skips synced dates).
-  const fetchedDates = dayResults.map((d) => d.date);
-  const records: Record<string, unknown>[] = [];
-  for (const { date, demand, supply } of dayResults) {
-    if (demand.length === 0 && supply.length === 0) {
-      console.warn(`[xdash-sync] No data returned for ${date} — XDASH may not have this date yet`);
-    } else {
-      console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
-    }
-    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
-  }
-  const rowsUpserted = await batchUpsert(records);
-
-  await syncHomeTotalsForDates(fetchedDates, syncedAt, false, {
+  console.log(`[xdash-sync] Home-totals sync (catch-up + today): ${toFetch.join(", ")}`);
+  const homeRowsWritten = await syncHomeTotalsForDates(toFetch, syncedAt, false, {
     deadlineMs: options?.deadlineMs,
   });
 
-  // Daily housekeeping: drop hourly_snapshots older than the retention window.
-  // syncXDASHData runs once per day from /api/cron/sync, so this fires once a day.
   await purgeOldHourlySnapshots();
 
-  return { datesSynced: fetchedDates.length, rowsUpserted };
+  return { datesSynced: toFetch.length, rowsUpserted: 0, homeRowsWritten };
 }
 
 const DEFAULT_TIME_BUDGET_MS = 45_000;
 
 /**
- * Auto-sync: re-fetches the last N days (default 2 = today + yesterday).
- * Processes days sequentially. If startTime + timeBudgetMs is set and elapsed
- * reaches the budget (e.g. 45s), stops and saves what we have so we don't hit Vercel's 60s limit.
+ * Auto-sync: re-fetches Home totals for the last N days (default 2 = today + yesterday).
+ * Respects a time budget so we don't hit Vercel's function ceiling.
  */
 export async function syncXDASHDataLastNDays(
   n = 2,
@@ -968,59 +790,23 @@ export async function syncXDASHDataLastNDays(
 
   const startTime = options?.startTime ?? Date.now();
   const timeBudgetMs = options?.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
+  const deadlineMs = startTime + timeBudgetMs;
 
-  console.log(`[xdash-sync] ${n}-day sync (always re-fetch): ${dates.join(", ")} (time budget ${timeBudgetMs / 1000}s)`);
-  const dayResults: { date: string; demand: PartnerRow[]; supply: PartnerRow[] }[] = [];
-
-  for (let i = 0; i < dates.length; i++) {
-    if (Date.now() - startTime >= timeBudgetMs) {
-      console.log(`[xdash-sync] Time budget reached after ${i} day(s), stopping.`);
-      break;
-    }
-    const date = dates[i]!;
-    try {
-      const result = await fetchDay(date);
-      dayResults.push(result);
-      if (result.demand.length === 0 && result.supply.length === 0) {
-        console.warn(`[xdash-sync] No data returned for ${date}`);
-      } else {
-        console.log(`[xdash-sync] ${date}: ${result.demand.length} demand + ${result.supply.length} supply rows`);
-      }
-    } catch (e) {
-      console.warn(`[xdash-sync] Failed for ${date} (skipping):`, e instanceof Error ? e.message : e);
-    }
-    if (i < dates.length - 1) {
-      await new Promise((r) => setTimeout(r, INTER_BATCH_DELAY_MS));
-    }
-  }
-
-  const records: Record<string, unknown>[] = [];
-  for (const { date, demand, supply } of dayResults) {
-    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
-  }
-  const rowsUpserted = records.length > 0 ? await batchUpsert(records) : 0;
-  const syncedDates = dayResults.map((d) => d.date);
-  if (syncedDates.length > 0) {
-    await syncHomeTotalsForDates(syncedDates, syncedAt, options?.force);
-  }
-  return { datesSynced: syncedDates.length, rowsUpserted };
+  console.log(
+    `[xdash-sync] Home-totals ${n}-day sync: ${dates.join(", ")} (time budget ${timeBudgetMs / 1000}s)`,
+  );
+  const homeRowsWritten = await syncHomeTotalsForDates(dates, syncedAt, options?.force, {
+    deadlineMs,
+  });
+  return { datesSynced: dates.length, rowsUpserted: 0, homeRowsWritten };
 }
 
 /**
- * Sync XDASH for an explicit list of dates (e.g. a single date for chunked client-side sync).
- * Same logic as syncXDASHDataLastNDays but with a given date array.
+ * Sync Home totals for an explicit list of dates (home-totals only).
  *
- * Sync-Pro extras (all default false / `mode: "internal"` → behaviour unchanged):
- *   - `mode`: source for `daily_home_totals` fetches. Default `"internal"` →
- *     cookie path / UI parity. `"external"` → External Report API. `"auto"` →
- *     legacy hybrid.
- *   - `forceExternal` (deprecated): equivalent to `mode: "external"`.
- *   - `skipHourlySnapshots`: leave `hourly_snapshots` untouched so the intraday
- *     Pulse timeline is preserved.
- *   - `skipPartnerPerformance`: skip the demand/supply batch fetch + upsert
- *     entirely. Useful for reconciliation jobs that only need finalized
- *     `daily_home_totals` and don't want to repaint partner-level data.
+ * Sync-Pro extras:
+ *   - `mode` / `forceExternal` / `skipHourlySnapshots` — passed through to syncHomeTotalsForDates.
+ *   - `skipPartnerPerformance` — no-op (partner writes are gone; kept for call-site back-compat).
  */
 export async function syncXDASHDataForDates(
   dates: string[],
@@ -1030,6 +816,7 @@ export async function syncXDASHDataForDates(
     /** @deprecated Use `mode: "external"`. */
     forceExternal?: boolean;
     skipHourlySnapshots?: boolean;
+    /** @deprecated Partner performance sync removed; ignored. */
     skipPartnerPerformance?: boolean;
   },
 ): Promise<SyncXDASHResult> {
@@ -1037,37 +824,19 @@ export async function syncXDASHDataForDates(
     return { datesSynced: 0, rowsUpserted: 0 };
   }
   const syncedAt = new Date().toISOString();
-  console.log(`[xdash-sync] Sync ${dates.length} date(s): ${dates.join(", ")}`);
+  console.log(`[xdash-sync] Home-totals sync ${dates.length} date(s): ${dates.join(", ")}`);
 
-  let rowsUpserted = 0;
-  if (!options?.skipPartnerPerformance) {
-    const dayResults = await fetchDatesInBatches(dates);
-    const records: Record<string, unknown>[] = [];
-    for (const { date, demand, supply } of dayResults) {
-      if (demand.length === 0 && supply.length === 0) {
-        console.warn(`[xdash-sync] No data returned for ${date}`);
-      } else {
-        console.log(`[xdash-sync] ${date}: ${demand.length} demand + ${supply.length} supply rows`);
-      }
-      for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-      for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
-    }
-    rowsUpserted = await batchUpsert(records);
-  }
-
-  await syncHomeTotalsForDates(dates, syncedAt, options?.force, {
+  const homeRowsWritten = await syncHomeTotalsForDates(dates, syncedAt, options?.force, {
     mode: options?.mode,
     forceExternal: options?.forceExternal,
     skipHourlySnapshots: options?.skipHourlySnapshots,
   });
-  return { datesSynced: dates.length, rowsUpserted };
+  return { datesSynced: dates.length, rowsUpserted: 0, homeRowsWritten };
 }
 
 /**
- * Full backfill: fetches ALL dates from startDate through endDate (inclusive)
- * and upserts into both daily_partner_performance and daily_home_totals.
- * No skipping — every date is re-fetched and overwritten.
- * Use via ?backfill=true on auto-sync or the CLI script.
+ * Full backfill of daily_home_totals for [startDate, endDate] (inclusive).
+ * Forces overwrite of existing home rows. Does not write partner performance.
  */
 export async function syncXDASHBackfill(
   startDate: string,
@@ -1079,27 +848,13 @@ export async function syncXDASHBackfill(
     return { datesSynced: 0, rowsUpserted: 0 };
   }
 
-  console.log(`[xdash-sync] BACKFILL ${startDate} → ${endDate} (${dates.length} days)`);
-  const dayResults = await fetchDatesInBatches(dates);
-  const records: Record<string, unknown>[] = [];
-  for (const { date, demand, supply } of dayResults) {
-    if (demand.length === 0 && supply.length === 0) {
-      console.warn(`[xdash-sync] Backfill: no data for ${date}`);
-    } else {
-      console.log(`[xdash-sync] Backfill ${date}: ${demand.length} demand + ${supply.length} supply`);
-    }
-    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
-  }
-  const rowsUpserted = await batchUpsert(records);
-
-  // Backfill always forces re-fetch of home totals (overrides the "skip if profit != 0" optimization)
+  console.log(`[xdash-sync] HOME BACKFILL ${startDate} → ${endDate} (${dates.length} days)`);
   const homeRowsWritten = await syncHomeTotalsForDates(dates, syncedAt, true);
-  return { datesSynced: dates.length, rowsUpserted, homeRowsWritten };
+  return { datesSynced: dates.length, rowsUpserted: 0, homeRowsWritten };
 }
 
 /**
- * Sync XDASH data for a specific month: all days from 1 through end of month,
+ * Sync Home totals for a specific month: all days from 1 through end of month,
  * or through yesterday if that month is the current month.
  */
 export async function syncXDASHDataForMonth(
@@ -1109,15 +864,7 @@ export async function syncXDASHDataForMonth(
 ): Promise<SyncXDASHResult> {
   const syncedAt = new Date().toISOString();
   const dates = datesForMonth(year, month);
-  const dayResults = await fetchDatesInBatches(dates);
-  const records: Record<string, unknown>[] = [];
-  for (const { date, demand, supply } of dayResults) {
-    for (const r of demand) records.push(rowToRecord(date, "demand", r, syncedAt));
-    for (const r of supply) records.push(rowToRecord(date, "supply", r, syncedAt));
-  }
-  const rowsUpserted = await batchUpsert(records);
-
-  await syncHomeTotalsForDates(dates, syncedAt, options?.force);
-
-  return { datesSynced: dates.length, rowsUpserted };
+  console.log(`[xdash-sync] Home-totals month sync ${year}-${String(month).padStart(2, "0")}: ${dates.length} day(s)`);
+  const homeRowsWritten = await syncHomeTotalsForDates(dates, syncedAt, options?.force);
+  return { datesSynced: dates.length, rowsUpserted: 0, homeRowsWritten };
 }

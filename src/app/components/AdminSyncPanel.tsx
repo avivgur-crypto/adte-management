@@ -12,7 +12,7 @@ const SECRET = "Adte2026";
 const SYNC_TIMEOUT_MS = 240_000;
 const FEEDBACK_DURATION_MS = 4_000;
 const XDASH_DAYS = 7;
-const TOTAL_STEPS = XDASH_DAYS * 2 + 1;
+const TOTAL_STEPS = XDASH_DAYS + 1;
 /**
  * Pause between manual per-date requests. Irrelevant while the backend is slow
  * (its own latency dominates); caps the burst rate when responses come back
@@ -102,31 +102,6 @@ export default function AdminSyncPanel() {
         const msg = err instanceof Error && err.name === "AbortError"
           ? "timed out" : (err instanceof Error ? err.message : String(err));
         console.error(`[XDASH] Totals failed for ${dates[i]}: ${msg}`);
-        failures++;
-      }
-      if (i < dates.length - 1) {
-        await new Promise((r) => setTimeout(r, MANUAL_SYNC_GAP_MS));
-      }
-    }
-
-    for (let i = 0; i < dates.length; i++) {
-      setXdashLabel(`Pairs: ${i + 1}/${XDASH_DAYS}`);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
-      try {
-        const result = await fetchOneDay("partner-pairs", dates[i]!, controller.signal);
-        clearTimeout(timeoutId);
-        if (!result.ok) {
-          console.error(`[XDASH] Pairs failed for ${dates[i]}: ${result.error}`);
-          failures++;
-          continue;
-        }
-        lastSyncedAt = result.syncedAt ?? lastSyncedAt;
-      } catch (err) {
-        clearTimeout(timeoutId);
-        const msg = err instanceof Error && err.name === "AbortError"
-          ? "timed out" : (err instanceof Error ? err.message : String(err));
-        console.error(`[XDASH] Pairs failed for ${dates[i]}: ${msg}`);
         failures++;
       }
       if (i < dates.length - 1) {

@@ -440,9 +440,8 @@ const REPORT_RETRY_DELAY_MS = 8000;
 const REPORT_FETCH_TIMEOUT_MS = 210_000;
 
 /**
+ * @deprecated Partners sync removed — do not call from app sync paths.
  * Fetch one day of partner data via the Reports API (lighter than partners/demand + partners/supply).
- * Returns { demand, supply } so sync can use the same record format.
- * If the backend uses a different path or body, set XDASH_REPORT_PATH and/or adapt buildReportPayload.
  */
 export async function fetchReportForDate(
   date: string
@@ -495,8 +494,8 @@ export async function fetchReportForDate(
 }
 
 /**
+ * @deprecated Partners sync removed — do not call from app sync paths.
  * Fetch report for a date range and return pair-level rows (demand × supply).
- * On 404, tries fallback paths from REPORT_PATH_404_FALLBACKS.
  */
 export async function fetchReportPairsForDateRange(
   startDate: string,
@@ -610,6 +609,7 @@ function datesBetween(startDate: string, endDate: string): string[] {
 const PAIRS_DAY_BY_DAY_DELAY_MS = 2000;
 
 /**
+ * @deprecated Partners sync removed — do not call from app sync paths.
  * Fetch report pairs day-by-day and aggregate. Use when the API returns empty for a date range.
  */
 export async function fetchReportPairsDayByDay(
@@ -1380,14 +1380,14 @@ export async function getHomeRevenueForRange(
 // Partner endpoints — Demand & Supply
 // ============================================================================
 
-/** Fetch demand (revenue) partners overview for a single date. */
+/** @deprecated Partners sync removed — do not call from app sync paths. */
 export async function fetchDemandPartners(
   date: string
 ): Promise<XDashPartnerApiResponse> {
   return _fetchPartners("demand", date);
 }
 
-/** Fetch supply (cost) partners overview for a single date. */
+/** @deprecated Partners sync removed — do not call from app sync paths. */
 export async function fetchSupplyPartners(
   date: string
 ): Promise<XDashPartnerApiResponse> {

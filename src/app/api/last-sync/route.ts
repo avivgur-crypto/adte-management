@@ -55,15 +55,7 @@ async function readLatestSyncedAt(): Promise<string | null> {
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
-  if (homeRow?.created_at) return homeRow.created_at;
-
-  const { data } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .select("created_at")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-  return data?.created_at ?? null;
+  return homeRow?.created_at ?? null;
 }
 
 async function readLatestSyncMeta(): Promise<{

@@ -5,11 +5,6 @@ import {
   syncXDASHDataForDates,
   syncXDASHBackfill,
 } from "@/lib/sync/xdash";
-import {
-  syncPartnerPairsData,
-  syncPartnerPairsForDate,
-  syncPartnerPairsForDateRange,
-} from "@/lib/sync/partner-pairs";
 import { syncFunnelToSupabase } from "@/lib/sync/funnel";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncBillingData } from "@/lib/sync/billing";
@@ -53,12 +48,6 @@ function respond(body: object, status = 200) {
 
 function todayIL(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
-}
-
-function yesterdayIL(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -116,35 +105,6 @@ async function runXdash(days: number, startTime?: number, force?: boolean): Prom
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[sync] xdash failed:", msg);
-    return { status: "failed", error: msg };
-  }
-}
-
-async function runPairs(dates?: string[]): Promise<StepResult> {
-  try {
-    const targets = dates ?? [yesterdayIL(), todayIL()];
-    console.log(`[sync] runPairs: fetching ${targets.length} date(s): ${targets.join(", ")}`);
-    let total = 0;
-    for (const d of targets) {
-      const r = await syncPartnerPairsForDate(d);
-      console.log(`[sync] pairs ${d}: ${r.rowsUpserted} rows upserted`);
-      total += r.rowsUpserted;
-    }
-    return { status: "success", dates: targets, rowsUpserted: total };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("[sync] pairs failed:", msg);
-    return { status: "failed", error: msg };
-  }
-}
-
-async function runFullPairs(): Promise<StepResult> {
-  try {
-    const r = await syncPartnerPairsData();
-    return { status: "success", datesSynced: r.datesSynced, rowsUpserted: r.rowsUpserted };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("[sync] full-pairs failed:", msg);
     return { status: "failed", error: msg };
   }
 }
@@ -337,58 +297,14 @@ async function executeSync(params: SyncParams): Promise<void> {
       return;
     }
 
-    if (target === "partner-pairs") {
-      console.log(`[auto-sync] Running targeted sync: ${target}.`);
-      let pairs: StepResult;
-      if (singleDate && validDate(singleDate)) {
-        pairs = await runPairs([singleDate]);
-      } else {
-        pairs = await runFullPairs();
-      }
-      bustCaches();
-      logResult("targeted:partner-pairs", { xdash: SKIP, pairs, billing: SKIP, monday: SKIP }, t0);
-      return;
-    }
-
-    if (target === "partner-pairs-backfill") {
-      const start = backfillStart;
-      const end = backfillEnd ?? todayIL();
-      if (!validDate(start) || !validDate(end)) {
-        logResult(
-          "targeted:partner-pairs-backfill",
-          { xdash: SKIP, pairs: { status: "failed", error: `Invalid date range ${start} → ${end}` }, billing: SKIP, monday: SKIP },
-          t0,
-        );
-        return;
-      }
-      console.log(`[auto-sync] partner-pairs backfill ${start} → ${end} (force=${force})`);
-      let pairs: StepResult;
-      try {
-        const r = await syncPartnerPairsForDateRange(start, end, { force });
-        pairs = {
-          status: "success",
-          datesRequested: r.datesRequested,
-          datesSynced: r.datesSynced,
-          rowsUpserted: r.rowsUpserted,
-        };
-      } catch (e) {
-        pairs = { status: "failed", error: e instanceof Error ? e.message : String(e) };
-      }
-      bustCaches();
-      logResult(
-        "targeted:partner-pairs-backfill",
-        { xdash: SKIP, pairs, billing: SKIP, monday: SKIP },
-        t0,
-        { range: { start, end } },
-      );
-      return;
-    }
-
-    if (target === "cron-daily-pairs") {
-      console.log(`[auto-sync] Running targeted sync: cron-daily-pairs for 2 days.`);
-      const pairs = await runPairs();
-      bustCaches();
-      logResult("targeted:cron-daily-pairs", { xdash: SKIP, pairs, billing: SKIP, monday: SKIP }, t0);
+    if (target === "partner-pairs" || target === "partner-pairs-backfill" || target === "cron-daily-pairs") {
+      console.log(`[auto-sync] Skipping disabled target: ${target}`);
+      logResult(`targeted:${target}`, {
+        xdash: SKIP,
+        pairs: { status: "skipped", error: "Partner pairs sync disabled" },
+        billing: SKIP,
+        monday: SKIP,
+      }, t0);
       return;
     }
 
@@ -413,7 +329,7 @@ async function executeSync(params: SyncParams): Promise<void> {
       console.log(`[auto-sync] manual-recovery: ${days} days (force=${force})`);
       const xdash = await runXdash(days, t0, force);
       shouldCheckPerformance = xdash.status === "success";
-      const pairs = await runPairs();
+      const pairs = SKIP;
       const elapsedMs = Date.now() - t0;
       const TIME_BUDGET_MS = 55_000;
       let billing: StepResult = SKIP;

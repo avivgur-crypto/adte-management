@@ -96,8 +96,8 @@ export async function getPacingSummary(
   asOfDate?: Date,
   /** When provided, compute for this month (YYYY-MM or YYYY-MM-01). Closed months get 100% completion, target = goal. */
   monthStartParam?: string,
-  /** Pre-computed XDASH media revenue for this month (from the shared cached totals).
-   *  When provided, the function skips its own daily_partner_performance query. */
+  /** Pre-computed XDASH media revenue for this month (from daily_home_totals).
+   *  When provided, the function skips recomputing from goals alone. */
   xdashMediaRevenue?: number,
   /** Pre-computed XDASH gross profit for this month (from daily_home_totals).
    *  When provided, used directly instead of calculating revenue - cost. */

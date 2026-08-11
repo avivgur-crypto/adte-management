@@ -539,7 +539,7 @@ export const getTotalOverviewData = cache(
 );
 
 // ---------------------------------------------------------------------------
-// Daily movement (from XDASH daily_partner_performance — for daily chart)
+// Daily movement (from daily_home_totals — for daily chart)
 // ---------------------------------------------------------------------------
 
 export interface DailyMovementDay {
@@ -598,16 +598,8 @@ async function _getLastDataUpdate(): Promise<{ date: string; syncedAt: string } 
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
-  if (homeRow) return { date: homeRow.date, syncedAt: homeRow.created_at };
-
-  const { data } = await supabaseAdmin
-    .from("daily_partner_performance")
-    .select("date, created_at")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single();
-  if (!data) return null;
-  return { date: data.date, syncedAt: data.created_at };
+  if (!homeRow) return null;
+  return { date: homeRow.date, syncedAt: homeRow.created_at };
 }
 
 export const getLastDataUpdate = cache(
