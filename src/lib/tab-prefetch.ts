@@ -14,7 +14,7 @@ import { getPartnerConcentration } from "@/app/actions/financials";
 import type { PartnerConcentrationResult } from "@/app/actions/financials";
 import { getAllDependencyPairs } from "@/app/actions/dependency-mapping";
 import type { PairEntry } from "@/lib/dependency-mapping-utils";
-import { getSalesFunnelFromCache } from "@/app/actions/sales-funnel-live";
+import { getSalesFunnelFromCache, getLastMondaySyncAt } from "@/app/actions/sales-funnel-live";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
 import {
   getActivityDataFromFunnel,
@@ -35,6 +35,7 @@ export interface PartnersTabData {
 
 export interface SalesTabData {
   initialFunnelData: SalesFunnelMetrics | null;
+  lastMondaySyncAt: string | null;
   activityData: ActivityDailyRow[];
   signedDealsCompanies: SignedDealCompany[];
 }
@@ -62,14 +63,16 @@ async function fetchPartnersData(): Promise<PartnersTabData> {
 }
 
 async function fetchSalesData(): Promise<SalesTabData> {
-  const [funnel, activity, deals] = await Promise.allSettled([
+  const [funnel, lastSync, activity, deals] = await Promise.allSettled([
     getSalesFunnelFromCache(),
+    getLastMondaySyncAt(),
     getActivityDataFromFunnel(),
     getSignedDealsCompanies(),
   ]);
 
   return {
     initialFunnelData: funnel.status === "fulfilled" ? funnel.value : null,
+    lastMondaySyncAt: lastSync.status === "fulfilled" ? lastSync.value : null,
     activityData: activity.status === "fulfilled" ? activity.value : [],
     signedDealsCompanies: deals.status === "fulfilled" ? deals.value : [],
   };

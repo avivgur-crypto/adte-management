@@ -40,7 +40,10 @@ export default function SalesTabClient() {
   return (
     <div className="stagger-children flex flex-col gap-8">
       <DashboardErrorBoundary sectionName="Sales funnel">
-        <SalesFunnelFiltered initialData={data.initialFunnelData} />
+        <SalesFunnelFiltered
+          initialData={data.initialFunnelData}
+          initialLastMondaySyncAt={data.lastMondaySyncAt}
+        />
       </DashboardErrorBoundary>
       <DashboardErrorBoundary sectionName="Activity summary">
         <ActivitySummary

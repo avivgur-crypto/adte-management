@@ -79,13 +79,34 @@ function InfoIcon({ className }: { className?: string }) {
   );
 }
 
+const STALE_MS = 24 * 60 * 60 * 1000;
+
+function formatSyncAsOf(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", {
+    timeZone: "Asia/Jerusalem",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export default function SalesFunnel({
   data,
+  lastMondaySyncAt = null,
 }: {
   data: SalesFunnelMetrics | null;
+  /** ISO timestamp of last successful monday_sync (from daily_sync_logs). */
+  lastMondaySyncAt?: string | null;
 }) {
   const [activeTooltip, setActiveTooltip] = useState<number | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const isStale =
+    lastMondaySyncAt != null &&
+    Date.now() - new Date(lastMondaySyncAt).getTime() > STALE_MS;
 
   useEffect(() => {
     if (activeTooltip === null) return;
@@ -404,6 +425,12 @@ export default function SalesFunnel({
           </div>
         </div>
       </div>
+
+      {isStale && lastMondaySyncAt && (
+        <p className="mt-3 text-[11px] font-medium tabular-nums text-white/40">
+          data as of {formatSyncAsOf(lastMondaySyncAt)}
+        </p>
+      )}
     </div>
   );
 }

@@ -15,6 +15,7 @@ import {
 } from "@/lib/monday-client";
 import { withRetry } from "@/lib/resilience";
 import { supabaseAdmin } from "@/lib/supabase";
+import { getLastSuccessfulMondaySyncAt } from "@/lib/sync-logs";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
 
 const LEADS_BOARD_ID = MONDAY_BOARD_IDS.leads;
@@ -214,3 +215,8 @@ export const getSalesFunnelFromCache = unstable_cache(
   ["funnel-from-cache"],
   { revalidate: CACHE_TTL },
 );
+
+/** ISO timestamptz of the last successful monday_sync row in daily_sync_logs. */
+export async function getLastMondaySyncAt(): Promise<string | null> {
+  return getLastSuccessfulMondaySyncAt();
+}

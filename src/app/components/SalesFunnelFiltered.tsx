@@ -1,24 +1,36 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getSalesFunnelFromCache } from "@/app/actions/sales-funnel-live";
+import { getSalesFunnelFromCache, getLastMondaySyncAt } from "@/app/actions/sales-funnel-live";
 import type { SalesFunnelMetrics } from "@/app/actions/sales";
 import SalesFunnel from "./SalesFunnel";
 
 /** Refresh funnel from Monday every 5 min so it keeps updating live. */
 const FUNNEL_REFRESH_MS = 300_000;
 
-type Props = { initialData?: SalesFunnelMetrics | null };
+type Props = {
+  initialData?: SalesFunnelMetrics | null;
+  initialLastMondaySyncAt?: string | null;
+};
 
-export default function SalesFunnelFiltered({ initialData = null }: Props) {
+export default function SalesFunnelFiltered({
+  initialData = null,
+  initialLastMondaySyncAt = null,
+}: Props) {
   const [data, setData] = useState<SalesFunnelMetrics | null>(initialData ?? null);
+  const [lastMondaySyncAt, setLastMondaySyncAt] = useState<string | null>(
+    initialLastMondaySyncAt ?? null,
+  );
   const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState<string | null>(null);
 
   const fetchFunnel = useCallback(() => {
     setError(null);
-    return getSalesFunnelFromCache()
-      .then((result) => setData(result ?? null))
+    return Promise.all([getSalesFunnelFromCache(), getLastMondaySyncAt()])
+      .then(([result, syncAt]) => {
+        setData(result ?? null);
+        setLastMondaySyncAt(syncAt);
+      })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load funnel");
         setData(null);
@@ -31,6 +43,10 @@ export default function SalesFunnelFiltered({ initialData = null }: Props) {
     if (!initialData) {
       setLoading(true);
       fetchFunnel();
+    } else if (initialLastMondaySyncAt == null) {
+      void getLastMondaySyncAt().then((syncAt) => {
+        if (!cancelled) setLastMondaySyncAt(syncAt);
+      });
     }
     const interval = setInterval(() => {
       if (!cancelled) fetchFunnel();
@@ -39,7 +55,7 @@ export default function SalesFunnelFiltered({ initialData = null }: Props) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [fetchFunnel, initialData]);
+  }, [fetchFunnel, initialData, initialLastMondaySyncAt]);
 
   if (loading) {
     return (
@@ -63,5 +79,5 @@ export default function SalesFunnelFiltered({ initialData = null }: Props) {
     );
   }
 
-  return <SalesFunnel data={data} />;
+  return <SalesFunnel data={data} lastMondaySyncAt={lastMondaySyncAt} />;
 }

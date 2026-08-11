@@ -19,6 +19,7 @@ import {
   getCreationLogDate,
   getColumnText,
 } from "@/lib/monday-client";
+import { recordSyncRun } from "@/lib/sync-logs";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const TABLE = "daily_funnel_metrics";
@@ -80,6 +81,7 @@ export interface SyncMondayResult {
 }
 
 export async function syncMondayData(): Promise<SyncMondayResult> {
+  const t0 = Date.now();
   const [leadsItems, allContractsItems] = await Promise.all([
     fetchBoardItems(LEADS_BOARD_ID, {
       includeColumnValues: true,
@@ -232,6 +234,14 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
     if (activityError) throw new Error(`Activity upsert failed: ${activityError.message}`);
     activityRowsUpserted = activityRows.length;
   }
+
+  void recordSyncRun({
+    source: "monday_sync",
+    durationMs: Date.now() - t0,
+    datesSynced: funnelRows.length,
+    rowsUpserted: funnelRows.length + activityRowsUpserted,
+    ok: true,
+  });
 
   return { funnelRows: funnelRows.length, activityRows: activityRowsUpserted };
 }
