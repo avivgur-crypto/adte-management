@@ -131,15 +131,19 @@ export async function syncMondayData(): Promise<SyncMondayResult> {
       win_rate: null,
     });
   }
-  // Reset 2026 funnel rows so stale total_leads / won_deals from old logic or misdated rows clear.
-  const { error: resetError } = await supabaseAdmin
-    .from(TABLE)
-    .update({ total_leads: 0, won_deals: 0 })
-    .gte("date", "2026-01-01")
-    .lt("date", "2027-01-01");
-  if (resetError) console.error("[monday-sync] funnel total_leads/won_deals reset:", resetError.message);
 
+  // Only touch Supabase after fetches + row build succeeded. Reset immediately before
+  // upsert so a failed fetch never zeros the funnel; skip entirely if funnelRows is empty.
   if (funnelRows.length > 0) {
+    const { error: resetError } = await supabaseAdmin
+      .from(TABLE)
+      .update({ total_leads: 0, won_deals: 0 })
+      .gte("date", "2026-01-01")
+      .lt("date", "2027-01-01");
+    if (resetError) {
+      throw new Error(`Supabase funnel reset failed: ${resetError.message}`);
+    }
+
     const { error: funnelError } = await supabaseAdmin
       .from(TABLE)
       .upsert(funnelRows, { onConflict: "date" });
