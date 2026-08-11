@@ -75,15 +75,16 @@ export async function GET(request: NextRequest) {
 
   function maskReason(label: string, reason: unknown): string {
     const raw = reason instanceof Error ? reason.message : String(reason);
+    // Cap length so an HTML error page / long GraphQL dump cannot flood daily_sync_logs.
+    const truncated = raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
     syncProLog({
       event: "sync_pro.cron.step_error",
       branch_type: "full_cron",
       status: "error",
       message: `${label} failed`,
-      detail: { label, raw: process.env.NODE_ENV === "production" ? undefined : raw },
+      detail: { label, raw: truncated },
     });
-    if (process.env.NODE_ENV === "production") return `${label}: sync failed`;
-    return `${label}: ${raw}`;
+    return `${label}: ${truncated}`;
   }
 
   if (mondayResult.status === "fulfilled") {
