@@ -81,11 +81,19 @@ export interface SyncMondayResult {
 
 export async function syncMondayData(): Promise<SyncMondayResult> {
   const [leadsItems, allContractsItems] = await Promise.all([
-    fetchBoardItems(LEADS_BOARD_ID, { includeColumnValues: true, includeCreatedAt: true }),
+    fetchBoardItems(LEADS_BOARD_ID, {
+      includeColumnValues: true,
+      includeCreatedAt: true,
+      columnIds: [CREATION_LOG_COLUMN_IDS.leads],
+    }),
     fetchBoardItems(CONTRACTS_BOARD_ID, {
       includeColumnValues: true,
       includeCreatedAt: true,
-      includeUpdatedAt: true,
+      columnIds: [
+        CONTRACTS_STATUS_COLUMN_ID,
+        CREATION_LOG_COLUMN_IDS.contracts,
+        CONTRACTS_ACCOUNT_NAME_COLUMN_ID,
+      ],
     }),
   ]);
 

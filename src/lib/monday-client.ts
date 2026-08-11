@@ -8,6 +8,10 @@ const MONDAY_API_TOKEN =
   process.env.MONDAY_API_TOKEN ?? process.env.mondays_api_key ?? "";
 const MONDAY_API_URL = "https://api.monday.com/v2";
 
+/** Waits before retries 1..3 (after first failure). */
+const GRAPHQL_RETRY_BACKOFF_MS = [2_000, 8_000, 20_000] as const;
+const GRAPHQL_MAX_RETRIES = 3;
+
 function assertToken() {
   if (!MONDAY_API_TOKEN) {
     throw new Error(
@@ -16,32 +20,120 @@ function assertToken() {
   }
 }
 
-/** Run a GraphQL query against Monday.com v2 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isComplexityOrRateLimitMessage(message: string): boolean {
+  return /complexity budget exhausted/i.test(message) || /rate limit/i.test(message);
+}
+
+/** Prefer Retry-After header / retry_in_seconds body; else null. */
+function retryDelayFromHttp(response: Response, bodyText: string): number | null {
+  const header = response.headers.get("Retry-After");
+  if (header) {
+    const asSeconds = Number(header);
+    if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+      return Math.ceil(asSeconds * 1000);
+    }
+  }
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      retry_in_seconds?: number;
+      error_data?: { retry_in_seconds?: number };
+    };
+    const sec =
+      parsed.retry_in_seconds ?? parsed.error_data?.retry_in_seconds ?? null;
+    if (typeof sec === "number" && Number.isFinite(sec) && sec >= 0) {
+      return Math.ceil(sec * 1000);
+    }
+  } catch {
+    /* body may be HTML / plain text */
+  }
+  const resetMatch = bodyText.match(/reset in\s+(\d+)\s*seconds?/i);
+  if (resetMatch) {
+    return Math.ceil(Number(resetMatch[1]) * 1000);
+  }
+  return null;
+}
+
+function retryDelayFromGraphqlErrors(
+  errors: Array<{ message?: string; extensions?: { retry_in_seconds?: number } }>
+): number | null {
+  for (const e of errors) {
+    const sec = e.extensions?.retry_in_seconds;
+    if (typeof sec === "number" && Number.isFinite(sec) && sec >= 0) {
+      return Math.ceil(sec * 1000);
+    }
+    if (e.message) {
+      const resetMatch = e.message.match(/reset in\s+(\d+)\s*seconds?/i);
+      if (resetMatch) return Math.ceil(Number(resetMatch[1]) * 1000);
+    }
+  }
+  return null;
+}
+
+/** Run a GraphQL query against Monday.com v2 (retries 429 / 5xx / complexity budget). */
 async function graphql<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T> {
   assertToken();
-  const response = await fetch(MONDAY_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: MONDAY_API_TOKEN,
-      "API-Version": "2025-10",
-    },
-    body: JSON.stringify({ query, variables }),
-  });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Monday API HTTP ${response.status}: ${text}`);
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= GRAPHQL_MAX_RETRIES; attempt++) {
+    const response = await fetch(MONDAY_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: MONDAY_API_TOKEN,
+        "API-Version": "2025-10",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      const status = response.status;
+      // Auth failures must fail loudly — never retry.
+      if (status === 401 || status === 403) {
+        throw new Error(`Monday API HTTP ${status}: ${text}`);
+      }
+      lastError = new Error(`Monday API HTTP ${status}: ${text}`);
+      if ((status === 429 || status >= 500) && attempt < GRAPHQL_MAX_RETRIES) {
+        const wait =
+          retryDelayFromHttp(response, text) ?? GRAPHQL_RETRY_BACKOFF_MS[attempt];
+        console.warn(
+          `[monday-api] HTTP ${status}; retry ${attempt + 1}/${GRAPHQL_MAX_RETRIES} in ${wait}ms`,
+        );
+        await sleep(wait);
+        continue;
+      }
+      throw lastError;
+    }
+
+    const json = (await response.json()) as {
+      data?: T;
+      errors?: Array<{ message: string; extensions?: { retry_in_seconds?: number } }>;
+    };
+    if (json.errors?.length) {
+      const message = json.errors.map((e) => e.message).join("; ");
+      lastError = new Error(`Monday API GraphQL: ${message}`);
+      if (isComplexityOrRateLimitMessage(message) && attempt < GRAPHQL_MAX_RETRIES) {
+        const wait =
+          retryDelayFromGraphqlErrors(json.errors) ?? GRAPHQL_RETRY_BACKOFF_MS[attempt];
+        console.warn(
+          `[monday-api] GraphQL rate/complexity; retry ${attempt + 1}/${GRAPHQL_MAX_RETRIES} in ${wait}ms`,
+        );
+        await sleep(wait);
+        continue;
+      }
+      throw lastError;
+    }
+    if (json.data == null) {
+      throw new Error("Monday API returned no data");
+    }
+    return json.data;
   }
 
-  const json = (await response.json()) as { data?: T; errors?: { message: string }[] };
-  if (json.errors?.length) {
-    throw new Error(`Monday API GraphQL: ${json.errors.map((e) => e.message).join("; ")}`);
-  }
-  if (json.data == null) {
-    throw new Error("Monday API returned no data");
-  }
-  return json.data;
+  throw lastError ?? new Error("Monday API request failed after retries");
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +264,7 @@ const ITEMS_PAGE_LIMIT = 500;
  * For activity (Leads/Contracts), pass includeColumnValues: true and use getCreationLogDate()
  * with CREATION_LOG_COLUMN_IDS.leads or .contracts to read creation date from pulse_log columns.
  * Pass includeUpdatedAt for contract won-date logic (item `updated_at`).
+ * Pass columnIds to request `column_values(ids: [...])` instead of every column (cuts complexity).
  * Paginates using items_page then next_items_page.
  */
 export async function fetchBoardItems(
@@ -180,11 +273,19 @@ export async function fetchBoardItems(
     includeColumnValues?: boolean;
     includeCreatedAt?: boolean;
     includeUpdatedAt?: boolean;
+    /** When set with includeColumnValues, only these column ids are requested. */
+    columnIds?: string[];
   } = {}
 ): Promise<MondayItem[]> {
-  const columnValuesFragment = options.includeColumnValues
-    ? "column_values { id text value type }"
-    : "";
+  let columnValuesFragment = "";
+  if (options.includeColumnValues) {
+    if (options.columnIds && options.columnIds.length > 0) {
+      const idsLiteral = JSON.stringify(options.columnIds);
+      columnValuesFragment = `column_values(ids: ${idsLiteral}) { id text value type }`;
+    } else {
+      columnValuesFragment = "column_values { id text value type }";
+    }
+  }
   const createdAtFragment = options.includeCreatedAt ? "created_at" : "";
   const updatedAtFragment = options.includeUpdatedAt ? "updated_at" : "";
 
@@ -227,31 +328,22 @@ export async function fetchBoardItems(
 
   const allItems: MondayItem[] = [];
   let cursor: string | null = null;
+  let pageNumber = 0;
 
   // First page (under board)
   const data = await graphql<MondayBoardItemsResponse>(firstPageQuery, {
     boardId,
     limit: ITEMS_PAGE_LIMIT,
   });
-  if (process.env.MONDAY_SYNC_DEBUG === "true") {
-    const first = data.boards?.[0]?.items_page;
-    const sample = first?.items?.slice(0, 2).map((i) => ({ id: i.id, name: i.name })) ?? [];
-    console.log(
-      "[monday-fetch] board",
-      boardId,
-      "firstPageCount",
-      first?.items?.length ?? 0,
-      "cursor?",
-      Boolean(first?.cursor),
-      "sample",
-      JSON.stringify(sample),
-    );
-  }
   const board = data.boards?.[0];
   const firstPage = board?.items_page;
   if (!firstPage) return allItems;
   allItems.push(...firstPage.items);
   cursor = firstPage.cursor ?? null;
+  pageNumber += 1;
+  console.log(
+    `[monday-fetch] board=${boardId} page=${pageNumber} itemsSoFar=${allItems.length}`,
+  );
 
   // Subsequent pages (root-level next_items_page)
   while (cursor) {
@@ -263,10 +355,10 @@ export async function fetchBoardItems(
     if (!page) break;
     allItems.push(...page.items);
     cursor = page.cursor ?? null;
-  }
-
-  if (process.env.MONDAY_SYNC_DEBUG === "true") {
-    console.log("[monday-fetch] board", boardId, "totalItemsAfterPagination", allItems.length);
+    pageNumber += 1;
+    console.log(
+      `[monday-fetch] board=${boardId} page=${pageNumber} itemsSoFar=${allItems.length}`,
+    );
   }
 
   return allItems;
