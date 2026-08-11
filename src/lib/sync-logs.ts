@@ -68,12 +68,12 @@ export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
 export async function getLastSuccessfulMondaySyncAt(): Promise<string | null> {
   const { data, error } = await supabaseAdmin
     .from("daily_sync_logs")
-    .select("started_at")
+    .select("created_at")
     .eq("source", "monday_sync")
     .eq("ok", true)
-    .order("started_at", { ascending: false })
+    .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (error || !data?.started_at) return null;
-  return String(data.started_at);
+  if (error || !data?.created_at) return null;
+  return String(data.created_at);
 }
