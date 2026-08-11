@@ -482,12 +482,12 @@ export function getFileColumnLatestUploadDate(
 }
 
 /**
- * Reporting calendar day for signed contracts:
- * **Last Updated pulse** (`CONTRACTS_LAST_UPDATED_COLUMN_ID`, default `pulse_updated_mm24tjj9`)
- * → optional Signed Date column → signed file → status `changed_at` → item `updated_at`
- * → creation log → `created_at` → now.
+ * @deprecated Prefer Creation Log / `created_at` via `getCreationLogDate` — Last Updated
+ * was polluted by bulk board edits and fabricated monthly "wins".
  *
- * Calendar month/day for the app uses `Asia/Jerusalem` when reducing to YYYY-MM-DD (see `monday.ts`).
+ * Reporting calendar day for signed contracts (legacy order):
+ * **Last Updated pulse** → Signed Date → file → status `changed_at` → `updated_at`
+ * → creation log → `created_at` → now.
  */
 export function getContractWonReportingDate(
   item: MondayItem,

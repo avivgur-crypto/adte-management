@@ -10,7 +10,7 @@ import {
   fetchBoardItems,
   filterActiveItems,
   getColumnText,
-  getContractWonReportingDate,
+  getCreationLogDate,
   type MondayItem,
 } from "@/lib/monday-client";
 import { withRetry } from "@/lib/resilience";
@@ -52,11 +52,14 @@ function leadOrDealCreatedInFilterMonth(item: MondayItem, filter: MonthFilter): 
 }
 
 /**
- * Contracts (Won): bucket by **signed reporting date** (Signed Date column → file → status
- * changed_at → updated_at → …), not `created_at`, so Anzu-type rows land in April when signed in April.
+ * Contracts (Won): bucket by item **creation** date (Creation Log → `created_at`), same as
+ * monday sync — Last Updated was polluted by bulk board edits.
  */
 function contractSignedInFilterMonth(item: MondayItem, filter: MonthFilter): boolean {
-  const d = getContractWonReportingDate(item, CREATION_LOG_COLUMN_IDS.contracts);
+  const d =
+    getCreationLogDate(item, CREATION_LOG_COLUMN_IDS.contracts) ??
+    (item.created_at ? new Date(item.created_at) : null);
+  if (!d || Number.isNaN(d.getTime())) return false;
   const key = dateKeyIsrael(d);
   const [y, m] = key.split("-").map(Number);
   return y === filter.year && m === filter.month;
