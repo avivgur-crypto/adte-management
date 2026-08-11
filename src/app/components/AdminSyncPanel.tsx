@@ -177,9 +177,7 @@ export default function AdminSyncPanel() {
     }
     if (lastSyncedAt) syncStatus?.setLastSyncedAt(lastSyncedAt);
 
-    // Drop the module-level prefetch cache so the Partners tab re-fetches the
-    // freshly-synced daily_partner_pairs the next time it mounts. Otherwise the
-    // tab keeps showing the stale snapshot from before this sync.
+    // Drop the module-level prefetch cache so Sales re-fetches after a sync.
     invalidatePrefetch();
 
     try {

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Funnel, LayoutDashboard, LogOut, Menu, Receipt, Settings, Users } from "lucide-react";
+import { Funnel, LayoutDashboard, LogOut, Menu, Receipt, Settings } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { useAuth } from "@/app/context/AuthContext";
 import { memo, useState, useCallback, useEffect, useMemo, useRef, useTransition } from "react";
@@ -27,7 +27,6 @@ const SettingsModal = dynamic(() => import("./SettingsModal"), {
 const SCREENS: { key: AppScreen; label: string; icon: typeof LayoutDashboard }[] = [
   { key: "financial", label: "Financial", icon: LayoutDashboard },
   { key: "pnl", label: "PNL", icon: Receipt },
-  { key: "partners", label: "Partners", icon: Users },
   { key: "sales-funnel", label: "Sales Funnel", icon: Funnel },
 ];
 
