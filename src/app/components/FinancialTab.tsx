@@ -8,7 +8,9 @@ import {
   getTotalOverviewData,
 } from "@/app/actions/financials";
 import type { FinancialPaceWithTrend, XDASHMonthTotals } from "@/app/actions/financials";
+import ChartsWarmup from "@/app/components/ChartsWarmup";
 import DashboardErrorBoundary from "@/app/components/DashboardErrorBoundary";
+import DeferUntilVisible from "@/app/components/DeferUntilVisible";
 import { DailyMovementChart, RevenueGoalChart } from "@/app/components/FinancialChartsDynamic";
 import FinancialPaceFiltered from "@/app/components/FinancialPaceFiltered";
 import TodayFinancialsPulse from "@/app/components/TodayFinancialsPulse";
@@ -34,6 +36,27 @@ function slimPaceForChart(
     };
   }
   return out;
+}
+
+/**
+ * Fixed-height placeholder shown until a viewport-gated chart mounts.
+ * Heights are the MEASURED rendered heights of each chart card (412px /
+ * 1280px viewports) so the swap causes ~zero layout shift:
+ *   Performance vs. Goal Pace: 443px mobile → 454px desktop
+ *   Daily progress:            486px at all widths
+ */
+function ChartCardSkeleton({ className }: { className: string }) {
+  return (
+    <div
+      className={`w-full max-w-5xl animate-pulse rounded-2xl border border-white/[0.08] bg-[var(--adte-funnel-bg)] ${className}`}
+      style={{
+        backgroundColor: "#1a1a1a",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        borderWidth: 1,
+        borderStyle: "solid",
+      }}
+    />
+  );
 }
 
 function FinancialSkeleton() {
@@ -113,14 +136,22 @@ async function FinancialCharts() {
           paceByMonthBilling={paceDual?.billing ?? {}}
         />
       </DashboardErrorBoundary>
+      {/* Below-the-fold on mobile: mount only near the viewport so the chart
+          chunk + recharts render stay off the load-time critical path. */}
       <DashboardErrorBoundary sectionName="Revenue vs Goal chart">
-        <RevenueGoalChart paceByMonth={slimPaceForChart(paceDual?.xdash ?? {})} />
+        <DeferUntilVisible
+          fallback={<ChartCardSkeleton className="h-[443px] lg:h-[454px]" />}
+        >
+          <RevenueGoalChart paceByMonth={slimPaceForChart(paceDual?.xdash ?? {})} />
+        </DeferUntilVisible>
       </DashboardErrorBoundary>
       <DashboardErrorBoundary sectionName="Daily progress">
-        <DailyMovementChart
-          dailyByMonth={dailyByMonth}
-          monthKeys={PACING_MONTH_KEYS}
-        />
+        <DeferUntilVisible fallback={<ChartCardSkeleton className="h-[486px]" />}>
+          <DailyMovementChart
+            dailyByMonth={dailyByMonth}
+            monthKeys={PACING_MONTH_KEYS}
+          />
+        </DeferUntilVisible>
       </DashboardErrorBoundary>
     </div>
   );
@@ -130,6 +161,7 @@ async function FinancialCharts() {
 export default function FinancialTab() {
   return (
     <div className="flex flex-col gap-8">
+      <ChartsWarmup />
       <Suspense fallback={<SkeletonPulse className="h-5 w-64" />}>
         <FinancialPulse />
       </Suspense>
