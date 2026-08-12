@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Funnel, LayoutDashboard, LogOut, Menu, Receipt, Settings } from "lucide-react";
+import { Activity, Funnel, LayoutDashboard, LogOut, Menu, Receipt, Settings } from "lucide-react";
 import { logout } from "@/app/actions/auth";
 import { useAuth } from "@/app/context/AuthContext";
 import { memo, useState, useCallback, useEffect, useMemo, useRef, useTransition } from "react";
@@ -28,6 +28,7 @@ const SCREENS: { key: AppScreen; label: string; icon: typeof LayoutDashboard }[]
   { key: "financial", label: "Financial", icon: LayoutDashboard },
   { key: "pnl", label: "PNL", icon: Receipt },
   { key: "sales-funnel", label: "Sales Funnel", icon: Funnel },
+  { key: "system", label: "System", icon: Activity },
 ];
 
 const MONTH_LABELS = [

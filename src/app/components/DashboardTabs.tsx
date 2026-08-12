@@ -24,6 +24,16 @@ const PnlTabClient = dynamic(() => import("./PnlTabClient"), {
   ),
 });
 
+const SystemHealthTab = dynamic(() => import("./SystemHealthTab"), {
+  loading: () => (
+    <div className="stagger-children flex flex-col gap-8">
+      <SkeletonCard lines={3} />
+      <SkeletonCard lines={2} />
+      <SkeletonCard lines={2} />
+    </div>
+  ),
+});
+
 /**
  * Priority-loading tab container.
  *
@@ -63,6 +73,14 @@ export default function DashboardTabs({ children }: { children: React.ReactNode 
     return (
       <div key="sales-funnel" data-tab="sales-funnel">
         <SalesTabClient />
+      </div>
+    );
+  }
+
+  if (activeScreen === "system") {
+    return (
+      <div key="system" data-tab="system">
+        <SystemHealthTab />
       </div>
     );
   }
