@@ -3,7 +3,7 @@ import { syncBillingData } from "@/lib/sync/billing";
 import { syncMondayData } from "@/lib/sync/monday";
 import { syncPnlData } from "@/lib/sync/pnl";
 import { recordSyncRun } from "@/lib/sync-logs";
-import { syncProLog } from "@/lib/sync-pro-log";
+import { syncProLog, purgeOldSyncProEvents } from "@/lib/sync-pro-log";
 
 export const dynamic = "force-dynamic";
 /**
@@ -130,6 +130,9 @@ export async function GET(request: NextRequest) {
     errorMessage: summary.errors[0],
     detail: { ...summary, data_source: "internal_cookie" },
   });
+
+  // Retention: prune sync_pro_events older than 30 days (no new cron — piggyback here).
+  void purgeOldSyncProEvents();
 
   return NextResponse.json({ ok, summary }, { status: ok ? 200 : 500 });
 }

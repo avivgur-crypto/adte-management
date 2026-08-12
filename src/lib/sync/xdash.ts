@@ -16,7 +16,7 @@ import {
 } from "@/lib/xdash-client";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getIsraelHour } from "@/lib/israel-date";
-import { syncProLog } from "@/lib/sync-pro-log";
+import { syncProLog, purgeOldSyncProEvents } from "@/lib/sync-pro-log";
 
 const TIMEZONE_ISRAEL = "Asia/Jerusalem";
 
@@ -768,6 +768,8 @@ export async function syncXDASHData(
   });
 
   await purgeOldHourlySnapshots();
+  // Housekeeping: drop syncProLog rows older than 30d (same cadence as snapshot purge).
+  await purgeOldSyncProEvents();
 
   return { datesSynced: toFetch.length, rowsUpserted: 0, homeRowsWritten };
 }
