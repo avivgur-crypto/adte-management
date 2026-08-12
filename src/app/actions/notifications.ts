@@ -32,6 +32,16 @@ import { fetchHomeForDate } from "@/lib/xdash-client";
 import { syncProLog } from "@/lib/sync-pro-log";
 import type { NotificationSettingKey } from "@/app/actions/notification-settings";
 
+/** Red thresholds — keep in sync with System Health Card 1 (`system-health.ts`). */
+const SYNC_STALE_RED_MS: Record<string, number> = {
+  monday_sync: 48 * 60 * 60 * 1000,
+};
+const SYNC_STALE_RED_DEFAULT_MS = 6 * 60 * 60 * 1000;
+
+function syncStaleRedMs(source: string): number {
+  return SYNC_STALE_RED_MS[source] ?? SYNC_STALE_RED_DEFAULT_MS;
+}
+
 /** Same tag used by `@/app/actions/financials` and `/api/auto-sync` so the chart
  *  re-reads `daily_home_totals` after we've confirmed yesterday's source-of-truth. */
 const FINANCIAL_TAG = "financial-data";
@@ -347,6 +357,138 @@ export async function notifyCriticalSyncTripleFailure(
   const log = `[criticalSync] sentDate=${sentDate} admins=${adminIds.size} targeted=${userIds.length} deliveries_ok=${ok} failed=${failed}${errors.length ? `; ${errors.slice(0, 3).join("; ")}` : ""}`;
   console.warn(log);
   return { ok, failed, log };
+}
+
+/** Sources watched for stale-sync alerts (matches System Health Card 1). */
+const STALE_ALERT_SOURCES = [
+  "refresh_today_home",
+  "cron_sync",
+  "monday_sync",
+  "cron_golden_sync",
+] as const;
+
+const STALE_ALERT_THROTTLE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Push when any watched source's last successful sync exceeds Card 1's red
+ * threshold (6h XDASH-family / 48h monday_sync). Throttled to once per 12h
+ * per source via a sync_pro_events marker (`alert.sync_stale`).
+ *
+ * Recipients: admins only (same policy as critical_sync_alert).
+ */
+async function checkStaleSyncAlerts(): Promise<{
+  sent: boolean;
+  log: string;
+}> {
+  if (DISABLE_ALL_NOTIFICATIONS) {
+    return { sent: false, log: "stale_sync muted" };
+  }
+
+  const now = Date.now();
+  const throttleCutoff = new Date(now - STALE_ALERT_THROTTLE_MS).toISOString();
+
+  const [successRes, recentAlertsRes] = await Promise.all([
+    supabaseAdmin
+      .from("daily_sync_logs")
+      .select("source, created_at")
+      .eq("ok", true)
+      .in("source", [...STALE_ALERT_SOURCES])
+      .order("created_at", { ascending: false })
+      .limit(200),
+    supabaseAdmin
+      .from("sync_pro_events")
+      .select("detail, created_at")
+      .eq("event", "alert.sync_stale")
+      .gte("created_at", throttleCutoff)
+      .limit(50),
+  ]);
+
+  const lastSuccess = new Map<string, string>();
+  for (const row of successRes.data ?? []) {
+    const src = String(row.source);
+    if (!lastSuccess.has(src) && row.created_at) {
+      lastSuccess.set(src, String(row.created_at));
+    }
+  }
+
+  const recentlyAlerted = new Set<string>();
+  for (const row of recentAlertsRes.data ?? []) {
+    const detail = row.detail as { source?: string } | null;
+    if (detail?.source) recentlyAlerted.add(String(detail.source));
+  }
+
+  const stale: Array<{ source: string; ageHours: number }> = [];
+  for (const source of STALE_ALERT_SOURCES) {
+    if (recentlyAlerted.has(source)) continue;
+    const at = lastSuccess.get(source);
+    const ageMs = at ? Math.max(0, now - new Date(at).getTime()) : Number.POSITIVE_INFINITY;
+    if (ageMs > syncStaleRedMs(source)) {
+      stale.push({
+        source,
+        ageHours: Number.isFinite(ageMs)
+          ? Math.round(ageMs / (60 * 60 * 1000))
+          : 999,
+      });
+    }
+  }
+
+  if (stale.length === 0) {
+    return { sent: false, log: "stale_sync none" };
+  }
+
+  try {
+    ensureWebPushConfigured();
+  } catch (e) {
+    return {
+      sent: false,
+      log: `stale_sync skipped: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  const adminIds = await loadAdminUserIds();
+  if (adminIds.size === 0) {
+    return { sent: false, log: "stale_sync skipped: no admins" };
+  }
+
+  const { data: subRows, error: subErr } = await supabaseAdmin
+    .from("push_subscriptions")
+    .select("id, subscription_json, user_id")
+    .in("user_id", Array.from(adminIds));
+  if (subErr) {
+    return { sent: false, log: `stale_sync load subs: ${subErr.message}` };
+  }
+  if (!subRows?.length) {
+    return { sent: false, log: "stale_sync skipped: no admin subscriptions" };
+  }
+
+  let delivered = 0;
+  const parts: string[] = [];
+  for (const item of stale) {
+    const title = "⚠ Sync stale";
+    const body = `⚠ ${item.source} hasn't synced successfully in ${item.ageHours}h`;
+    const payload = JSON.stringify({ title, body });
+    const r = await sendPushToRows(subRows, payload);
+    delivered += r.ok;
+    parts.push(`${item.source}:${item.ageHours}h(ok=${r.ok})`);
+    // Marker regardless of delivery so we don't spam if push infra is half-broken.
+    syncProLog({
+      event: "alert.sync_stale",
+      branch_type: "sync_health",
+      status: r.ok > 0 ? "ok" : "error",
+      message: body,
+      detail: {
+        source: item.source,
+        age_hours: item.ageHours,
+        deliveries_ok: r.ok,
+        deliveries_failed: r.failed,
+      },
+    });
+  }
+
+  return {
+    sent: delivered > 0,
+    log: `stale_sync ${parts.join(" ")}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -992,10 +1134,11 @@ export async function checkPerformance(): Promise<{
   const profitGoal = await fetchMonthlyGoal(monthStart);
   if (profitGoal <= 0) {
     const low = await checkLowMarginAlert(todayRev, todayGp, hourIL, today);
+    const stale = await checkStaleSyncAlerts();
     return {
-      sent: low.sent,
-      reasons: [],
-      log: `[checkPerformance] no monthly goal set ${low.log}`,
+      sent: low.sent || stale.sent,
+      reasons: stale.sent ? ["sync_stale"] : [],
+      log: `[checkPerformance] no monthly goal set ${low.log} ${stale.log}`,
     };
   }
 
@@ -1086,7 +1229,11 @@ export async function checkPerformance(): Promise<{
   const lowMargin = await checkLowMarginAlert(todayRev, todayGp, hourIL, today);
   if (lowMargin.sent) reasons.push("low_margin_alert");
 
+  const stale = await checkStaleSyncAlerts();
+  if (stale.sent) reasons.push("sync_stale");
+  logExtras.push(stale.log);
+
   const log = `[checkPerformance] israelDate=${today} hourIL=${hourIL}${dailyGoalQuietHours ? " [daily quiet]" : ""} reasons=${reasons.join(",") || "none"}${logExtras.length ? ` ${logExtras.join(" ")}` : ""} push ok=${ok} failed=${failed}${errors.length ? ` ${errors[0]}` : ""} todayGp=${todayGp.toFixed(0)} dailyTarget=${dailyAvgTarget.toFixed(0)} mtd=${mtdProfit.toFixed(0)} ${lowMargin.log}`;
 
-  return { sent: ok > 0 || lowMargin.sent, reasons, log };
+  return { sent: ok > 0 || lowMargin.sent || stale.sent, reasons, log };
 }

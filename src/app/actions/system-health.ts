@@ -47,6 +47,18 @@ export type SystemHealthPayload = {
   today: TodayDataAge;
 };
 
+/** Red-threshold ages matching System Health Card 1. Exported for alert reuse. */
+export const SYNC_STALE_RED_MS = {
+  default: 6 * 60 * 60 * 1000,
+  monday_sync: 48 * 60 * 60 * 1000,
+} as const;
+
+export function syncStaleRedMs(source: string): number {
+  return source === "monday_sync"
+    ? SYNC_STALE_RED_MS.monday_sync
+    : SYNC_STALE_RED_MS.default;
+}
+
 const MS_H = 60 * 60 * 1000;
 
 /** Prefer these sources first; any other sources found in the logs follow alphabetically. */
