@@ -7,6 +7,8 @@
  * primary path; the table is observability only.
  */
 
+import { withOneRetry } from "@/lib/db-telemetry-retry";
+import { getIsraelHour } from "@/lib/israel-date";
 import { supabaseAdmin } from "@/lib/supabase";
 
 export type SyncProBranchType =
@@ -62,28 +64,21 @@ function capDetail(
 
 function persistSyncProEvent(input: SyncProLogInput): void {
   // Fire-and-forget: never await at the call site, never throw into the sync.
-  void Promise.resolve(
-    supabaseAdmin.from("sync_pro_events").insert({
+  // One retry covers the stale keep-alive socket on lambda thaw.
+  void withOneRetry(async () => {
+    const { error } = await supabaseAdmin.from("sync_pro_events").insert({
       event: input.event,
       branch_type: input.branch_type ?? null,
       status: input.status ?? null,
       message: truncateMessage(input.message),
       detail: capDetail(input.detail),
-    }),
-  )
-    .then(({ error }) => {
-      if (error) {
-        console.warn(
-          `[sync-pro-log] sync_pro_events insert failed (non-fatal): ${error.message}`,
-        );
-      }
-    })
-    .catch((e: unknown) => {
-      console.warn(
-        `[sync-pro-log] sync_pro_events insert threw (non-fatal):`,
-        e instanceof Error ? e.message : e,
-      );
     });
+    if (error) {
+      console.warn(
+        `[sync-pro-log] sync_pro_events insert failed (non-fatal): ${error.message}`,
+      );
+    }
+  }, "sync_pro_events.insert");
 }
 
 export function syncProLog(input: SyncProLogInput): void {
@@ -103,36 +98,42 @@ export function syncProLog(input: SyncProLogInput): void {
 /** Retention window for sync_pro_events (days). */
 export const SYNC_PRO_EVENTS_RETENTION_DAYS = 30;
 
+/** Israel hour (0–23) at which the daily purge is allowed to run. */
+const PURGE_ISRAEL_HOUR = 3;
+
+/** In-process gate so a warm instance doesn't purge twice in the same hour. */
+let lastPurgeAtMs = 0;
+
 /**
  * Delete sync_pro_events older than the retention window.
- * Safe to call repeatedly; never throws (logs and returns 0 on failure).
+ * Gated to Israel hour === 3 (at most ~once/day across cold starts; module
+ * timestamp skips a second run on the same warm instance). Never throws.
  */
 export async function purgeOldSyncProEvents(): Promise<number> {
+  if (getIsraelHour() !== PURGE_ISRAEL_HOUR) return 0;
+  if (Date.now() - lastPurgeAtMs < 60 * 60 * 1000) return 0;
+
   const cutoff = new Date(
     Date.now() - SYNC_PRO_EVENTS_RETENTION_DAYS * 24 * 60 * 60 * 1000,
   ).toISOString();
 
-  try {
-    const { error, count } = await supabaseAdmin
+  const count = await withOneRetry(async () => {
+    const { error, count: deleted } = await supabaseAdmin
       .from("sync_pro_events")
       .delete({ count: "exact" })
       .lt("created_at", cutoff);
 
     if (error) {
-      console.warn(
-        `[sync-pro-log] sync_pro_events purge failed (non-fatal): ${error.message}`,
-      );
-      return 0;
+      throw new Error(error.message);
     }
-    console.log(
-      `[sync-pro-log] sync_pro_events purge: removed ${count ?? 0} rows older than ${cutoff} (retention=${SYNC_PRO_EVENTS_RETENTION_DAYS}d)`,
-    );
-    return count ?? 0;
-  } catch (e) {
-    console.warn(
-      `[sync-pro-log] sync_pro_events purge threw (non-fatal):`,
-      e instanceof Error ? e.message : e,
-    );
-    return 0;
-  }
+    return deleted ?? 0;
+  }, "sync_pro_events.purge");
+
+  if (count == null) return 0;
+
+  lastPurgeAtMs = Date.now();
+  console.log(
+    `[sync-pro-log] sync_pro_events purge: removed ${count} rows older than ${cutoff} (retention=${SYNC_PRO_EVENTS_RETENTION_DAYS}d)`,
+  );
+  return count;
 }
