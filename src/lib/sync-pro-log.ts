@@ -65,6 +65,8 @@ function capDetail(
 function persistSyncProEvent(input: SyncProLogInput): void {
   // Fire-and-forget: never await at the call site, never throw into the sync.
   // One retry covers the stale keep-alive socket on lambda thaw.
+  // Soft `{ error }` must throw so withOneRetry retries; final failure is
+  // console-only (never emit an error event about failing to persist an event).
   void withOneRetry(async () => {
     const { error } = await supabaseAdmin.from("sync_pro_events").insert({
       event: input.event,
@@ -74,9 +76,7 @@ function persistSyncProEvent(input: SyncProLogInput): void {
       detail: capDetail(input.detail),
     });
     if (error) {
-      console.warn(
-        `[sync-pro-log] sync_pro_events insert failed (non-fatal): ${error.message}`,
-      );
+      throw new Error(error.message);
     }
   }, "sync_pro_events.insert");
 }
@@ -129,7 +129,17 @@ export async function purgeOldSyncProEvents(): Promise<number> {
     return deleted ?? 0;
   }, "sync_pro_events.purge");
 
-  if (count == null) return 0;
+  // Error event only after both attempts failed — not on a recovered thaw miss.
+  if (count == null) {
+    syncProLog({
+      event: "sync_pro.sync_pro_events.purge_failed",
+      branch_type: "full_cron",
+      status: "error",
+      message: "purge failed after retry (see prior console.warn)",
+      detail: { cutoff },
+    });
+    return 0;
+  }
 
   lastPurgeAtMs = Date.now();
   console.log(

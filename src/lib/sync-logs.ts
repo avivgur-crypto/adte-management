@@ -7,6 +7,9 @@
  * Fire-and-forget by design: never throws, never blocks the caller. If the DB
  * is unreachable or the table is missing we just log a warning — the sync run
  * itself remains the source of truth.
+ *
+ * Invariant: one operation → at most one error event in sync_pro_events, and
+ * only after withOneRetry has exhausted its attempts.
  */
 
 import { withOneRetry } from "@/lib/db-telemetry-retry";
@@ -37,7 +40,7 @@ export type SyncRunRecord = {
  */
 export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
   const result = await withOneRetry(async () => {
-    return await supabaseAdmin.from("daily_sync_logs").insert({
+    const res = await supabaseAdmin.from("daily_sync_logs").insert({
       source: record.source,
       duration_ms: Math.max(0, Math.round(record.durationMs)),
       dates_synced: Math.max(0, Math.round(record.datesSynced)),
@@ -46,26 +49,21 @@ export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
       error_message: record.errorMessage?.slice(0, 1000) ?? null,
       detail: record.detail ?? null,
     });
+    // Soft PostgREST errors must throw so withOneRetry actually retries them.
+    // Returning `{ error }` would look like success to the retry helper.
+    if (res.error) {
+      throw new Error(res.error.message);
+    }
+    return res;
   }, "daily_sync_logs.insert");
 
-  // Both attempts threw (already warned by withOneRetry).
+  // Only emit after both attempts failed — never on a recovered first attempt.
   if (result == null) {
-    syncProLog({
-      event: "sync_pro.daily_sync_logs.insert_threw",
-      branch_type: "full_cron",
-      status: "error",
-      message: "failed after retry (see prior console.warn)",
-      detail: { source: record.source },
-    });
-    return;
-  }
-
-  if (result.error) {
     syncProLog({
       event: "sync_pro.daily_sync_logs.insert_failed",
       branch_type: "full_cron",
       status: "error",
-      message: result.error.message,
+      message: "failed after retry (see prior console.warn)",
       detail: { source: record.source },
     });
   }

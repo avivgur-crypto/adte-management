@@ -47,11 +47,14 @@ export type SystemHealthPayload = {
   today: TodayDataAge;
 };
 
-/** Red-threshold ages matching System Health Card 1 (also mirrored in notifications.ts). */
+/** Red-threshold ages matching System Health Card 1 (hourly vs daily jobs). */
 const SYNC_STALE_RED_MS = {
-  default: 6 * 60 * 60 * 1000,
-  monday_sync: 48 * 60 * 60 * 1000,
+  hourly: 6 * 60 * 60 * 1000,
+  daily: 48 * 60 * 60 * 1000,
 } as const;
+
+/** Daily-cadence sources use the monday_sync thresholds (green <25h, amber 25–48h, red >48h). */
+const DAILY_FRESHNESS_SOURCES = new Set(["monday_sync", "cron_golden_sync"]);
 
 const MS_H = 60 * 60 * 1000;
 
@@ -72,6 +75,16 @@ const GUARD_EXPLANATIONS: Record<string, string> = {
     "regression_blocked — historical revenue regression blocked from overwriting",
 };
 
+/** Hide probe/test sources from Cards 1–2 (kept in DB for audit). */
+function isHiddenHealthSource(source: string): boolean {
+  return (
+    source === "manual_test" ||
+    source.startsWith("manual_test") ||
+    source.endsWith("_error_probe") ||
+    source.includes("_error_probe")
+  );
+}
+
 function formatAge(ms: number | null): string {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return "never";
   const sec = Math.floor(ms / 1000);
@@ -86,14 +99,13 @@ function formatAge(ms: number | null): string {
 
 function freshnessDot(source: string, ageMs: number | null): HealthDot {
   if (ageMs == null) return "unknown";
-  const isMonday = source === "monday_sync";
-  if (isMonday) {
+  if (DAILY_FRESHNESS_SOURCES.has(source)) {
     if (ageMs < 25 * MS_H) return "green";
-    if (ageMs < 48 * MS_H) return "amber";
+    if (ageMs < SYNC_STALE_RED_MS.daily) return "amber";
     return "red";
   }
   if (ageMs < 1 * MS_H) return "green";
-  if (ageMs < 6 * MS_H) return "amber";
+  if (ageMs < SYNC_STALE_RED_MS.hourly) return "amber";
   return "red";
 }
 
@@ -190,6 +202,9 @@ export async function getSystemHealth(): Promise<SystemHealthPayload> {
   }
   // Drop known-disabled / dead sources from the primary view (pairs removed).
   sourceSet.delete("cron_pairs");
+  for (const src of [...sourceSet]) {
+    if (isHiddenHealthSource(src)) sourceSet.delete(src);
+  }
 
   const sources = [
     ...PREFERRED_SOURCES.filter((s) => sourceSet.has(s)),
@@ -201,6 +216,7 @@ export async function getSystemHealth(): Promise<SystemHealthPayload> {
   const lastSuccess = new Map<string, string>();
   for (const row of successRes.data ?? []) {
     const src = String(row.source);
+    if (isHiddenHealthSource(src)) continue;
     if (!lastSuccess.has(src) && row.created_at) {
       lastSuccess.set(src, String(row.created_at));
     }
@@ -226,6 +242,7 @@ export async function getSystemHealth(): Promise<SystemHealthPayload> {
     const map = new Map<string, { count: number; latestError: string | null }>();
     for (const row of rows ?? []) {
       const src = String(row.source);
+      if (isHiddenHealthSource(src)) continue;
       const cur = map.get(src) ?? { count: 0, latestError: null };
       cur.count += 1;
       if (cur.latestError == null && row.error_message) {
