@@ -42,3 +42,6 @@ xdash_backup_2026.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local report previews
+tmp/
