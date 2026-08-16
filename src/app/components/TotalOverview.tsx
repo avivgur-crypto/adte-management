@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
-import { CircleDollarSign, Coins, Percent, TrendingUp } from "lucide-react";
+import { CircleDollarSign, Coins, HandCoins, Percent, TrendingUp } from "lucide-react";
 import { useFilter } from "@/app/context/FilterContext";
 import type { MonthOverview, XDASHMonthTotals } from "@/app/actions/financials";
 import {
@@ -147,6 +147,9 @@ export default function TotalOverview({
     );
     const profitValue = mediaPL + saasPL;
 
+    const amountReceived = billing.reduce((s, d) => s + d.amountReceived, 0);
+    const finalRevenue = billing.reduce((s, d) => s + d.finalRevenue, 0);
+
     return {
       filteredData,
       profitValue,
@@ -160,6 +163,8 @@ export default function TotalOverview({
       bsCost,
       mediaPL,
       saasPL,
+      amountReceived,
+      finalRevenue,
     };
   }, [dataByMonth, selectedMonths, source, xdashByMonth]);
 
@@ -170,6 +175,16 @@ export default function TotalOverview({
     const { profitValue, revenueTotal } = metrics;
     if (revenueTotal === 0) return 0;
     return Math.round((profitValue / revenueTotal) * 1000) / 10;
+  }, [metrics]);
+
+  /** Billing-sheet Collection Rate for the selected sidebar months (always from Master Billing). */
+  const collection = useMemo(() => {
+    const { amountReceived, finalRevenue } = metrics;
+    const pct =
+      finalRevenue === 0
+        ? 0
+        : Math.round((amountReceived / finalRevenue) * 1000) / 10;
+    return { amountReceived, finalRevenue, pct };
   }, [metrics]);
 
   if (metrics.filteredData.length === 0) {
@@ -254,6 +269,37 @@ export default function TotalOverview({
               </span>
             </div>
             <span className={PRIMARY_FIGURE}>{marginPct.toFixed(1)}%</span>
+          </div>
+        </div>
+        <div className={STAT_ROW}>
+          <div className={STAT_PRIMARY}>
+            <div className="flex min-w-0 items-center gap-2">
+              <HandCoins
+                className="h-3.5 w-3.5 shrink-0 text-white/35"
+                strokeWidth={2}
+                aria-hidden
+              />
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-white/45">
+                <span className="inline sm:hidden">Collection %</span>
+                <span className="hidden sm:inline">Collection Rate %</span>
+              </span>
+            </div>
+            <span className={PRIMARY_FIGURE}>{collection.pct.toFixed(1)}%</span>
+          </div>
+          <div className="mt-1.5 min-w-0 pl-5 sm:pl-6">
+            <p className="text-[11px] leading-snug text-white/55 sm:text-xs">
+              <span className="text-white/40">Received:</span>
+              <span className="ml-0.5 tabular-nums text-white/75">
+                {formatCurrency(collection.amountReceived)}
+              </span>
+              <span className="mx-2 text-white/25" aria-hidden>
+                |
+              </span>
+              <span className="text-white/40">Final:</span>
+              <span className="ml-0.5 tabular-nums text-white/75">
+                {formatCurrency(collection.finalRevenue)}
+              </span>
+            </p>
           </div>
         </div>
       </div>

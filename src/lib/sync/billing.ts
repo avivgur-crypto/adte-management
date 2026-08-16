@@ -1,20 +1,24 @@
 /**
  * Billing sync: Master Billing 2026 — Demand (revenue) + Supply (cost) → monthly_goals.
- * Tabs: exact names 'Demand' and 'Supply'. Column A = month (e.g. 'Jan26'), C = type, H = amount.
- * Demand: Media → media_revenue, SaaS → saas_actual. Supply: Media → media_cost, etc.
+ * Tabs: exact names 'Demand' and 'Supply'. Column A = month (e.g. 'Jan26'), C = type,
+ * H = Final Revenue / amount, I = Amount Received (Demand only, for Collection Rate).
+ * Demand: Media → media_revenue, SaaS → saas_actual; also sums H→final_revenue, I→amount_received.
+ * Supply: Media → media_cost, etc.
  */
 
 import { getSheetValues } from "@/lib/google-sheets";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const BILLING_SHEET_ID = "1GKzqtjt-5bk4uBd-MIhkbbgSasfcF86eJ9UR-VQYZdQ";
-const RANGE_DEMAND = "Demand!A1:H990";
+/** Demand includes col I (Amount Received) for Collection Rate. */
+const RANGE_DEMAND = "Demand!A1:I990";
 const RANGE_SUPPLY = "Supply!A1:H990";
 const TABLE = "monthly_goals";
 
 const COL_DATE = 0;   // A - Month e.g. 'Jan26'
 const COL_TYPE = 2;   // C - Type: 'Media', 'SaaS', etc.
-const COL_AMOUNT = 7; // H - Amount e.g. '$157,271.11'
+const COL_AMOUNT = 7; // H - Final Revenue (Demand) / amount (Supply)
+const COL_RECEIVED = 8; // I - Amount Received (Demand only)
 
 const TYPE_MEDIA = "media";
 const TYPE_SAAS = "saas";
@@ -117,6 +121,22 @@ interface MonthBreakdown {
   media_cost: number;
   tech_cost: number;
   bs_cost: number;
+  /** Sum of Demand!H (Final Revenue) — Collection Rate denominator. */
+  final_revenue: number;
+  /** Sum of Demand!I (Amount Received) — Collection Rate numerator. */
+  amount_received: number;
+}
+
+function emptyBreakdown(): MonthBreakdown {
+  return {
+    media_revenue: 0,
+    saas_actual: 0,
+    media_cost: 0,
+    tech_cost: 0,
+    bs_cost: 0,
+    final_revenue: 0,
+    amount_received: 0,
+  };
 }
 
 /**
@@ -132,7 +152,9 @@ function normalizeType(value: string | number | undefined): string {
 
 /**
  * Demand sheet: iterate ALL rows (skip blanks, don't break on them).
- * Sums Column H for every row whose type matches media or saas, across all entities.
+ * - Sums Column H into media_revenue / saas_actual by type (existing Main Stats).
+ * - Sums Column H → final_revenue and Column I → amount_received for Collection Rate
+ *   across every Demand row with a valid month (all income types).
  */
 function processDemandRows(
   rows: string[][]
@@ -148,25 +170,33 @@ function processDemandRows(
       const type = normalizeType(row[COL_TYPE]);
       const monthKey = parseMonthKey(row[COL_DATE]);
       if (!monthKey) continue;
-      const amount = parseCurrency(row[COL_AMOUNT]);
-      if (Number.isNaN(amount) || amount === 0) continue;
-      const cur = byMonth.get(monthKey) ?? {
-        media_revenue: 0,
-        saas_actual: 0,
-        media_cost: 0,
-        tech_cost: 0,
-        bs_cost: 0,
-      };
-      if (type === TYPE_MEDIA) {
-        cur.media_revenue += amount;
-      } else if (type === TYPE_SAAS) {
-        cur.saas_actual += amount;
-      } else {
-        skippedTypes.set(type, (skippedTypes.get(type) ?? 0) + 1);
+      const finalRev = parseCurrency(row[COL_AMOUNT]);
+      const receivedRaw = parseCurrency(row[COL_RECEIVED]);
+      const received = Number.isNaN(receivedRaw) ? 0 : receivedRaw;
+
+      const cur = byMonth.get(monthKey) ?? emptyBreakdown();
+
+      // Collection Rate totals: every Demand line with a numeric Final Revenue.
+      if (!Number.isNaN(finalRev)) {
+        cur.final_revenue += finalRev;
+        cur.amount_received += received;
+      }
+
+      if (Number.isNaN(finalRev) || finalRev === 0) {
+        byMonth.set(monthKey, cur);
         continue;
       }
+
+      if (type === TYPE_MEDIA) {
+        cur.media_revenue += finalRev;
+        rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
+      } else if (type === TYPE_SAAS) {
+        cur.saas_actual += finalRev;
+        rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
+      } else {
+        skippedTypes.set(type, (skippedTypes.get(type) ?? 0) + 1);
+      }
       byMonth.set(monthKey, cur);
-      rowsPerMonth.set(monthKey, (rowsPerMonth.get(monthKey) ?? 0) + 1);
     } catch (err) {
       console.error(`[billing sync] Demand row ${i + 1} error:`, err);
     }
@@ -193,13 +223,7 @@ function processSupplyRows(
       if (!monthKey) continue;
       const amount = parseCurrency(row[COL_AMOUNT]);
       if (Number.isNaN(amount) || amount === 0) continue;
-      const cur = byMonth.get(monthKey) ?? {
-        media_revenue: 0,
-        saas_actual: 0,
-        media_cost: 0,
-        tech_cost: 0,
-        bs_cost: 0,
-      };
+      const cur = byMonth.get(monthKey) ?? emptyBreakdown();
       if (type === TYPE_MEDIA) {
         cur.media_cost += amount;
       } else if (type === TYPE_TECH_PROVIDER) {
@@ -254,7 +278,8 @@ export async function syncBillingData(): Promise<SyncBillingResult> {
     console.log(
       `[billing sync] ${month}: ${dCount} demand + ${sCount} supply rows` +
       ` | revenue=$${b.media_revenue.toFixed(2)} saas=$${b.saas_actual.toFixed(2)}` +
-      ` | cost=$${b.media_cost.toFixed(2)} tech=$${b.tech_cost.toFixed(2)} bs=$${b.bs_cost.toFixed(2)}`,
+      ` | cost=$${b.media_cost.toFixed(2)} tech=$${b.tech_cost.toFixed(2)} bs=$${b.bs_cost.toFixed(2)}` +
+      ` | collection final=$${b.final_revenue.toFixed(2)} received=$${b.amount_received.toFixed(2)}`,
     );
   }
 
@@ -265,6 +290,8 @@ export async function syncBillingData(): Promise<SyncBillingResult> {
     media_cost: breakdown.media_cost,
     tech_cost: breakdown.tech_cost,
     bs_cost: breakdown.bs_cost,
+    final_revenue: breakdown.final_revenue,
+    amount_received: breakdown.amount_received,
   }));
 
   if (batch.length > 0) {

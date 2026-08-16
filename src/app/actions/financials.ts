@@ -377,6 +377,10 @@ export interface MonthOverview {
   mediaCost: number;
   techCost: number;
   bsCost: number;
+  /** Master Billing Demand!H sum — Collection Rate denominator. */
+  finalRevenue: number;
+  /** Master Billing Demand!I sum — Collection Rate numerator. */
+  amountReceived: number;
 }
 
 const OVERVIEW_YEAR = 2026;
@@ -501,12 +505,14 @@ interface MonthlyGoalRow {
   tech_cost: number;
   bs_cost: number;
   profit_goal: number;
+  final_revenue: number;
+  amount_received: number;
 }
 
 async function _getAllMonthlyGoals(): Promise<MonthlyGoalRow[]> {
   const { data: rows, error } = await supabaseAdmin
     .from("monthly_goals")
-    .select("month, revenue_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost, profit_goal")
+    .select("month, revenue_goal, saas_goal, saas_actual, media_revenue, media_cost, tech_cost, bs_cost, profit_goal, final_revenue, amount_received")
     .in("month", ALL_GOAL_MONTHS)
     .order("month", { ascending: true });
   if (error) throw new Error(`getAllMonthlyGoals: ${error.message}`);
@@ -530,6 +536,8 @@ async function _getTotalOverviewData(): Promise<MonthOverview[]> {
       mediaCost: Number(g?.media_cost ?? 0),
       techCost: Number(g?.tech_cost ?? 0),
       bsCost: Number(g?.bs_cost ?? 0),
+      finalRevenue: Number(g?.final_revenue ?? 0),
+      amountReceived: Number(g?.amount_received ?? 0),
     };
   });
 }
