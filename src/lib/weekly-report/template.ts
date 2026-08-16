@@ -120,7 +120,7 @@ function dailyBarsSvg(report: WeeklyExecReport): string {
   if (!bars.length) return "";
   const max = Math.max(...bars.map((b) => b.revenue), 1);
   const w = HALF_CHART_W;
-  const h = 190;
+  const h = 168;
   const labelZone = 34; // two stacked value labels above bars
   const axisZone = 20;
   const plotH = h - labelZone - axisZone;
@@ -166,7 +166,7 @@ function monthlyBarsSvg(report: WeeklyExecReport): string {
   if (!bars.length) return "";
   const max = Math.max(...bars.flatMap((b) => [b.actual, b.goal]), 1);
   const w = HALF_CHART_W;
-  const h = 190;
+  const h = 168;
   const labelZone = 34; // actual (white) + goal (gray) stacked above bars
   const axisZone = 20;
   const plotH = h - labelZone - axisZone;
@@ -212,14 +212,51 @@ function ytdLineSvg(report: WeeklyExecReport): string {
   const pts = report.ytdCumulative;
   if (pts.length < 2) return "";
   const w = FULL_CHART_W;
-  const h = 190;
-  const padL = 10;
-  const padR = 96; // room for endpoint value labels
-  const padY = 14;
+  const h = 178;
+  const padL = 46; // Y-axis $ labels
+  const padR = 100; // endpoint value labels
+  const padT = 10;
+  const padB = 22; // X-axis month labels
   const last = pts[pts.length - 1]!;
   const max = Math.max(...pts.flatMap((p) => [p.actual, p.target]), 1);
   const xAt = (i: number) => padL + (i / (pts.length - 1)) * (w - padL - padR);
-  const yAt = (v: number) => h - padY - (v / max) * (h - padY * 2 - 12);
+  const yAt = (v: number) => h - padB - (v / max) * (h - padT - padB);
+  const plotRight = w - padR;
+  const parts: string[] = [];
+
+  // Y gridlines at a round step ($1M/$2M/$5M) — dollars accumulated since Jan 1.
+  const rawStep = max / 4;
+  const mag = 10 ** Math.floor(Math.log10(rawStep));
+  const step = [1, 2, 5, 10]
+    .map((k) => k * mag)
+    .find((s) => s >= rawStep) ?? rawStep;
+  for (let v = step; v <= max; v += step) {
+    const gy = yAt(v);
+    parts.push(
+      `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${plotRight}" y2="${gy.toFixed(1)}" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>`,
+    );
+    parts.push(
+      `<text x="${padL - 7}" y="${(gy + 3.5).toFixed(1)}" text-anchor="end" fill="${AXIS_TEXT}" font-size="9.5">${chartMoney(v)}</text>`,
+    );
+  }
+
+  // X ticks: first point of each month.
+  let prevMonth = "";
+  pts.forEach((p, i) => {
+    const mk = p.date.slice(0, 7);
+    if (mk !== prevMonth) {
+      prevMonth = mk;
+      const [y, m] = mk.split("-").map(Number);
+      const name = new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString(
+        "en-US",
+        { month: "short", timeZone: "UTC" },
+      );
+      parts.push(
+        `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" fill="${AXIS_TEXT}" font-size="9.5">${name}</text>`,
+      );
+    }
+  });
+
   const actualPath = pts
     .map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.actual).toFixed(1)}`)
     .join(" ");
@@ -237,7 +274,9 @@ function ytdLineSvg(report: WeeklyExecReport): string {
       actualLabelY = targetLabelY - 14;
     }
   }
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="YTD cumulative revenue vs pro-rata target">
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cumulative revenue since January 1 vs pro-rata target">
+    ${parts.join("")}
+    <line x1="${padL}" y1="${(h - padB).toFixed(1)}" x2="${plotRight}" y2="${(h - padB).toFixed(1)}" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
     <path d="${targetPath}" fill="none" stroke="#8b8b94" stroke-width="1.6" stroke-dasharray="5 4"/>
     <path d="${actualPath}" fill="none" stroke="url(#gLine)" stroke-width="2.6"/>
     <circle cx="${endX.toFixed(1)}" cy="${yAt(last.actual).toFixed(1)}" r="3.2" fill="#ff6d8e"/>
@@ -267,13 +306,14 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
     `${report.statusLabel} — this week ${headlineMoney(report.weekTotals.revenue)} ` +
     `vs ${headlineMoney(report.priorWeekTotals.revenue)} last week ` +
     `(${signedPct(report.weekWoW.revenuePct)})${driverText}.`;
+  const revPace = report.mtd.pace.revenue;
   const headlinePath =
     report.status === "on_pace"
-      ? `projected ${headlineMoney(report.mtd.pace.revenue.projected)} EOM`
-      : `need ${headlineMoney(report.mtd.pace.revenue.requiredDailyRunRate)}/day`;
+      ? `on track for ${headlineMoney(revPace.projected)} by month-end`
+      : `need ${headlineMoney(revPace.requiredDailyRunRate)}/day to hit the ${headlineMoney(revPace.goal)} goal`;
   const headlineLine2 =
-    `Month: ${headlineMoney(report.mtd.revenue)} of ` +
-    `${headlineMoney(report.mtd.pace.revenue.targetMtd)} pro-rata target → ${headlinePath}.`;
+    `${escapeHtml(report.mtd.monthLabel.split(" ")[0]!)}, day ${revPace.effectiveDaysPassed} of ${revPace.daysInMonth}: ` +
+    `${headlineMoney(report.mtd.revenue)} vs ${headlineMoney(revPace.targetMtd)} expected by now → ${headlinePath}.`;
   const ytdDelta = report.ytd.revenue - report.ytd.revenueGoalYtd;
   const ytdDeltaText = `${headlineMoney(Math.abs(ytdDelta))} ${
     ytdDelta >= 0 ? "above" : "below"
@@ -331,7 +371,7 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
     background:
       radial-gradient(ellipse 120% 80% at 50% 0%, #1a1a1a 0%, #0a0a0a 50%, #000 100%);
   }
-  .page { display: flex; flex-direction: column; gap: 15px; height: 100%; }
+  .page { display: flex; flex-direction: column; gap: 12px; height: 100%; }
   header {
     display: flex; align-items: center; justify-content: space-between;
     border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px;
@@ -341,21 +381,29 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
   .meta .title { font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #a1a1aa; font-weight: 600; }
   .meta .range { font-size: 19px; font-weight: 800; margin-top: 3px; }
   .status {
-    padding: 14px 16px; border-radius: 12px;
+    padding: 10px 16px; border-radius: 12px;
     background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.1);
     border-left: 3px solid ${accent};
   }
   .status-line { font-size: 14px; color: #e4e4e7; line-height: 1.55; }
   .status-line + .status-line { margin-top: 3px; color: #b9b9c0; }
   .verdict { color: ${accent}; font-weight: 800; }
-  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .hero-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .hero-item { text-align: center; padding: 2px 0; }
+  .hero-item + .hero-item { border-left: 1px solid rgba(255,255,255,0.08); }
+  .hero-lbl { font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #9ca3af; }
+  .hero-val { font-size: 25px; font-weight: 800; font-variant-numeric: tabular-nums; margin: 4px 0 3px; }
+  .hero-sub { font-size: 11.5px; }
+  .hero-sub.up { color: #4ade80; }
+  .hero-sub.down { color: #f472b6; }
   .card {
     min-width: 0;
     background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 12px; padding: 14px 16px;
+    border-radius: 12px; padding: 12px 16px;
   }
   .card h3 {
-    margin: 0 0 10px; font-size: 11px; letter-spacing: 0.13em;
+    margin: 0 0 8px; font-size: 11px; letter-spacing: 0.13em;
     text-transform: uppercase; color: #9ca3af; font-weight: 600;
   }
   .metric { display: flex; justify-content: space-between; align-items: baseline; margin: 6px 0; }
@@ -363,9 +411,6 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
   .metric .val { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; }
   .primary-pace { display: flex; align-items: baseline; gap: 7px; font-size: 32px; font-weight: 800; line-height: 1.1; margin: 2px 0 6px; }
   .primary-label { font-size: 11px; color: #b9b9c0; white-space: nowrap; }
-  .wow { font-size: 10.5px; color: #b9b9c0; margin-top: 8px; line-height: 1.5; }
-  .wow.up { color: #4ade80; }
-  .wow.down { color: #f472b6; }
   .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .chart-card h4 {
     margin: 0 0 8px; font-size: 11px; letter-spacing: 0.11em;
@@ -397,27 +442,39 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
       </div>
     </header>
 
+    <section class="card hero">
+      <h3>This week · ${escapeHtml(report.week.label)}</h3>
+      <div class="hero-grid">
+        <div class="hero-item">
+          <div class="hero-lbl">Revenue</div>
+          <div class="hero-val">${money(report.weekTotals.revenue)}</div>
+          <div class="hero-sub ${(report.weekWoW.revenuePct ?? 0) >= 0 ? "up" : "down"}">${signedPct(report.weekWoW.revenuePct)} vs last week</div>
+        </div>
+        <div class="hero-item">
+          <div class="hero-lbl">Gross profit</div>
+          <div class="hero-val">${money(report.weekTotals.profit)}</div>
+          <div class="hero-sub ${(report.weekWoW.profitPct ?? 0) >= 0 ? "up" : "down"}">${signedPct(report.weekWoW.profitPct)} vs last week</div>
+        </div>
+        <div class="hero-item">
+          <div class="hero-lbl">Margin</div>
+          <div class="hero-val">${report.weekTotals.marginPct.toFixed(1)}%</div>
+          <div class="hero-sub ${report.weekWoW.marginPoints >= 0 ? "up" : "down"}">${signedPoints(report.weekWoW.marginPoints)} vs last week</div>
+        </div>
+      </div>
+    </section>
+
     <div class="status">
       <div class="status-line"><span class="verdict">${escapeHtml(report.statusLabel)}</span>${escapeHtml(headlineLine1.slice(report.statusLabel.length))}</div>
-      <div class="status-line">${escapeHtml(headlineLine2)}</div>
+      <div class="status-line">${headlineLine2}</div>
     </div>
 
-    <div class="grid3">
+    <div class="grid2">
       <section class="card">
-        <h3>This week</h3>
-        <div class="metric"><span class="lbl">Revenue</span><span class="val">${money(report.weekTotals.revenue)}</span></div>
-        <div class="metric"><span class="lbl">Gross profit</span><span class="val">${money(report.weekTotals.profit)}</span></div>
-        <div class="wow ${ (report.weekWoW.revenuePct ?? 0) >= 0 ? "up" : "down"}">
-          WoW: Rev ${signedPct(report.weekWoW.revenuePct)} · GP ${signedPct(report.weekWoW.profitPct)}<br/>Margin ${report.weekTotals.marginPct.toFixed(1)}% (${signedPoints(report.weekWoW.marginPoints)})
-        </div>
-      </section>
-
-      <section class="card">
-        <h3>MTD · ${escapeHtml(report.mtd.monthLabel)}</h3>
+        <h3>MTD · ${escapeHtml(report.mtd.monthLabel)} · day ${revPace.effectiveDaysPassed}/${revPace.daysInMonth}</h3>
         <div class="metric"><span class="lbl">Revenue</span><span class="val">${money(report.mtd.revenue)}</span></div>
-        <div class="pace-row"><strong>${report.mtd.pace.revenue.pacePercent != null ? `${report.mtd.pace.revenue.pacePercent}%` : "—"}</strong> of pro-rata MTD target · GP ${headlineMoney(report.mtd.profit)} (${report.mtd.pace.profit.pacePercent != null ? `${report.mtd.pace.profit.pacePercent}%` : "—"})</div>
+        <div class="pace-row"><strong>${revPace.pacePercent != null ? `${revPace.pacePercent}%` : "—"}</strong> of the ${headlineMoney(revPace.targetMtd)} expected by day ${revPace.effectiveDaysPassed} · GP ${headlineMoney(report.mtd.profit)} (${report.mtd.pace.profit.pacePercent != null ? `${report.mtd.pace.profit.pacePercent}%` : "—"})</div>
         <p class="pace-row">
-          Target ${headlineMoney(report.mtd.pace.revenue.targetMtd)} · EOM ${headlineMoney(report.mtd.pace.revenue.projected)}${report.status !== "on_pace" ? ` · Need ${headlineMoney(report.mtd.pace.revenue.requiredDailyRunRate)}/day` : ""}
+          Month goal ${headlineMoney(revPace.goal)} · projected ${headlineMoney(revPace.projected)} by month-end${report.status !== "on_pace" ? ` · need ${headlineMoney(revPace.requiredDailyRunRate)}/day` : ""}
         </p>
       </section>
 
@@ -444,10 +501,10 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
     </div>
 
     <section class="card chart-card">
-      <h4>YTD cumulative revenue vs target · <span style="color:${ytdDelta >= 0 ? "#4ade80" : "#f472b6"}">${ytdDeltaText}</span></h4>
+      <h4>Cumulative revenue since Jan 1 · <span style="color:${ytdDelta >= 0 ? "#4ade80" : "#f472b6"}">${ytdDeltaText}</span></h4>
       ${ytdLineSvg(report)}
-      <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual
-        <span class="dot" style="background:#8b8b94;margin-left:12px"></span>Target (pro-rata)</div>
+      <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual revenue, accumulated day by day
+        <span class="dot" style="background:#8b8b94;margin-left:12px"></span>Where we should be to hit the annual goal</div>
     </section>
 
     <section class="card">
