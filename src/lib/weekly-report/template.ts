@@ -1,10 +1,25 @@
 /**
  * One-page weekly exec report HTML — Adtex black theme.
+ *
+ * Layout is tuned for A4 (794×1123 CSS px): generous spacing fills the page,
+ * and every chart carries its own value labels (a chart without numbers is
+ * decoration, not information). SVG viewBox widths match rendered widths 1:1
+ * so font sizes inside charts are true pixels.
  */
 
 import { readFileSync } from "fs";
 import { join } from "path";
 import type { WeeklyExecReport } from "@/lib/weekly-report/data";
+
+/** Inner width of a half-page chart card (px). */
+const HALF_CHART_W = 318;
+/** Inner width of the full-page chart card (px). */
+const FULL_CHART_W = 672;
+
+const AXIS_TEXT = "#a1a1aa";
+const VALUE_TEXT = "#f4f4f5";
+const GP_COLOR = "#a3e635";
+const GOAL_COLOR = "#71717a";
 
 function money(n: number, compact = false): string {
   if (compact && Math.abs(n) >= 1_000_000) {
@@ -18,6 +33,14 @@ function money(n: number, compact = false): string {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(n);
+}
+
+/** Short money for chart labels: $33K / $1.71M. */
+function chartMoney(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `$${Math.round(n / 1_000)}K`;
+  return `$${Math.round(n)}`;
 }
 
 function signedPct(n: number | null): string {
@@ -82,31 +105,52 @@ function logoDataUri(): string {
   }
 }
 
+/** "Thu 6" — weekday + day of month, readable at small sizes. */
+function shortDayLabel(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const weekday = new Date(Date.UTC(y!, m! - 1, d!)).toLocaleDateString(
+    "en-US",
+    { weekday: "short", timeZone: "UTC" },
+  );
+  return `${weekday} ${d}`;
+}
+
 function dailyBarsSvg(report: WeeklyExecReport): string {
   const bars = report.dailyBars;
   if (!bars.length) return "";
   const max = Math.max(...bars.map((b) => b.revenue), 1);
-  const w = 520;
-  const h = 110;
-  const gap = 8;
+  const w = HALF_CHART_W;
+  const h = 190;
+  const labelZone = 34; // two stacked value labels above bars
+  const axisZone = 20;
+  const plotH = h - labelZone - axisZone;
+  const baseY = labelZone + plotH;
+  const gap = 7;
   const barW = (w - gap * (bars.length + 1)) / bars.length;
   const parts: string[] = [];
   bars.forEach((b, i) => {
     const x = gap + i * (barW + gap);
-    const bh = (b.revenue / max) * 78;
-    const y = 88 - bh;
+    const cx = x + barW / 2;
+    const bh = (b.revenue / max) * plotH;
+    const y = baseY - bh;
     parts.push(
-      `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" rx="3" fill="url(#gRev)"/>`,
+      `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="url(#gRev)"/>`,
     );
-    const ph = (b.profit / max) * 78;
+    const ph = (b.profit / max) * plotH;
     parts.push(
-      `<rect x="${x}" y="${88 - ph}" width="${Math.max(2, barW * 0.35)}" height="${ph}" rx="2" fill="#a3e635" opacity="0.9"/>`,
+      `<rect x="${x.toFixed(1)}" y="${(baseY - ph).toFixed(1)}" width="${Math.max(3, barW * 0.34).toFixed(1)}" height="${ph.toFixed(1)}" rx="2" fill="${GP_COLOR}" opacity="0.92"/>`,
     );
     parts.push(
-      `<text x="${x + barW / 2}" y="104" text-anchor="middle" fill="#71717a" font-size="8">${b.label.split(",")[0]}</text>`,
+      `<text x="${cx.toFixed(1)}" y="${(y - 19).toFixed(1)}" text-anchor="middle" fill="${VALUE_TEXT}" font-size="10.5" font-weight="700">${chartMoney(b.revenue)}</text>`,
+    );
+    parts.push(
+      `<text x="${cx.toFixed(1)}" y="${(y - 7).toFixed(1)}" text-anchor="middle" fill="${GP_COLOR}" font-size="9">${chartMoney(b.profit)}</text>`,
+    );
+    parts.push(
+      `<text x="${cx.toFixed(1)}" y="${h - 5}" text-anchor="middle" fill="${AXIS_TEXT}" font-size="9.5">${shortDayLabel(b.date)}</text>`,
     );
   });
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Daily revenue and gross profit this week">
     <defs>
       <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="#6d8eff"/>
@@ -121,28 +165,39 @@ function monthlyBarsSvg(report: WeeklyExecReport): string {
   const bars = report.monthlyBars;
   if (!bars.length) return "";
   const max = Math.max(...bars.flatMap((b) => [b.actual, b.goal]), 1);
-  const w = 520;
-  const h = 120;
-  const gap = 10;
+  const w = HALF_CHART_W;
+  const h = 190;
+  const labelZone = 34; // actual (white) + goal (gray) stacked above bars
+  const axisZone = 20;
+  const plotH = h - labelZone - axisZone;
+  const baseY = labelZone + plotH;
+  const gap = 8;
   const slot = (w - gap * (bars.length + 1)) / bars.length;
   const parts: string[] = [];
   bars.forEach((b, i) => {
     const x = gap + i * (slot + gap);
-    const aw = slot * 0.38;
-    const gw = slot * 0.38;
-    const ah = (b.actual / max) * 85;
-    const gh = (b.goal / max) * 85;
+    const cx = x + slot / 2;
+    const barW = slot * 0.42;
+    const ah = (b.actual / max) * plotH;
+    const gh = (b.goal / max) * plotH;
+    const pairTop = baseY - Math.max(ah, gh);
     parts.push(
-      `<rect x="${x}" y="${95 - ah}" width="${aw}" height="${ah}" rx="2" fill="url(#gRev2)"/>`,
+      `<rect x="${x.toFixed(1)}" y="${(baseY - ah).toFixed(1)}" width="${barW.toFixed(1)}" height="${ah.toFixed(1)}" rx="2" fill="url(#gRev2)"/>`,
     );
     parts.push(
-      `<rect x="${x + aw + 3}" y="${95 - gh}" width="${gw}" height="${gh}" rx="2" fill="#3f3f46"/>`,
+      `<rect x="${(x + barW + 3).toFixed(1)}" y="${(baseY - gh).toFixed(1)}" width="${barW.toFixed(1)}" height="${gh.toFixed(1)}" rx="2" fill="#3f3f46"/>`,
     );
     parts.push(
-      `<text x="${x + slot / 2}" y="112" text-anchor="middle" fill="#71717a" font-size="8">${b.label}</text>`,
+      `<text x="${cx.toFixed(1)}" y="${(pairTop - 19).toFixed(1)}" text-anchor="middle" fill="${VALUE_TEXT}" font-size="9.5" font-weight="700">${chartMoney(b.actual)}</text>`,
+    );
+    parts.push(
+      `<text x="${cx.toFixed(1)}" y="${(pairTop - 7).toFixed(1)}" text-anchor="middle" fill="${GOAL_COLOR}" font-size="8.5">${chartMoney(b.goal)}</text>`,
+    );
+    parts.push(
+      `<text x="${cx.toFixed(1)}" y="${h - 5}" text-anchor="middle" fill="${AXIS_TEXT}" font-size="9.5">${b.label}</text>`,
     );
   });
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Monthly actual revenue vs goal">
     <defs>
       <linearGradient id="gRev2" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="#6d8eff"/>
@@ -156,21 +211,39 @@ function monthlyBarsSvg(report: WeeklyExecReport): string {
 function ytdLineSvg(report: WeeklyExecReport): string {
   const pts = report.ytdCumulative;
   if (pts.length < 2) return "";
-  const w = 520;
-  const h = 110;
-  const pad = 8;
+  const w = FULL_CHART_W;
+  const h = 190;
+  const padL = 10;
+  const padR = 96; // room for endpoint value labels
+  const padY = 14;
+  const last = pts[pts.length - 1]!;
   const max = Math.max(...pts.flatMap((p) => [p.actual, p.target]), 1);
-  const xAt = (i: number) => pad + (i / (pts.length - 1)) * (w - pad * 2);
-  const yAt = (v: number) => h - pad - (v / max) * (h - pad * 2 - 12);
+  const xAt = (i: number) => padL + (i / (pts.length - 1)) * (w - padL - padR);
+  const yAt = (v: number) => h - padY - (v / max) * (h - padY * 2 - 12);
   const actualPath = pts
     .map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.actual).toFixed(1)}`)
     .join(" ");
   const targetPath = pts
     .map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.target).toFixed(1)}`)
     .join(" ");
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg">
-    <path d="${targetPath}" fill="none" stroke="#52525b" stroke-width="1.5" stroke-dasharray="4 3"/>
-    <path d="${actualPath}" fill="none" stroke="url(#gLine)" stroke-width="2.2"/>
+  const endX = xAt(pts.length - 1);
+  let targetLabelY = yAt(last.target) + 3;
+  let actualLabelY = yAt(last.actual) + 3;
+  // Keep the two endpoint labels from overlapping.
+  if (Math.abs(targetLabelY - actualLabelY) < 14) {
+    if (targetLabelY <= actualLabelY) {
+      targetLabelY = actualLabelY - 14;
+    } else {
+      actualLabelY = targetLabelY - 14;
+    }
+  }
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="YTD cumulative revenue vs pro-rata target">
+    <path d="${targetPath}" fill="none" stroke="#8b8b94" stroke-width="1.6" stroke-dasharray="5 4"/>
+    <path d="${actualPath}" fill="none" stroke="url(#gLine)" stroke-width="2.6"/>
+    <circle cx="${endX.toFixed(1)}" cy="${yAt(last.actual).toFixed(1)}" r="3.2" fill="#ff6d8e"/>
+    <circle cx="${endX.toFixed(1)}" cy="${yAt(last.target).toFixed(1)}" r="2.6" fill="#8b8b94"/>
+    <text x="${(endX + 8).toFixed(1)}" y="${actualLabelY.toFixed(1)}" fill="${VALUE_TEXT}" font-size="11" font-weight="700">${chartMoney(last.actual)} actual</text>
+    <text x="${(endX + 8).toFixed(1)}" y="${targetLabelY.toFixed(1)}" fill="#a1a1aa" font-size="10.5">${chartMoney(last.target)} target</text>
     <defs>
       <linearGradient id="gLine" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0%" stop-color="#6d8eff"/>
@@ -233,7 +306,7 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
             (c) =>
               `<span><strong>${escapeHtml(c.companyName)}</strong> <em>${formatReportDate(c.date)}</em></span>`,
           )
-          .join(" · ")}</p>`;
+          .join('<span class="sep">·</span>')}</p>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -253,68 +326,65 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
   }
   body {
     width: 210mm;
-    min-height: 297mm;
-    padding: 14mm 14mm 12mm;
+    height: 297mm;
+    padding: 11mm 12mm 9mm;
     background:
       radial-gradient(ellipse 120% 80% at 50% 0%, #1a1a1a 0%, #0a0a0a 50%, #000 100%);
   }
-  .page { display: flex; flex-direction: column; gap: 10px; height: 100%; }
+  .page { display: flex; flex-direction: column; gap: 15px; height: 100%; }
   header {
     display: flex; align-items: center; justify-content: space-between;
-    border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px;
   }
-  .logo { height: 42px; width: auto; }
+  .logo { height: 52px; width: auto; }
   .meta { text-align: right; }
-  .meta .title { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #a1a1aa; font-weight: 600; }
-  .meta .range { font-size: 15px; font-weight: 700; margin-top: 2px; }
+  .meta .title { font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: #a1a1aa; font-weight: 600; }
+  .meta .range { font-size: 19px; font-weight: 800; margin-top: 3px; }
   .status {
-    padding: 10px 12px; border-radius: 10px;
-    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+    padding: 14px 16px; border-radius: 12px;
+    background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.1);
+    border-left: 3px solid ${accent};
   }
-  .status-line { font-size: 12px; color: #d4d4d8; line-height: 1.45; }
-  .status-line + .status-line { margin-top: 2px; color: #a1a1aa; }
-  .verdict { color: ${accent}; font-weight: 750; }
-  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .status-line { font-size: 14px; color: #e4e4e7; line-height: 1.55; }
+  .status-line + .status-line { margin-top: 3px; color: #b9b9c0; }
+  .verdict { color: ${accent}; font-weight: 800; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
   .card {
     min-width: 0;
-    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 10px; padding: 10px 12px;
+    background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px; padding: 14px 16px;
   }
   .card h3 {
-    margin: 0 0 8px; font-size: 10px; letter-spacing: 0.12em;
-    text-transform: uppercase; color: #71717a; font-weight: 600;
+    margin: 0 0 10px; font-size: 11px; letter-spacing: 0.13em;
+    text-transform: uppercase; color: #9ca3af; font-weight: 600;
   }
-  .metric { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0; }
-  .metric .lbl { font-size: 11px; color: #a1a1aa; }
-  .metric .val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .metric .sub { font-size: 10px; color: #71717a; }
-  .primary-pace { display: flex; align-items: baseline; gap: 5px; font-size: 24px; font-weight: 800; line-height: 1.15; }
-  .primary-label { font-size: 9px; color: #a1a1aa; white-space: nowrap; }
-  .wow { font-size: 7.5px; color: #a1a1aa; white-space: nowrap; }
+  .metric { display: flex; justify-content: space-between; align-items: baseline; margin: 6px 0; }
+  .metric .lbl { font-size: 12.5px; color: #b9b9c0; }
+  .metric .val { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .primary-pace { display: flex; align-items: baseline; gap: 7px; font-size: 32px; font-weight: 800; line-height: 1.1; margin: 2px 0 6px; }
+  .primary-label { font-size: 11px; color: #b9b9c0; white-space: nowrap; }
+  .wow { font-size: 10.5px; color: #b9b9c0; margin-top: 8px; line-height: 1.5; }
   .wow.up { color: #4ade80; }
   .wow.down { color: #f472b6; }
-  .hl {
-    display: inline-block; padding: 1px 6px; border-radius: 4px;
-    background: linear-gradient(90deg, #6d8eff, #ff6d8e); color: #fff; font-weight: 700;
-  }
-  .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .chart-card h4 {
-    margin: 0 0 4px; font-size: 10px; letter-spacing: 0.1em;
-    text-transform: uppercase; color: #71717a; font-weight: 600;
+    margin: 0 0 8px; font-size: 11px; letter-spacing: 0.11em;
+    text-transform: uppercase; color: #9ca3af; font-weight: 600;
   }
-  .legend { font-size: 9px; color: #71717a; margin-top: 2px; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-  .contract-line { margin: 0; font-size: 12px; color: #f4f4f5; }
-  .contract-line em { color: #71717a; font-style: normal; font-size: 10px; }
-  .muted { margin: 0; font-size: 12px; color: #71717a; }
+  .legend { font-size: 10.5px; color: #9ca3af; margin-top: 6px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  .contract-line { margin: 0; font-size: 14px; color: #f4f4f5; }
+  .contract-line em { color: #9ca3af; font-style: normal; font-size: 11.5px; }
+  .contract-line .sep { color: #52525b; margin: 0 10px; }
+  .muted { margin: 0; font-size: 13px; color: #9ca3af; }
   footer {
-    margin-top: auto; padding-top: 8px;
-    border-top: 1px solid rgba(255,255,255,0.08);
+    margin-top: auto; padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.1);
     white-space: nowrap;
-    font-size: 9px; color: #52525b;
+    font-size: 10.5px; color: #8b8b94;
   }
-  .pace-row { font-size: 9.5px; color: #a1a1aa; margin-top: 5px; line-height: 1.35; }
-  .pace-row.compact { font-size: 8.5px; white-space: nowrap; }
+  .pace-row { font-size: 11px; color: #b9b9c0; margin-top: 7px; line-height: 1.5; }
+  .pace-row strong { color: #f4f4f5; }
 </style>
 </head>
 <body>
@@ -336,17 +406,17 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
       <section class="card">
         <h3>This week</h3>
         <div class="metric"><span class="lbl">Revenue</span><span class="val">${money(report.weekTotals.revenue)}</span></div>
-        <div class="metric"><span class="lbl">GP</span><span class="val">${money(report.weekTotals.profit)}</span></div>
+        <div class="metric"><span class="lbl">Gross profit</span><span class="val">${money(report.weekTotals.profit)}</span></div>
         <div class="wow ${ (report.weekWoW.revenuePct ?? 0) >= 0 ? "up" : "down"}">
-          WoW: Rev ${signedPct(report.weekWoW.revenuePct)} · GP ${signedPct(report.weekWoW.profitPct)} · Margin ${report.weekTotals.marginPct.toFixed(1)}% (${signedPoints(report.weekWoW.marginPoints)})
+          WoW: Rev ${signedPct(report.weekWoW.revenuePct)} · GP ${signedPct(report.weekWoW.profitPct)}<br/>Margin ${report.weekTotals.marginPct.toFixed(1)}% (${signedPoints(report.weekWoW.marginPoints)})
         </div>
       </section>
 
       <section class="card">
         <h3>MTD · ${escapeHtml(report.mtd.monthLabel)}</h3>
         <div class="metric"><span class="lbl">Revenue</span><span class="val">${money(report.mtd.revenue)}</span></div>
-        <div class="pace-row compact"><strong>${report.mtd.pace.revenue.pacePercent != null ? `${report.mtd.pace.revenue.pacePercent}%` : "—"}</strong> of pro-rata MTD target · GP ${headlineMoney(report.mtd.profit)} (${report.mtd.pace.profit.pacePercent != null ? `${report.mtd.pace.profit.pacePercent}%` : "—"})</div>
-        <p class="pace-row compact">
+        <div class="pace-row"><strong>${report.mtd.pace.revenue.pacePercent != null ? `${report.mtd.pace.revenue.pacePercent}%` : "—"}</strong> of pro-rata MTD target · GP ${headlineMoney(report.mtd.profit)} (${report.mtd.pace.profit.pacePercent != null ? `${report.mtd.pace.profit.pacePercent}%` : "—"})</div>
+        <p class="pace-row">
           Target ${headlineMoney(report.mtd.pace.revenue.targetMtd)} · EOM ${headlineMoney(report.mtd.pace.revenue.projected)}${report.status !== "on_pace" ? ` · Need ${headlineMoney(report.mtd.pace.revenue.requiredDailyRunRate)}/day` : ""}
         </p>
       </section>
@@ -354,7 +424,7 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
       <section class="card">
         <h3>YTD ${REPORT_YEAR_LABEL}</h3>
         <div class="primary-pace">${report.ytd.revenuePacePct != null ? `${report.ytd.revenuePacePct}%` : "—"} <span class="primary-label">of pro-rata YTD target</span></div>
-        <p class="pace-row">${report.ytd.annualRevenuePacePct != null ? `${report.ytd.annualRevenuePacePct}%` : "—"} of annual goal (${money(report.ytd.annualRevenueGoal, true)})</p>
+        <p class="pace-row">Revenue ${headlineMoney(report.ytd.revenue)} · ${report.ytd.annualRevenuePacePct != null ? `${report.ytd.annualRevenuePacePct}%` : "—"} of annual goal (${money(report.ytd.annualRevenueGoal, true)})</p>
       </section>
     </div>
 
@@ -363,13 +433,13 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
         <h4>Daily · this week</h4>
         ${dailyBarsSvg(report)}
         <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Revenue
-          <span class="dot" style="background:#a3e635;margin-left:10px"></span>GP</div>
+          <span class="dot" style="background:${GP_COLOR};margin-left:12px"></span>Gross profit</div>
       </section>
       <section class="card chart-card">
         <h4>Monthly actual vs goal</h4>
         ${monthlyBarsSvg(report)}
         <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual
-          <span class="dot" style="background:#3f3f46;margin-left:10px"></span>Goal</div>
+          <span class="dot" style="background:#3f3f46;margin-left:12px"></span>Goal</div>
       </section>
     </div>
 
@@ -377,7 +447,7 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
       <h4>YTD cumulative revenue vs target · <span style="color:${ytdDelta >= 0 ? "#4ade80" : "#f472b6"}">${ytdDeltaText}</span></h4>
       ${ytdLineSvg(report)}
       <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual
-        <span class="dot" style="background:#52525b;margin-left:10px"></span>Target (pro-rata)</div>
+        <span class="dot" style="background:#8b8b94;margin-left:12px"></span>Target (pro-rata)</div>
     </section>
 
     <section class="card">
