@@ -48,6 +48,9 @@ export type DailyBar = {
   label: string;
   revenue: number;
   profit: number;
+  /** Same weekday in the prior report week — pace comparison baseline. */
+  priorRevenue: number;
+  priorProfit: number;
 };
 
 export type SignedContract = {
@@ -427,11 +430,14 @@ export async function getWeeklyExecReport(options?: {
   const dailyBars: DailyBar[] = [];
   for (let d = week.start; d <= week.end; d = addCalendarDaysToIsoDate(d, 1)) {
     const row = weekRows.find((r) => r.date === d);
+    const prior = priorByDate.get(addCalendarDaysToIsoDate(d, -7));
     dailyBars.push({
       date: d,
       label: dayLabel(d),
       revenue: round2(row?.revenue ?? 0),
       profit: round2(row?.profit ?? 0),
+      priorRevenue: round2(prior?.revenue ?? 0),
+      priorProfit: round2(prior?.profit ?? 0),
     });
   }
 

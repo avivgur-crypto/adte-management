@@ -11,9 +11,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import type { WeeklyExecReport } from "@/lib/weekly-report/data";
 
-/** Inner width of a half-page chart card (px). */
-const HALF_CHART_W = 318;
-/** Inner width of the full-page chart card (px). */
+/** Inner width of a full-page chart card (px). */
 const FULL_CHART_W = 672;
 
 const AXIS_TEXT = "#a1a1aa";
@@ -118,39 +116,57 @@ function shortDayLabel(ymd: string): string {
 function dailyBarsSvg(report: WeeklyExecReport): string {
   const bars = report.dailyBars;
   if (!bars.length) return "";
-  const max = Math.max(...bars.map((b) => b.revenue), 1);
-  const w = HALF_CHART_W;
-  const h = 168;
-  const labelZone = 34; // two stacked value labels above bars
+  const max = Math.max(
+    ...bars.flatMap((b) => [b.revenue, b.priorRevenue]),
+    1,
+  );
+  const w = FULL_CHART_W;
+  const h = 188;
+  const labelZone = 36; // stacked value labels above bars
   const axisZone = 20;
   const plotH = h - labelZone - axisZone;
   const baseY = labelZone + plotH;
-  const gap = 7;
-  const barW = (w - gap * (bars.length + 1)) / bars.length;
+  const gap = 14;
+  const slot = (w - gap * (bars.length + 1)) / bars.length;
   const parts: string[] = [];
   bars.forEach((b, i) => {
-    const x = gap + i * (barW + gap);
-    const cx = x + barW / 2;
+    const x = gap + i * (slot + gap);
+    const barW = slot * 0.44;
+    const revX = x;
+    const priorX = x + barW + 5;
     const bh = (b.revenue / max) * plotH;
     const y = baseY - bh;
+    // This week: revenue bar with GP overlay.
     parts.push(
-      `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="url(#gRev)"/>`,
+      `<rect x="${revX.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="url(#gRev)"/>`,
     );
     const ph = (b.profit / max) * plotH;
     parts.push(
-      `<rect x="${x.toFixed(1)}" y="${(baseY - ph).toFixed(1)}" width="${Math.max(3, barW * 0.34).toFixed(1)}" height="${ph.toFixed(1)}" rx="2" fill="${GP_COLOR}" opacity="0.92"/>`,
+      `<rect x="${revX.toFixed(1)}" y="${(baseY - ph).toFixed(1)}" width="${Math.max(4, barW * 0.36).toFixed(1)}" height="${ph.toFixed(1)}" rx="2" fill="${GP_COLOR}" opacity="0.92"/>`,
+    );
+    // Same weekday last week: gray revenue bar.
+    const priorH = (b.priorRevenue / max) * plotH;
+    parts.push(
+      `<rect x="${priorX.toFixed(1)}" y="${(baseY - priorH).toFixed(1)}" width="${barW.toFixed(1)}" height="${priorH.toFixed(1)}" rx="3" fill="#3f3f46"/>`,
+    );
+    const revCx = revX + barW / 2;
+    const priorCx = priorX + barW / 2;
+    parts.push(
+      `<text x="${revCx.toFixed(1)}" y="${(y - 18).toFixed(1)}" text-anchor="middle" fill="${VALUE_TEXT}" font-size="10.5" font-weight="700">${chartMoney(b.revenue)}</text>`,
     );
     parts.push(
-      `<text x="${cx.toFixed(1)}" y="${(y - 19).toFixed(1)}" text-anchor="middle" fill="${VALUE_TEXT}" font-size="10.5" font-weight="700">${chartMoney(b.revenue)}</text>`,
+      `<text x="${revCx.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" fill="${GP_COLOR}" font-size="9">${chartMoney(b.profit)}</text>`,
     );
+    if (b.priorRevenue > 0) {
+      parts.push(
+        `<text x="${priorCx.toFixed(1)}" y="${(baseY - priorH - 5).toFixed(1)}" text-anchor="middle" fill="${GOAL_COLOR}" font-size="9">${chartMoney(b.priorRevenue)}</text>`,
+      );
+    }
     parts.push(
-      `<text x="${cx.toFixed(1)}" y="${(y - 7).toFixed(1)}" text-anchor="middle" fill="${GP_COLOR}" font-size="9">${chartMoney(b.profit)}</text>`,
-    );
-    parts.push(
-      `<text x="${cx.toFixed(1)}" y="${h - 5}" text-anchor="middle" fill="${AXIS_TEXT}" font-size="9.5">${shortDayLabel(b.date)}</text>`,
+      `<text x="${(x + slot / 2).toFixed(1)}" y="${h - 5}" text-anchor="middle" fill="${AXIS_TEXT}" font-size="10">${shortDayLabel(b.date)}</text>`,
     );
   });
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Daily revenue and gross profit this week">
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Daily revenue and gross profit this week vs same weekday last week">
     <defs>
       <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="#6d8eff"/>
@@ -165,7 +181,7 @@ function monthlyBarsSvg(report: WeeklyExecReport): string {
   const bars = report.monthlyBars;
   if (!bars.length) return "";
   const max = Math.max(...bars.flatMap((b) => [b.actual, b.goal]), 1);
-  const w = HALF_CHART_W;
+  const w = FULL_CHART_W;
   const h = 168;
   const labelZone = 34; // actual (white) + goal (gray) stacked above bars
   const axisZone = 20;
@@ -205,90 +221,6 @@ function monthlyBarsSvg(report: WeeklyExecReport): string {
       </linearGradient>
     </defs>
     ${parts.join("")}
-  </svg>`;
-}
-
-function ytdLineSvg(report: WeeklyExecReport): string {
-  const pts = report.ytdCumulative;
-  if (pts.length < 2) return "";
-  const w = FULL_CHART_W;
-  const h = 178;
-  const padL = 46; // Y-axis $ labels
-  const padR = 100; // endpoint value labels
-  const padT = 10;
-  const padB = 22; // X-axis month labels
-  const last = pts[pts.length - 1]!;
-  const max = Math.max(...pts.flatMap((p) => [p.actual, p.target]), 1);
-  const xAt = (i: number) => padL + (i / (pts.length - 1)) * (w - padL - padR);
-  const yAt = (v: number) => h - padB - (v / max) * (h - padT - padB);
-  const plotRight = w - padR;
-  const parts: string[] = [];
-
-  // Y gridlines at a round step ($1M/$2M/$5M) — dollars accumulated since Jan 1.
-  const rawStep = max / 4;
-  const mag = 10 ** Math.floor(Math.log10(rawStep));
-  const step = [1, 2, 5, 10]
-    .map((k) => k * mag)
-    .find((s) => s >= rawStep) ?? rawStep;
-  for (let v = step; v <= max; v += step) {
-    const gy = yAt(v);
-    parts.push(
-      `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${plotRight}" y2="${gy.toFixed(1)}" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>`,
-    );
-    parts.push(
-      `<text x="${padL - 7}" y="${(gy + 3.5).toFixed(1)}" text-anchor="end" fill="${AXIS_TEXT}" font-size="9.5">${chartMoney(v)}</text>`,
-    );
-  }
-
-  // X ticks: first point of each month.
-  let prevMonth = "";
-  pts.forEach((p, i) => {
-    const mk = p.date.slice(0, 7);
-    if (mk !== prevMonth) {
-      prevMonth = mk;
-      const [y, m] = mk.split("-").map(Number);
-      const name = new Date(Date.UTC(y!, m! - 1, 1)).toLocaleDateString(
-        "en-US",
-        { month: "short", timeZone: "UTC" },
-      );
-      parts.push(
-        `<text x="${xAt(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" fill="${AXIS_TEXT}" font-size="9.5">${name}</text>`,
-      );
-    }
-  });
-
-  const actualPath = pts
-    .map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.actual).toFixed(1)}`)
-    .join(" ");
-  const targetPath = pts
-    .map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.target).toFixed(1)}`)
-    .join(" ");
-  const endX = xAt(pts.length - 1);
-  let targetLabelY = yAt(last.target) + 3;
-  let actualLabelY = yAt(last.actual) + 3;
-  // Keep the two endpoint labels from overlapping.
-  if (Math.abs(targetLabelY - actualLabelY) < 14) {
-    if (targetLabelY <= actualLabelY) {
-      targetLabelY = actualLabelY - 14;
-    } else {
-      actualLabelY = targetLabelY - 14;
-    }
-  }
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cumulative revenue since January 1 vs pro-rata target">
-    ${parts.join("")}
-    <line x1="${padL}" y1="${(h - padB).toFixed(1)}" x2="${plotRight}" y2="${(h - padB).toFixed(1)}" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
-    <path d="${targetPath}" fill="none" stroke="#8b8b94" stroke-width="1.6" stroke-dasharray="5 4"/>
-    <path d="${actualPath}" fill="none" stroke="url(#gLine)" stroke-width="2.6"/>
-    <circle cx="${endX.toFixed(1)}" cy="${yAt(last.actual).toFixed(1)}" r="3.2" fill="#ff6d8e"/>
-    <circle cx="${endX.toFixed(1)}" cy="${yAt(last.target).toFixed(1)}" r="2.6" fill="#8b8b94"/>
-    <text x="${(endX + 8).toFixed(1)}" y="${actualLabelY.toFixed(1)}" fill="${VALUE_TEXT}" font-size="11" font-weight="700">${chartMoney(last.actual)} actual</text>
-    <text x="${(endX + 8).toFixed(1)}" y="${targetLabelY.toFixed(1)}" fill="#a1a1aa" font-size="10.5">${chartMoney(last.target)} target</text>
-    <defs>
-      <linearGradient id="gLine" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stop-color="#6d8eff"/>
-        <stop offset="100%" stop-color="#ff6d8e"/>
-      </linearGradient>
-    </defs>
   </svg>`;
 }
 
@@ -411,7 +343,6 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
   .metric .val { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; }
   .primary-pace { display: flex; align-items: baseline; gap: 7px; font-size: 32px; font-weight: 800; line-height: 1.1; margin: 2px 0 6px; }
   .primary-label { font-size: 11px; color: #b9b9c0; white-space: nowrap; }
-  .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .chart-card h4 {
     margin: 0 0 8px; font-size: 11px; letter-spacing: 0.11em;
     text-transform: uppercase; color: #9ca3af; font-weight: 600;
@@ -481,30 +412,24 @@ export function renderWeeklyReportHtml(report: WeeklyExecReport): string {
       <section class="card">
         <h3>YTD ${REPORT_YEAR_LABEL}</h3>
         <div class="primary-pace">${report.ytd.revenuePacePct != null ? `${report.ytd.revenuePacePct}%` : "—"} <span class="primary-label">of pro-rata YTD target</span></div>
-        <p class="pace-row">Revenue ${headlineMoney(report.ytd.revenue)} · ${report.ytd.annualRevenuePacePct != null ? `${report.ytd.annualRevenuePacePct}%` : "—"} of annual goal (${money(report.ytd.annualRevenueGoal, true)})</p>
-      </section>
-    </div>
-
-    <div class="charts">
-      <section class="card chart-card">
-        <h4>Daily · this week</h4>
-        ${dailyBarsSvg(report)}
-        <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Revenue
-          <span class="dot" style="background:${GP_COLOR};margin-left:12px"></span>Gross profit</div>
-      </section>
-      <section class="card chart-card">
-        <h4>Monthly actual vs goal</h4>
-        ${monthlyBarsSvg(report)}
-        <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual
-          <span class="dot" style="background:#3f3f46;margin-left:12px"></span>Goal</div>
+        <p class="pace-row">Revenue ${headlineMoney(report.ytd.revenue)} · <span style="color:${ytdDelta >= 0 ? "#4ade80" : "#f472b6"}">${ytdDeltaText}</span></p>
+        <p class="pace-row">${report.ytd.annualRevenuePacePct != null ? `${report.ytd.annualRevenuePacePct}%` : "—"} of annual goal (${money(report.ytd.annualRevenueGoal, true)})</p>
       </section>
     </div>
 
     <section class="card chart-card">
-      <h4>Cumulative revenue since Jan 1 · <span style="color:${ytdDelta >= 0 ? "#4ade80" : "#f472b6"}">${ytdDeltaText}</span></h4>
-      ${ytdLineSvg(report)}
-      <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual revenue, accumulated day by day
-        <span class="dot" style="background:#8b8b94;margin-left:12px"></span>Where we should be to hit the annual goal</div>
+      <h4>Daily pace · this week vs same day last week</h4>
+      ${dailyBarsSvg(report)}
+      <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Revenue this week
+        <span class="dot" style="background:${GP_COLOR};margin-left:12px"></span>Gross profit this week
+        <span class="dot" style="background:#3f3f46;margin-left:12px"></span>Revenue same day last week</div>
+    </section>
+
+    <section class="card chart-card">
+      <h4>Monthly actual vs goal</h4>
+      ${monthlyBarsSvg(report)}
+      <div class="legend"><span class="dot" style="background:linear-gradient(90deg,#6d8eff,#ff6d8e)"></span>Actual
+        <span class="dot" style="background:#3f3f46;margin-left:12px"></span>Goal</div>
     </section>
 
     <section class="card">
