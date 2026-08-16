@@ -17,8 +17,10 @@ const TABLE = "monthly_goals";
 
 const COL_DATE = 0;   // A - Month e.g. 'Jan26'
 const COL_TYPE = 2;   // C - Type: 'Media', 'SaaS', etc.
+const COL_PARTNER = 3; // D - Advertiser Name (Demand)
 const COL_AMOUNT = 7; // H - Final Revenue (Demand) / amount (Supply)
 const COL_RECEIVED = 8; // I - Amount Received (Demand only)
+const PARTNERS_TABLE = "billing_collection_partners";
 
 const TYPE_MEDIA = "media";
 const TYPE_SAAS = "saas";
@@ -150,16 +152,28 @@ function normalizeType(value: string | number | undefined): string {
     .replace(/\s+/g, " ");
 }
 
+interface PartnerCollection {
+  final_revenue: number;
+  amount_received: number;
+}
+
 /**
  * Demand sheet: iterate ALL rows (skip blanks, don't break on them).
  * - Sums Column H into media_revenue / saas_actual by type (existing Main Stats).
  * - Sums Column H → final_revenue and Column I → amount_received for Collection Rate
  *   across every Demand row with a valid month (all income types).
+ * - Also aggregates H/I by Advertiser Name (D) for top collection gaps.
  */
 function processDemandRows(
   rows: string[][]
-): { byMonth: Map<string, MonthBreakdown>; rowsPerMonth: Map<string, number>; skippedTypes: Map<string, number> } {
+): {
+  byMonth: Map<string, MonthBreakdown>;
+  byPartner: Map<string, Map<string, PartnerCollection>>;
+  rowsPerMonth: Map<string, number>;
+  skippedTypes: Map<string, number>;
+} {
   const byMonth = new Map<string, MonthBreakdown>();
+  const byPartner = new Map<string, Map<string, PartnerCollection>>();
   const rowsPerMonth = new Map<string, number>();
   const skippedTypes = new Map<string, number>();
 
@@ -180,6 +194,20 @@ function processDemandRows(
       if (!Number.isNaN(finalRev)) {
         cur.final_revenue += finalRev;
         cur.amount_received += received;
+
+        const partnerName = String(row[COL_PARTNER] ?? "").trim() || "(Unnamed)";
+        let monthPartners = byPartner.get(monthKey);
+        if (!monthPartners) {
+          monthPartners = new Map();
+          byPartner.set(monthKey, monthPartners);
+        }
+        const prev = monthPartners.get(partnerName) ?? {
+          final_revenue: 0,
+          amount_received: 0,
+        };
+        prev.final_revenue += finalRev;
+        prev.amount_received += received;
+        monthPartners.set(partnerName, prev);
       }
 
       if (Number.isNaN(finalRev) || finalRev === 0) {
@@ -201,7 +229,7 @@ function processDemandRows(
       console.error(`[billing sync] Demand row ${i + 1} error:`, err);
     }
   }
-  return { byMonth, rowsPerMonth, skippedTypes };
+  return { byMonth, byPartner, rowsPerMonth, skippedTypes };
 }
 
 /**
@@ -254,8 +282,12 @@ export async function syncBillingData(): Promise<SyncBillingResult> {
   ]);
   console.log(`[billing sync] Raw rows: Demand=${demandRows.length}, Supply=${supplyRows.length}`);
 
-  const { byMonth, rowsPerMonth: demandRowsPerMonth, skippedTypes: demandSkipped } =
-    processDemandRows(demandRows);
+  const {
+    byMonth,
+    byPartner,
+    rowsPerMonth: demandRowsPerMonth,
+    skippedTypes: demandSkipped,
+  } = processDemandRows(demandRows);
 
   const supplyRowsPerMonth = new Map<string, number>();
   const supplySkipped = new Map<string, number>();
@@ -302,6 +334,94 @@ export async function syncBillingData(): Promise<SyncBillingResult> {
     if (error) throw new Error(`Supabase billing upsert failed: ${error.message}`);
   }
 
+  // Replace partner collection rows for synced months (avoids stale advertisers).
+  // Soft-fail if migration 035 has not been applied yet.
+  const partnerMonths = [...byPartner.keys()];
+  if (partnerMonths.length > 0) {
+    const partnerBatch = partnerMonths.flatMap((month) => {
+      const partners = byPartner.get(month)!;
+      return [...partners.entries()].map(([partner_name, amounts]) => ({
+        month,
+        partner_name,
+        final_revenue: amounts.final_revenue,
+        amount_received: amounts.amount_received,
+      }));
+    });
+    console.log(
+      `[billing sync] Replacing ${partnerBatch.length} partner row(s) in ${PARTNERS_TABLE}…`,
+    );
+    const { error: delErr } = await supabaseAdmin
+      .from(PARTNERS_TABLE)
+      .delete()
+      .in("month", partnerMonths);
+    if (delErr) {
+      console.warn(
+        `[billing sync] Partner collection table unavailable (${delErr.message}). ` +
+          `Apply migration 035_billing_collection_partners.sql.`,
+      );
+    } else if (partnerBatch.length > 0) {
+      const { error: insErr } = await supabaseAdmin
+        .from(PARTNERS_TABLE)
+        .insert(partnerBatch);
+      if (insErr) {
+        console.warn(
+          `[billing sync] Partner collection insert failed: ${insErr.message}`,
+        );
+      }
+    }
+  }
+
   console.log(`[billing sync] Done: ${byMonth.size} month(s) updated`);
   return { monthsUpdated: byMonth.size };
+}
+
+export interface CollectionGapRow {
+  partnerName: string;
+  finalRevenue: number;
+  amountReceived: number;
+  gap: number;
+}
+
+function rankGapsFromPartnerMap(
+  byPartner: Map<string, Map<string, PartnerCollection>>,
+  months: string[],
+  limit = 5,
+): CollectionGapRow[] {
+  const monthSet = new Set(months);
+  const byName = new Map<string, { finalRevenue: number; amountReceived: number }>();
+
+  for (const [month, partners] of byPartner) {
+    if (!monthSet.has(month)) continue;
+    for (const [partnerName, amounts] of partners) {
+      const prev = byName.get(partnerName) ?? {
+        finalRevenue: 0,
+        amountReceived: 0,
+      };
+      prev.finalRevenue += amounts.final_revenue;
+      prev.amountReceived += amounts.amount_received;
+      byName.set(partnerName, prev);
+    }
+  }
+
+  return [...byName.entries()]
+    .map(([partnerName, amounts]) => ({
+      partnerName,
+      finalRevenue: amounts.finalRevenue,
+      amountReceived: amounts.amountReceived,
+      gap: amounts.finalRevenue - amounts.amountReceived,
+    }))
+    .filter((p) => p.gap > 0)
+    .sort((a, b) => b.gap - a.gap)
+    .slice(0, limit);
+}
+
+/** Live compute top unpaid collection gaps from Demand sheet (fallback / on-demand). */
+export async function fetchTopCollectionGapsFromSheet(
+  months: string[],
+  limit = 5,
+): Promise<CollectionGapRow[]> {
+  if (months.length === 0) return [];
+  const demandRows = await getSheetValues(BILLING_SHEET_ID, RANGE_DEMAND);
+  const { byPartner } = processDemandRows(demandRows);
+  return rankGapsFromPartnerMap(byPartner, months, limit);
 }

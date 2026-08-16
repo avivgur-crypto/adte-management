@@ -1,10 +1,21 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
-import { CircleDollarSign, Coins, HandCoins, Percent, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import {
+  ChevronDown,
+  CircleDollarSign,
+  Coins,
+  HandCoins,
+  Percent,
+  TrendingUp,
+} from "lucide-react";
 import { useFilter } from "@/app/context/FilterContext";
 import type { MonthOverview, XDASHMonthTotals } from "@/app/actions/financials";
+import {
+  getTopCollectionGaps,
+  type CollectionGapPartner,
+} from "@/app/actions/collection-gaps";
 import {
   DataSourceToggle,
   type FinancialDataSource,
@@ -109,6 +120,11 @@ export default function TotalOverview({
 }) {
   const { selectedMonths } = useFilter();
   const [source, setSource] = useState<FinancialDataSource>("xdash");
+  const [collectionExpanded, setCollectionExpanded] = useState(false);
+  const [gapPartners, setGapPartners] = useState<CollectionGapPartner[] | null>(
+    null,
+  );
+  const [gapsPending, startGapsTransition] = useTransition();
 
   const metrics = useMemo(() => {
     const billing = dataByMonth.filter((d) => selectedMonths.has(d.month));
@@ -186,6 +202,34 @@ export default function TotalOverview({
         : Math.round((amountReceived / finalRevenue) * 1000) / 10;
     return { amountReceived, finalRevenue, pct };
   }, [metrics]);
+
+  const selectedMonthKeys = useMemo(
+    () =>
+      dataByMonth
+        .filter((d) => selectedMonths.has(d.month))
+        .map((d) => d.month)
+        .sort(),
+    [dataByMonth, selectedMonths],
+  );
+
+  const selectedMonthsKey = selectedMonthKeys.join("|");
+
+  // Reset cached gaps when the month selection changes.
+  useEffect(() => {
+    setGapPartners(null);
+    setCollectionExpanded(false);
+  }, [selectedMonthsKey]);
+
+  function toggleCollectionGaps() {
+    const next = !collectionExpanded;
+    setCollectionExpanded(next);
+    if (next && gapPartners === null) {
+      startGapsTransition(async () => {
+        const rows = await getTopCollectionGaps(selectedMonthKeys);
+        setGapPartners(rows);
+      });
+    }
+  }
 
   if (metrics.filteredData.length === 0) {
     return (
@@ -272,34 +316,89 @@ export default function TotalOverview({
           </div>
         </div>
         <div className={STAT_ROW}>
-          <div className={STAT_PRIMARY}>
-            <div className="flex min-w-0 items-center gap-2">
-              <HandCoins
-                className="h-3.5 w-3.5 shrink-0 text-white/35"
-                strokeWidth={2}
-                aria-hidden
-              />
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-white/45">
-                <span className="inline sm:hidden">Collection %</span>
-                <span className="hidden sm:inline">Collection Rate %</span>
-              </span>
+          <button
+            type="button"
+            onClick={toggleCollectionGaps}
+            aria-expanded={collectionExpanded}
+            className="group w-full cursor-pointer rounded-md text-left outline-none transition-colors hover:bg-white/[0.03] focus-visible:ring-2 focus-visible:ring-white/20"
+          >
+            <div className={STAT_PRIMARY}>
+              <div className="flex min-w-0 items-center gap-2">
+                <HandCoins
+                  className="h-3.5 w-3.5 shrink-0 text-white/35"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-white/45">
+                  <span className="inline sm:hidden">Collection %</span>
+                  <span className="hidden sm:inline">Collection Rate %</span>
+                </span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 shrink-0 text-white/30 transition-transform duration-300 ease-out ${
+                    collectionExpanded ? "rotate-180" : "rotate-0"
+                  }`}
+                  strokeWidth={2}
+                  aria-hidden
+                />
+              </div>
+              <span className={PRIMARY_FIGURE}>{collection.pct.toFixed(1)}%</span>
             </div>
-            <span className={PRIMARY_FIGURE}>{collection.pct.toFixed(1)}%</span>
-          </div>
-          <div className="mt-1.5 min-w-0 pl-5 sm:pl-6">
-            <p className="text-[11px] leading-snug text-white/55 sm:text-xs">
-              <span className="text-white/40">Received:</span>
-              <span className="ml-0.5 tabular-nums text-white/75">
-                {formatCurrency(collection.amountReceived)}
-              </span>
-              <span className="mx-2 text-white/25" aria-hidden>
-                |
-              </span>
-              <span className="text-white/40">Final:</span>
-              <span className="ml-0.5 tabular-nums text-white/75">
-                {formatCurrency(collection.finalRevenue)}
-              </span>
-            </p>
+            <div className="mt-1.5 min-w-0 pl-5 sm:pl-6">
+              <p className="text-[11px] leading-snug text-white/55 sm:text-xs">
+                <span className="text-white/40">Received:</span>
+                <span className="ml-0.5 tabular-nums text-white/75">
+                  {formatCurrency(collection.amountReceived)}
+                </span>
+                <span className="mx-2 text-white/25" aria-hidden>
+                  |
+                </span>
+                <span className="text-white/40">Final:</span>
+                <span className="ml-0.5 tabular-nums text-white/75">
+                  {formatCurrency(collection.finalRevenue)}
+                </span>
+              </p>
+            </div>
+          </button>
+
+          <div
+            className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+              collectionExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+            }`}
+          >
+            <div className="overflow-hidden">
+              <div
+                className={`mt-2 border-t border-white/[0.06] pt-2 pl-5 transition-opacity duration-300 ease-out sm:pl-6 ${
+                  collectionExpanded ? "opacity-100" : "opacity-0"
+                }`}
+              >
+                <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/35">
+                  Largest unpaid gaps
+                </p>
+                {gapsPending && gapPartners === null ? (
+                  <p className="py-1 text-[11px] text-white/40">Loading…</p>
+                ) : gapPartners && gapPartners.length === 0 ? (
+                  <p className="py-1 text-[11px] text-white/40">
+                    No unpaid gaps for the selected months.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {(gapPartners ?? []).map((p) => (
+                      <li
+                        key={p.partnerName}
+                        className="flex min-w-0 items-baseline justify-between gap-3 text-[11px] sm:text-xs"
+                      >
+                        <span className="min-w-0 truncate text-white/60">
+                          {p.partnerName}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-white/80">
+                          {formatCurrency(p.gap)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
